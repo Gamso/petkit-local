@@ -244,8 +244,13 @@ def test_a_dual_hopper_feed_counts_toward_the_daily_totals():
         "day": 20260808, "real_amount1": 0, "real_amount2": 12})
     normalize.apply_derived_state(dev, "feed_over", {
         "day": 20260808, "real_amount1": 3, "real_amount2": 0})
+    # Neither feed says how it was asked for, so the per-hopper buckets exist
+    # (this IS a hopper pair) and both feeds are filed under neither.
     assert dev.state["feedState"] == {"day": 20260808, "times": 2,
-                                      "realAmountTotal": 15}
+                                      "realAmountTotal": 15,
+                                      "addAmountTotal1": 0, "addAmountTotal2": 0,
+                                      "planRealAmountTotal1": 0,
+                                      "planRealAmountTotal2": 0}
 
 
 def test_a_jammed_feed_dispensed_nothing_and_counts_as_nothing():

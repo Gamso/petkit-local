@@ -563,6 +563,7 @@ def _parse_feeder(body: dict[str, Any], device_type: str = "") -> dict[str, Any]
             "planAmountTotal", "planRealAmountTotal", "eatAvg", "eatCount",
             "addAmountTotal1", "addAmountTotal2",
             "planAmountTotal1", "planAmountTotal2",
+            "planRealAmountTotal1", "planRealAmountTotal2",
             "realAmountTotal1", "realAmountTotal2",
         ], parsed_fs)
         state["feedState"] = parsed_fs
