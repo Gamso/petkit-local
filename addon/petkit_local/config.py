@@ -14,7 +14,7 @@ import json
 import logging
 import os
 import urllib.request
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
@@ -151,6 +151,27 @@ def _supervisor_port_map() -> dict[str, Any]:
     return network if isinstance(network, dict) else {}
 
 
+def parse_str_list(raw: Any, option: str) -> list[str]:
+    """A list-of-strings option, blanks dropped, anything else logged away.
+
+    Never raises, like every other option: a wrong shape degrades to "nothing
+    configured" rather than keeping the add-on from serving the devices.
+    """
+    if not raw:
+        return []
+    if isinstance(raw, str):
+        raw = [raw]
+    if not isinstance(raw, list):
+        log.warning("Option %s is not a list; ignoring it", option)
+        return []
+    out = []
+    for item in raw:
+        s = str(item).strip() if item is not None else ""
+        if s and s not in out:
+            out.append(s)
+    return out
+
+
 def _published_port(ports: dict[str, Any], container_port: int) -> int | None:
     """The host port `container_port` is published on, or None if it is not.
 
@@ -276,6 +297,13 @@ class Config:
     #: API can register `exec:` sources, which is a shell on the host.
     go2rtc_api_password: str = ""
     go2rtc_api_published: bool = False
+    #: Further WebRTC candidates go2rtc announces AFTER the host one, verbatim
+    #: in go2rtc's own syntax (`stun:8565` = "my public address, this port";
+    #: `home.example.org:8565`; `203.0.113.5:8565`). What makes WebRTC -- and
+    #: with it audio and talk -- work from outside the LAN, once the router
+    #: forwards that port to the host. Without them only the LAN candidate is
+    #: announced, which is exactly the behaviour before this option existed.
+    go2rtc_webrtc_candidates: list[str] = field(default_factory=list)
 
     bucket_port: int = 9000
     #: Where the device is told to upload its photos and video. Empty means
@@ -525,6 +553,8 @@ class Config:
                         "exec: sources and is never exposed without a password",
                         GO2RTC_API_PORT)
         c.go2rtc_api_published = api_mapped and bool(c.go2rtc_api_password)
+        c.go2rtc_webrtc_candidates = parse_str_list(opts.get("go2rtc_webrtc_candidates"),
+                                                    "go2rtc_webrtc_candidates")
 
         api_opt = (opts.get("api_url") or "").strip()
         if not api_opt or ".local" in api_opt:

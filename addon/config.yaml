@@ -96,6 +96,12 @@ options:
   # go2rtc's HTTP API on the host, for the WebRTC Camera integration (HACS):
   # map 1984/tcp in Network as well. Empty keeps the API on loopback.
   go2rtc_api_password: ""
+  # WebRTC candidates announced after the LAN one, in go2rtc's syntax -- what
+  # makes live audio and talk work from OUTSIDE your LAN (phone on LTE through
+  # your reverse proxy). Forward the host port you mapped for 8555/udp+tcp on
+  # your router to this host, then announce it: "stun:<that port>" for a
+  # dynamic public address, or "home.example.org:<port>" / "<ip>:<port>".
+  go2rtc_webrtc_candidates: []
   # NOTE: proxy mode and payload capture are deliberately NOT options here.
   # Both are debugging switches you flip while watching a device, so they live
   # in the panel's Setup -> Settings and persist to
@@ -114,5 +120,7 @@ schema:
   mqtt_strict_auth: bool
   esp32_http_only: bool
   go2rtc_api_password: password?
+  go2rtc_webrtc_candidates:
+    - str
 startup: application
 boot: auto

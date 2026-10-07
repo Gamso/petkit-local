@@ -341,3 +341,18 @@ def test_the_go2rtc_api_goes_public_only_with_a_mapping_and_a_password():
     assert not c.go2rtc_api_published, "not mapped: nothing to publish on"
     c = _from_ha_addon_with({}, host_ip="192.168.1.5", ports={"1984/tcp": 1984})
     assert not c.go2rtc_api_published, "mapped without a password stays on loopback"
+
+
+# --- go2rtc_webrtc_candidates -----------------------------------------------
+
+def test_webrtc_candidates_are_read_trimmed_and_deduplicated():
+    c = _from_ha_addon_with({"go2rtc_webrtc_candidates": [" stun:8565 ", "", "stun:8565",
+                                                           "home.example.org:8565", None]})
+    assert c.go2rtc_webrtc_candidates == ["stun:8565", "home.example.org:8565"]
+
+
+def test_webrtc_candidates_default_to_nothing_and_never_raise():
+    assert _from_ha_addon_with({}).go2rtc_webrtc_candidates == []
+    assert _from_ha_addon_with({"go2rtc_webrtc_candidates": []}).go2rtc_webrtc_candidates == []
+    assert _from_ha_addon_with({"go2rtc_webrtc_candidates": {"a": 1}}).go2rtc_webrtc_candidates == []
+    assert _from_ha_addon_with({"go2rtc_webrtc_candidates": "stun:8565"}).go2rtc_webrtc_candidates == ["stun:8565"]

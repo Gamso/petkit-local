@@ -47,6 +47,8 @@ PetKit device ──HTTP───► petkit-local ──MQTT discovery──► 
 | `mqtt_tls_port` | `443` | Port for that listener. Change this and the matching port mapping together if your device dials a different one. |
 | `mqtt_strict_auth` | `false` | Enforce the Aliyun HMAC signature. Off by default so a signature nuance cannot lock a device out. |
 | `esp32_http_only` | `true` | Keep the T3, T4 and D4 on the HTTP heartbeat. They cannot use this broker unless reflashed, and need one DNS record for this — see *Networking*. Turn it off only for a reflashed device whose own broker name is pointed here. |
+| `go2rtc_api_password` | *(empty)* | Publishes the bundled go2rtc's HTTP API on `1984/tcp` (map that port too) behind basic auth, user `petkit`, for the **WebRTC Camera** integration (HACS). Empty keeps the API inside the container. |
+| `go2rtc_webrtc_candidates` | `[]` | WebRTC addresses announced after the LAN one, for viewers outside your LAN — see [WebRTC from outside the LAN](#webrtc-from-outside-the-lan). |
 
 Fresh Element Gemini D4S firmware 1.198 was tested with the default
 `mqtt_tls: true`. It uses HTTP heartbeats for state and commands; no device MQTT
@@ -267,6 +269,30 @@ Two things worth knowing:
 There is no snapshot URL: the device answers every path with the same video
 stream, so the MQTT camera entity stays empty and the sensor carries the URL
 instead.
+
+### WebRTC from outside the LAN
+
+On the LAN a browser reaches go2rtc's WebRTC port directly. From outside —
+a phone on mobile data, Home Assistant behind your reverse proxy — it cannot:
+go2rtc announces the LAN address, plus whatever public address and *random
+port* your router mapped for its STUN lookup, and that mapping is good for the
+STUN server only. WebRTC then fails, the card falls back to a mode without
+WebRTC, and anything that needs it is gone: the doorbell's G.711 audio (which
+only WebRTC can play), two-way talk, sub-second latency. Video alone still
+works, which is what makes this look like "sound is broken off Wi-Fi".
+
+Two steps fix it. Forward the host port you mapped for `8555/udp` and
+`8555/tcp` on your router to the Home Assistant host (say 8565 → 8565). Then
+announce it:
+
+```yaml
+go2rtc_webrtc_candidates:
+  - "stun:8565"             # dynamic public address: ask STUN, use this port
+  # - "home.example.org:8565"  # or a name / static address
+```
+
+The LAN address stays first in the list, so viewers at home keep the direct
+route. The option takes go2rtc's own candidate syntax verbatim.
 
 ## Provisioning over Bluetooth
 
