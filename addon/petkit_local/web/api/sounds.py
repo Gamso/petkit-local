@@ -9,9 +9,10 @@ A camera feeder can play custom audio through its speaker. The flow:
 4. ``thing/service/play_sound{soundId: N}`` plays it
 
 Sound files live in ``{data_dir}/sounds/{device_id}/`` with a metadata
-sidecar ``sounds.json``. The device downloads them from the bucket
-endpoint, so the file is served at ``/sounds/{device_id}/{filename}``
-on the bucket port.
+sidecar ``sounds.json``. The device downloads them over plain HTTP from the
+device API port, at ``/sounds/{device_id}/{filename}``
+(``http/handlers/stubs.py::handle_sound_download``); the bucket serves the
+same path, but over TLS the feeder's downloader cannot speak.
 """
 from __future__ import annotations
 
@@ -20,6 +21,7 @@ import logging
 import os
 import time
 from typing import Any
+from urllib.parse import urlparse
 
 from aiohttp import web
 
@@ -91,18 +93,36 @@ def _next_id(sounds: list[dict[str, Any]]) -> int:
     return max(s["id"] for s in sounds) + 1
 
 
+def sound_download_base(api_url: Any, request_host: str = "") -> str:
+    """`http://<api host>`: where a device fetches its sounds from.
+
+    The API host, not the bucket: the bucket is HTTPS, and the BusyBox wget
+    the firmware downloads with cannot complete a TLS handshake with it on
+    the Axera YumShare -- see `handlers/stubs.py::handle_sound_get` for what
+    the failed download did to the device. Built exactly as the face-photo
+    URLs are (`handle_discern_pic`): the host in `api_url` where there is one,
+    because the device fetches in a separate connection and needs an address
+    it can reach on its own, else the host it dialled us on.
+
+    Returns:
+        The base URL without a trailing slash, or "" when neither is known.
+    """
+    host = urlparse(api_url if isinstance(api_url, str) else "").netloc or request_host
+    return f"http://{host}" if host else ""
+
+
 def sound_list_for_device(data_dir: str, device_id: int,
-                          bucket_endpoint: str) -> list[dict[str, Any]]:
-    """Build the ``dev_sound_get`` result list with download URLs.
+                          base_url: str) -> list[dict[str, Any]]:
+    """Build the ``dev_sound_get`` result list with download URLs under `base_url`.
 
     Called from both apps, so it is given the values it needs rather than a
     request to dig them out of. An entry whose file is not on disk is left
     out: the device fetches every URL it is handed.
     """
     sounds = _load_sounds(data_dir, device_id)
-    if not sounds or not bucket_endpoint:
+    if not sounds or not base_url:
         return []
-    base = bucket_endpoint.rstrip("/")
+    base = base_url.rstrip("/")
     result = []
     for s in sounds:
         path = _sound_path(data_dir, device_id, s["filename"])
@@ -199,9 +219,11 @@ async def api_sounds_upload(request: web.Request) -> web.Response:
             atomic_write_bytes, os.path.join(_sounds_dir(data_dir, d.petkit_id), filename), adts)
         await asyncio.to_thread(_save_sounds, data_dir, d.petkit_id, sounds)
 
-    bucket_endpoint = request.app[CFG].get("bucket_endpoint", "")
-    if bucket_endpoint:
-        sound_list = sound_list_for_device(data_dir, d.petkit_id, bucket_endpoint)
+    # No request-host fallback here: this request came to the PANEL, and its
+    # host is not one a device downloads from.
+    base_url = sound_download_base(request.app[CFG].get("api_url", ""))
+    if base_url:
+        sound_list = sound_list_for_device(data_dir, d.petkit_id, base_url)
         hub, bridge = _hub_and_bridge(request)
         if hub and bridge:
             envelope = make_mqtt_property_set({"soundList": sound_list})

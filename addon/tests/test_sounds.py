@@ -218,8 +218,64 @@ async def test_the_device_is_told_about_its_sounds(tmp_path):
     _seed(tmp_path)
     status, body = await _sound_get(tmp_path)
     assert status == 200
-    assert body["result"][0]["url"] == "https://192.0.2.1:9000/sounds/100/sound_1.aac"
+    # Plain HTTP on the API host -- the bucket's HTTPS is beyond the device's wget.
+    assert body["result"][0]["url"] == "http://server/sounds/100/sound_1.aac"
     assert set(body["result"][0]) >= {"id", "name", "duration", "url", "digest", "size"}
+
+
+async def test_without_an_api_url_the_list_names_the_host_the_device_dialled(tmp_path):
+    _seed(tmp_path)
+    _, body = await _sound_get(tmp_path, api_url="")
+    assert body["result"][0]["url"].startswith("http://127.0.0.1:")
+    assert body["result"][0]["url"].endswith("/sounds/100/sound_1.aac")
+
+
+def test_the_download_base_is_never_built_from_junk():
+    assert api.sound_download_base("http://192.0.2.7:8080/6/") == "http://192.0.2.7:8080"
+    assert api.sound_download_base("https://petkit.lan/6/") == "http://petkit.lan"
+    assert api.sound_download_base(None) == "" and api.sound_download_base(7, "h:80") == "http://h:80"
+
+
+async def test_the_api_port_serves_the_sound_file(tmp_path):
+    _seed(tmp_path)
+    client = TestClient(TestServer(_device_app(tmp_path)))
+    await client.start_server()
+    try:
+        r = await client.get("/sounds/100/sound_1.aac")
+        data = await r.read()
+    finally:
+        await client.close()
+    assert r.status == 200 and data == _adts()
+
+
+@pytest.mark.parametrize("path", [
+    "/sounds/100/nope.aac",                     # not there
+    "/sounds/100/sounds.json",                  # there, and not a sound
+    "/sounds/100/..%2F..%2Fdevices.json",       # climbs out of the device's folder
+    "/sounds/100/%2e%2e/%2e%2e/devices.json",
+    "/sounds/..%2F..%2F/devices.json",          # ... through the device id
+    "/sounds/100/link.aac",                     # a symlink pointing out of it
+    "/sounds/100/%00.aac",
+])
+async def test_the_sound_route_serves_nothing_else_and_never_fails_the_device(tmp_path, path):
+    """Nothing outside `sounds/<device>/` is readable through it, and the
+    answer to every such request is an empty success: a 4xx is a failed
+    download, which is what was seen to stall the firmware."""
+    d = _seed(tmp_path)
+    (tmp_path / "devices.json").write_text('{"secret": "signing key"}')
+    try:
+        os.symlink(tmp_path / "devices.json", d / "link.aac")
+    except OSError:
+        pass
+    client = TestClient(TestServer(_device_app(tmp_path)))
+    await client.start_server()
+    try:
+        r = await client.get(path)
+        body = await r.read()
+    finally:
+        await client.close()
+    assert r.status == 200
+    assert b"secret" not in body and b"Futti" not in body
 
 
 async def test_a_damaged_list_is_an_empty_answer_never_an_error(tmp_path):
