@@ -2,7 +2,8 @@
 
 A camera feeder can play custom audio through its speaker. The flow:
 
-1. Upload an audio file through this API
+1. Upload an audio file through this API; it is converted to the one format
+   the device plays (``media/sounds.py``)
 2. The sound appears in ``dev_sound_get`` for the device to download
 3. ``property.set{selectedSound: N}`` selects the active sound
 4. ``thing/service/play_sound{soundId: N}`` plays it
@@ -14,8 +15,7 @@ on the bucket port.
 """
 from __future__ import annotations
 
-import hashlib
-import json
+import asyncio
 import logging
 import os
 import time
@@ -24,7 +24,14 @@ from typing import Any
 from aiohttp import web
 
 from petkit_local.ha.commands import make_mqtt_property_set, _envelope
+from petkit_local.media.sounds import (
+    META_LOCK, TranscodeError, describe, transcode_to_adts,
+)
+from petkit_local.utils.coerce import to_int
+from petkit_local.utils.jsonio import atomic_write_bytes, atomic_write_json, read_json
+from petkit_local.utils.paths import UnsafePathError, safe_join, sanitize_filename
 from petkit_local.web.api._common import _device_or_404, _deliver, _refuse
+from petkit_local.web.appkeys import BRIDGE, CFG, HUB
 
 log = logging.getLogger(__name__)
 
@@ -32,33 +39,50 @@ MAX_SOUND_SIZE = 2 * 1024 * 1024  # 2 MB
 MAX_SOUNDS_PER_DEVICE = 10
 
 
-def _sounds_dir(request: web.Request, device_id: int) -> str:
-    data_dir = request.app["cfg"].get("data_dir", "/data")
+# The helpers below take `data_dir`, not the request: `sound_list_for_device`
+# is also called from the DEVICE app's `dev_sound_get`, whose config lives under
+# `app["config"]`. Reading the panel's `app["cfg"]` there raised KeyError on
+# every poll, the never-fail middleware answered an empty success, and no
+# uploaded sound ever reached a device.
+def _data_dir(request: web.Request) -> str:
+    """The PANEL app's data directory."""
+    return request.app[CFG].get("data_dir", "/data")
+
+
+def _sounds_dir(data_dir: str, device_id: int) -> str:
     return os.path.join(data_dir, "sounds", str(device_id))
 
 
-def _sounds_meta_path(request: web.Request, device_id: int) -> str:
-    return os.path.join(_sounds_dir(request, device_id), "sounds.json")
+def _sounds_meta_path(data_dir: str, device_id: int) -> str:
+    return os.path.join(_sounds_dir(data_dir, device_id), "sounds.json")
 
 
-def _load_sounds(request: web.Request, device_id: int) -> list[dict[str, Any]]:
-    path = _sounds_meta_path(request, device_id)
-    if not os.path.isfile(path):
+def _load_sounds(data_dir: str, device_id: int) -> list[dict[str, Any]]:
+    """The device's sound entries; `[]` for a missing or damaged list.
+
+    Entries without an integer `id` and a string `filename` are dropped here:
+    the list is read on the device-facing server too, where a KeyError is an
+    answer the device never gets.
+    """
+    sounds = read_json(_sounds_meta_path(data_dir, device_id), [])
+    if not isinstance(sounds, list):
         return []
-    try:
-        with open(path) as f:
-            return json.load(f)
-    except (json.JSONDecodeError, OSError):
-        return []
+    return [s for s in sounds
+            if isinstance(s, dict) and type(s.get("id")) is int
+            and isinstance(s.get("filename"), str)]
 
 
-def _save_sounds(request: web.Request, device_id: int,
+def _save_sounds(data_dir: str, device_id: int,
                  sounds: list[dict[str, Any]]) -> None:
-    d = _sounds_dir(request, device_id)
-    os.makedirs(d, exist_ok=True)
-    path = _sounds_meta_path(request, device_id)
-    with open(path, "w") as f:
-        json.dump(sounds, f, indent=2)
+    atomic_write_json(_sounds_meta_path(data_dir, device_id), sounds)
+
+
+def _sound_path(data_dir: str, device_id: int, filename: str) -> str | None:
+    """Where an entry's file is, or None if its name leaves the device's folder."""
+    try:
+        return safe_join(_sounds_dir(data_dir, device_id), filename)
+    except UnsafePathError:
+        return None
 
 
 def _next_id(sounds: list[dict[str, Any]]) -> int:
@@ -67,36 +91,68 @@ def _next_id(sounds: list[dict[str, Any]]) -> int:
     return max(s["id"] for s in sounds) + 1
 
 
-def sound_list_for_device(request: web.Request, device_id: int,
+def sound_list_for_device(data_dir: str, device_id: int,
                           bucket_endpoint: str) -> list[dict[str, Any]]:
-    """Build the ``dev_sound_get`` result list with download URLs."""
-    sounds = _load_sounds(request, device_id)
+    """Build the ``dev_sound_get`` result list with download URLs.
+
+    Called from both apps, so it is given the values it needs rather than a
+    request to dig them out of. An entry whose file is not on disk is left
+    out: the device fetches every URL it is handed.
+    """
+    sounds = _load_sounds(data_dir, device_id)
     if not sounds or not bucket_endpoint:
         return []
     base = bucket_endpoint.rstrip("/")
     result = []
     for s in sounds:
+        path = _sound_path(data_dir, device_id, s["filename"])
+        if path is None or not os.path.isfile(path):
+            continue
         result.append({
             "id": s["id"],
-            "name": s.get("name", ""),
-            "duration": s.get("duration", 0),
+            "name": str(s.get("name", "")),
+            "duration": to_int(s.get("duration"), 0),
             "url": f"{base}/sounds/{device_id}/{s['filename']}",
-            "digest": s.get("digest", ""),
-            "size": s.get("size", 0),
+            "digest": str(s.get("digest", "")),
+            "size": to_int(s.get("size"), 0),
         })
     return result
 
 
+def _hub_and_bridge(request: web.Request) -> tuple[Any, Any]:
+    """The panel's event hub and MQTT bridge.
+
+    Play and Select looked the hub up as "event_hub", which is not a key of
+    the panel app (`web/appkeys.py`), so every click answered 400 "no event hub".
+    """
+    return request.app.get(HUB), request.app.get(BRIDGE)
+
+
 async def api_sounds_list(request: web.Request) -> web.Response:
     d = _device_or_404(request)
-    sounds = _load_sounds(request, d.petkit_id)
+    sounds = _load_sounds(_data_dir(request), d.petkit_id)
     return web.json_response({"sounds": sounds})
+
+
+async def _read_capped(field: Any, limit: int) -> bytes | None:
+    """The upload's bytes, or None once it passes `limit`.
+
+    Read in chunks so the cap holds WHILE reading: `field.read()` takes the
+    whole part into memory before anything can measure it, and a multipart
+    body is not bound by the application's `client_max_size`.
+    """
+    buf = bytearray()
+    while chunk := await field.read_chunk(64 * 1024):
+        buf += chunk
+        if len(buf) > limit:
+            return None
+    return bytes(buf)
 
 
 async def api_sounds_upload(request: web.Request) -> web.Response:
     d = _device_or_404(request)
-    sounds = _load_sounds(request, d.petkit_id)
-    if len(sounds) >= MAX_SOUNDS_PER_DEVICE:
+    data_dir = _data_dir(request)
+    if len(_load_sounds(data_dir, d.petkit_id)) >= MAX_SOUNDS_PER_DEVICE:
         raise _refuse(web.HTTPBadRequest, f"max {MAX_SOUNDS_PER_DEVICE} sounds")
 
     reader = await request.multipart()
@@ -104,47 +160,55 @@ async def api_sounds_upload(request: web.Request) -> web.Response:
     if field is None or field.name != "file":
         raise _refuse(web.HTTPBadRequest, "missing file field")
 
-    filename_raw = field.filename or "sound.mp3"
-    ext = os.path.splitext(filename_raw)[1].lower() or ".mp3"
-    data = await field.read(decode=False)
-    if len(data) > MAX_SOUND_SIZE:
+    # A label only: it is shown in the panel and never becomes a path.
+    name = sanitize_filename(os.path.splitext(os.path.basename(field.filename or ""))[0],
+                             fallback="sound", max_length=64)
+    data = await _read_capped(field, MAX_SOUND_SIZE)
+    if data is None:
         raise _refuse(web.HTTPBadRequest, f"file too large (max {MAX_SOUND_SIZE // 1024}KB)")
     if not data:
         raise _refuse(web.HTTPBadRequest, "empty file")
 
-    sound_id = _next_id(sounds)
-    digest = hashlib.md5(data).hexdigest()
-    filename = f"sound_{sound_id}{ext}"
+    # The device keeps a download as `/opt/user_feed_over_<id>.aac` and plays
+    # it through the ADTS parser its own prompts use, whatever the upload
+    # was -- an .m4a from a phone went down fine and never made a sound. So
+    # every upload becomes ADTS AAC-LC 16 kHz mono here (`media/sounds.py`),
+    # and the entry carries the duration the device is told.
+    try:
+        adts = await transcode_to_adts(data)
+    except TranscodeError as e:
+        raise _refuse(web.HTTPBadRequest, f"could not convert {name}: {e}") from None
 
-    d_dir = _sounds_dir(request, d.petkit_id)
-    os.makedirs(d_dir, exist_ok=True)
-    filepath = os.path.join(d_dir, filename)
-    with open(filepath, "wb") as f:
-        f.write(data)
+    # Read again under the lock: the conversion was awaited, and a second
+    # upload (or the startup conversion) may have written the list since.
+    async with META_LOCK:
+        sounds = _load_sounds(data_dir, d.petkit_id)
+        if len(sounds) >= MAX_SOUNDS_PER_DEVICE:
+            raise _refuse(web.HTTPBadRequest, f"max {MAX_SOUNDS_PER_DEVICE} sounds")
+        sound_id = _next_id(sounds)
+        filename = f"sound_{sound_id}.aac"  # always .aac, whatever came in
+        entry: dict[str, Any] = {
+            "id": sound_id,
+            "name": name,
+            "filename": filename,
+            **describe(adts),
+            "uploaded_at": int(time.time()),
+        }
+        sounds.append(entry)
+        await asyncio.to_thread(
+            atomic_write_bytes, os.path.join(_sounds_dir(data_dir, d.petkit_id), filename), adts)
+        await asyncio.to_thread(_save_sounds, data_dir, d.petkit_id, sounds)
 
-    entry: dict[str, Any] = {
-        "id": sound_id,
-        "name": os.path.splitext(filename_raw)[0],
-        "filename": filename,
-        "size": len(data),
-        "digest": digest,
-        "duration": 0,
-        "uploaded_at": int(time.time()),
-    }
-    sounds.append(entry)
-    _save_sounds(request, d.petkit_id, sounds)
-
-    bucket_endpoint = request.app["cfg"].get("bucket_endpoint", "")
+    bucket_endpoint = request.app[CFG].get("bucket_endpoint", "")
     if bucket_endpoint:
-        sound_list = sound_list_for_device(request, d.petkit_id, bucket_endpoint)
-        hub = request.app.get("event_hub")
-        bridge = request.app.get("bridge")
+        sound_list = sound_list_for_device(data_dir, d.petkit_id, bucket_endpoint)
+        hub, bridge = _hub_and_bridge(request)
         if hub and bridge:
             envelope = make_mqtt_property_set({"soundList": sound_list})
             await _deliver(hub, bridge, d, "property/set", envelope)
 
-    log.info("Uploaded sound %d for device %d: %s (%d bytes)",
-             sound_id, d.petkit_id, filename, len(data))
+    log.info("Uploaded sound %d for device %d: %s (%d bytes in, %d bytes ADTS, %d s)",
+             sound_id, d.petkit_id, filename, len(data), entry["size"], entry["duration"])
     return web.json_response({"ok": True, "sound": entry})
 
 
@@ -155,17 +219,19 @@ async def api_sounds_delete(request: web.Request) -> web.Response:
     except (ValueError, KeyError):
         raise _refuse(web.HTTPBadRequest, "bad sound_id") from None
 
-    sounds = _load_sounds(request, d.petkit_id)
-    entry = next((s for s in sounds if s["id"] == sound_id), None)
-    if entry is None:
-        raise _refuse(web.HTTPNotFound, "sound not found")
+    data_dir = _data_dir(request)
+    async with META_LOCK:
+        sounds = _load_sounds(data_dir, d.petkit_id)
+        entry = next((s for s in sounds if s["id"] == sound_id), None)
+        if entry is None:
+            raise _refuse(web.HTTPNotFound, "sound not found")
 
-    filepath = os.path.join(_sounds_dir(request, d.petkit_id), entry["filename"])
-    if os.path.isfile(filepath):
-        os.remove(filepath)
+        filepath = _sound_path(data_dir, d.petkit_id, entry["filename"])
+        if filepath and os.path.isfile(filepath):
+            os.remove(filepath)
 
-    sounds = [s for s in sounds if s["id"] != sound_id]
-    _save_sounds(request, d.petkit_id, sounds)
+        sounds = [s for s in sounds if s["id"] != sound_id]
+        _save_sounds(data_dir, d.petkit_id, sounds)
 
     log.info("Deleted sound %d for device %d", sound_id, d.petkit_id)
     return web.json_response({"ok": True})
@@ -178,8 +244,7 @@ async def api_sounds_play(request: web.Request) -> web.Response:
     except (ValueError, KeyError):
         raise _refuse(web.HTTPBadRequest, "bad sound_id") from None
 
-    hub = request.app.get("event_hub")
-    bridge = request.app.get("bridge")
+    hub, bridge = _hub_and_bridge(request)
     if not hub:
         raise _refuse(web.HTTPBadRequest, "no event hub")
 
@@ -196,8 +261,7 @@ async def api_sounds_select(request: web.Request) -> web.Response:
 
     d.config.setdefault("settings", {})["selectedSound"] = sound_id
 
-    hub = request.app.get("event_hub")
-    bridge = request.app.get("bridge")
+    hub, bridge = _hub_and_bridge(request)
     if not hub:
         raise _refuse(web.HTTPBadRequest, "no event hub")
 
