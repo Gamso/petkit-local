@@ -220,7 +220,54 @@ async def test_the_device_is_told_about_its_sounds(tmp_path):
     assert status == 200
     # Plain HTTP on the API host -- the bucket's HTTPS is beyond the device's wget.
     assert body["result"][0]["url"] == "http://server/sounds/100/sound_1.aac"
+    # a STRING: the firmware strcmp()s it without a type check and segfaults on a number
+    assert body["result"][0]["gmtCreate"] == "1700000000000"
     assert set(body["result"][0]) >= {"id", "name", "duration", "url", "digest", "size"}
+
+
+async def test_every_field_has_the_type_the_firmware_reads_it_as(tmp_path):
+    """Whatever a hand-edited or older `sounds.json` holds: numbers where the
+    firmware reads numbers, strings where it reads strings. A NULL
+    `valuestring` is a segfault there, not a parse error."""
+    d = _seed(tmp_path)
+    (d / "sounds.json").write_text(json.dumps([{
+        "id": 1, "name": 5, "filename": "sound_1.aac", "size": "12", "digest": None,
+        "duration": None, "uploaded_at": "soon"}]))
+    _, body = await _sound_get(tmp_path)
+    entry = body["result"][0]
+    assert {k: type(v) for k, v in entry.items()} == {
+        "id": int, "name": str, "duration": int, "url": str, "digest": str,
+        "size": int, "gmtCreate": str}
+    assert entry["gmtCreate"] == "0" and entry["size"] == 12
+
+
+async def test_the_list_never_exceeds_the_firmwares_five_slots(tmp_path):
+    d = tmp_path / "sounds" / "100"
+    d.mkdir(parents=True)
+    rows = []
+    for i in range(1, 8):
+        (d / f"sound_{i}.aac").write_bytes(_adts(frames=2))
+        rows.append({"id": i, "name": f"s{i}", "filename": f"sound_{i}.aac", "size": 1,
+                     "digest": "x", "duration": 1, "uploaded_at": 1700000000 + i})
+    (d / "sounds.json").write_text(json.dumps(rows))
+    _, body = await _sound_get(tmp_path)
+    assert [s["id"] for s in body["result"]] == [1, 2, 3, 4, 5]
+
+
+async def test_a_sixth_upload_is_refused(tmp_path, monkeypatch):
+    async def fake_transcode(data):
+        return _adts()
+
+    monkeypatch.setattr(api, "transcode_to_adts", fake_transcode)
+    app, _ = _panel(tmp_path)
+    client = TestClient(TestServer(app))
+    await client.start_server()
+    try:
+        results = [await _upload(client, b"x") for _ in range(6)]
+    finally:
+        await client.close()
+    assert [status for status, _ in results] == [200] * 5 + [400]
+    assert "max 5" in results[5][1]["error"]
 
 
 async def test_without_an_api_url_the_list_names_the_host_the_device_dialled(tmp_path):
@@ -324,7 +371,7 @@ async def test_an_upload_is_stored_as_adts_with_its_duration(tmp_path, monkeypat
         return _adts(frames=50)  # 3.2 s
 
     monkeypatch.setattr(api, "transcode_to_adts", fake_transcode)
-    app, _ = _panel(tmp_path)
+    app, reg = _panel(tmp_path)
     client = TestClient(TestServer(app))
     await client.start_server()
     try:
@@ -332,6 +379,7 @@ async def test_an_upload_is_stored_as_adts_with_its_duration(tmp_path, monkeypat
     finally:
         await client.close()
     assert status == 200, body
+    assert not reg._devices[100].command_queue, "no soundList push: the device fetches on select"
     assert body["sound"]["filename"] == "sound_1.aac"
     assert body["sound"]["duration"] == 3
     assert body["sound"]["name"] == "Futtifutti"
