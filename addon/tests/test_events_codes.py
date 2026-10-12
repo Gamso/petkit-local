@@ -314,3 +314,40 @@ def test_litter_ble_relay_codes_are_system_detail():
 def test_feed_result_9_is_mapped():
     """Observed on a live D4SH with empty hoppers."""
     assert 9 in codes.FEED_RESULT
+
+
+def test_feeder_codes_6_and_24_are_named_per_category():
+    """Reported from a D4SH (fw 895): 6 closes the eating episode code 5
+    opened, 24 is the recognition verdict. Both read "Event N" before."""
+    over = codes.lookup("6", "d4sh")
+    assert over.kind == codes.KIND_FEEDING and over.role == codes.ROLE_DONE
+    assert ingest.event_type_label("6", "d4sh") == "Eating done"
+    assert ingest.entity_for_event("6", "d4sh") == "feeding_event"
+
+    verdict = codes.lookup("24", "d4sh")
+    assert verdict.kind == codes.KIND_PET and verdict.detail is True
+    assert verdict.role == codes.ROLE_DETECTION
+    assert ingest.classify_event_kind("24", device_type="d4sh") == codes.KIND_PET
+
+    # Nobody here has seen either frame: the evidence is another fork's word.
+    assert over.grade == verdict.grade == codes.INFERRED
+
+    # Still per category: 6 is drinking on a fountain and a cleaning step on
+    # a litter box, and the camera-less feeders are not claimed.
+    assert codes.lookup("6", "w7h").kind == codes.KIND_DRINKING
+    assert codes.lookup("6", "t5").kind != codes.KIND_FEEDING
+    assert "6" not in codes.codes_for("d4")
+    assert "24" not in codes.codes_for("d4")
+
+
+def test_a_cat_finishing_its_meal_is_not_a_feed():
+    """Code 6 is feeding-kind and role=done, exactly like a dispensed feed.
+    Only `done_word` keeps it from dating Last Feed and inflating the day's
+    dispensed totals every time a cat walks away from the bowl."""
+    assert "6" not in codes.feed_done_event_types("d4sh")
+    assert "4" in codes.feed_done_event_types("d4sh")
+
+    from petkit_local.devices.base import Device
+    device = Device(device_type="d4sh", petkit_id=1)
+    ingest.apply_derived_state(device, "6", {})
+    assert "lastFeed" not in device.state
