@@ -60,7 +60,7 @@ if TYPE_CHECKING:
 #     until somebody runs Refill.
 DESTRUCTIVE_ACTIONS = {
     "dump_litter", "maintenance_start", "reset_n50", "reset_n60", "reset_desiccant",
-    "fountain_drain",
+    "fountain_drain", "reset_bagbox",
 }
 
 

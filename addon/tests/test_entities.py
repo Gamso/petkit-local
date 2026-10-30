@@ -60,6 +60,7 @@ EXPECTED_ENTITY_COUNTS = {
     # their two times, volume, voice language, and the same two power buttons.
     # t6 +6 on 2026-08-12: the bagging mechanism it reports in every
     # property post and nothing here read. No other litter box has it.
+    # t6 +1 on 2026-10-30: reset the verified NFC bag counter.
     # Every litter box +1 on 2026-10-23: `last_pet`, the pet the last visit
     # was credited to.
     #
@@ -69,7 +70,7 @@ EXPECTED_ENTITY_COUNTS = {
     # do-not-disturb, vomit detection, WiFi status light), +1 for Drain, +3 for
     # the three do-not-disturb windows. The seven are cleared from HA, not just
     # left unannounced (`CategorySpec.model_retired`).
-    "t3": 47, "t4": 47, "t5": 83, "t6": 90, "t7": 83,
+    "t3": 47, "t4": 47, "t5": 83, "t6": 91, "t7": 83,
     # d4s +4 on 2026-10-08: a live D4S feeds with `amount1`/`amount2`, so it
     # gets the dual-hopper feed buttons and portion numbers (upstream PR #43).
     # d4 -6 on 2026-10-24: six entities no D4 report fills; retired from HA.
