@@ -57,6 +57,13 @@ LITTER_T6_BUTTONS = [
     EntityDef(component="button", key="pack_waste", name="Pack Waste", icon="mdi:package-down"),
     EntityDef(component="button", key="open_sealed_door", name="Open Sealed Door",
               icon="mdi:door-open"),
+    # Camera movement: one small step per press, plus the 180-degree flip.
+    EntityDef(component="button", key="ptz_left", name="Move Camera Left",
+              icon="mdi:arrow-left-bold"),
+    EntityDef(component="button", key="ptz_right", name="Move Camera Right",
+              icon="mdi:arrow-right-bold"),
+    EntityDef(component="button", key="ptz_flip", name="Flip Camera",
+              icon="mdi:camera-flip"),
 ]
 
 FEEDER_BUTTONS = [
