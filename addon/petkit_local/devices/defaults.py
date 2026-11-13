@@ -406,6 +406,9 @@ def schedule_targets(device: Device) -> list[dict[str, Any]]:
             # Decided here rather than in the browser, next to the set that
             # already answers this question for `feed_realtime`.
             "dual": device.device_type in DEVICE_TYPES_FEEDER_DUAL,
+            # Paused is stored but not served; the editor shows the meals
+            # either way and has to say which it is.
+            "active": device.feed_schedule_active,
         })
     return targets
 

@@ -74,13 +74,15 @@ EXPECTED_ENTITY_COUNTS = {
     # gets the dual-hopper feed buttons and portion numbers (upstream PR #43).
     # d4 -6 on 2026-10-24: six entities no D4 report fills; retired from HA.
     # d4 +1 the same day: Battery Voltage, from the `batV` every report carries.
-    "feeder": 25, "feedermini": 25, "d3": 25, "d4": 20, "d4s": 29,
+    # Every feeder +1: the Feeding Schedule Active switch, which pauses the
+    # recurring meals without deleting them.
+    "feeder": 26, "feedermini": 26, "d3": 26, "d4": 21, "d4s": 30,
     # 2026-08-12: replaced `enable_feed_video` button with individual switches
     # (feed_picture, eat_video, voice_prompt, voice_disturb_mode, disturb_mode)
     # and added selected_sound number + play_sound button. Net +6.
     # d4h -4 on 2026-10-23: Device Status and the D4SH's three IR readings,
     # none of which a D4H reports (upstream issue #36); retired from HA.
-    "d4h": 53, "d4sh": 61,
+    "d4h": 54, "d4sh": 62,
     "w4": 24, "w5": 24, "ctw2": 24, "ctw3": 24, "w7h": 81,
     "k2": 12, "k3": 12,
 }
