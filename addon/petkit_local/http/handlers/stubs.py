@@ -30,6 +30,9 @@ from petkit_local.events.ingest import (
     apply_derived_state, apply_state_snapshot, entity_for_event, from_event_report,
     parse_event_report_form,
 )
+from petkit_local.http.appkeys import (
+    BLE_REGISTRY, CONFIG, EVENT_HUB, EVENT_STORE, HA_PUBLISHER, PET_REGISTRY, REGISTRY, X_DEVICE,
+)
 from petkit_local.http.handlers._common import (
     device_id, no_device_response, request_device,
 )
@@ -78,7 +81,7 @@ async def handle_oss_sts(request: web.Request) -> web.Response:
         devices in the field already receive here and what the firmware does
         with a short one is untested.
     """
-    config = request.app["config"]
+    config = request.app[CONFIG]
     device = request_device(request)
     bucket_endpoint = config.get("bucket_endpoint", "")
     aes_key = _get_aes_key(config)
@@ -89,7 +92,7 @@ async def handle_oss_sts(request: web.Request) -> web.Response:
     # (see the docstring on why an unidentified caller gets a full block), and
     # minting a registry entry from an unidentified request is exactly what
     # `handlers/_common.py` refuses to do.
-    x_dev = request.get("x_device", {})
+    x_dev = request.get(X_DEVICE, {})
     fallback = Device(device_type=x_dev.get("type", "unknown"), petkit_id=device_id(request) or 0)
     return web.json_response(payloads.to_oss_sts(fallback, bucket_endpoint, aes_key))
 
@@ -122,7 +125,7 @@ async def handle_device_info(request: web.Request) -> web.Response:
     """
     device = request_device(request)
     if device:
-        ble_registry = request.app.get("ble_registry")
+        ble_registry = request.app.get(BLE_REGISTRY)
         return web.json_response(payloads.to_device_info(device, ble_registry))
     return no_device_response()
 
@@ -161,10 +164,10 @@ async def handle_event_report(request: web.Request) -> web.Response:
         with no event store, drops the report silently rather than reporting an
         error, per the never-fail-a-device rule in `http/server.py`.
     """
-    registry = request.app["registry"]
+    registry = request.app[REGISTRY]
     device = request_device(request, registry)
 
-    store = request.app.get("event_store")
+    store = request.app.get(EVENT_STORE)
     if not device or store is None:
         return web.json_response({"result": "success"})
     petkit_id = device.petkit_id
@@ -177,13 +180,13 @@ async def handle_event_report(request: web.Request) -> web.Response:
     state = row.pop("_state", None)
     content = row.pop("_content", None)
 
-    config = request.app["config"]
+    config = request.app[CONFIG]
     if config.get("capture"):
         capture_record(config.get("capture_dir", "/data/capture"), "event_report",
                         {"id": petkit_id, "form": form})
 
-    pet_registry = request.app.get("pet_registry")
-    ha_publisher = request.app.get("ha_publisher")
+    pet_registry = request.app.get(PET_REGISTRY)
+    ha_publisher = request.app.get(HA_PUBLISHER)
     # `pet_ref` is what the device claimed; `pet_id` is what we could prove,
     # by that claim or, for a visit naming no pet, by its weight. Resolving
     # BEFORE the insert keeps the row consistent in one write, and leaving
@@ -216,7 +219,7 @@ async def handle_event_report(request: web.Request) -> web.Response:
                             event_time=form.get("timestamp"))
     registry.mark_dirty()
 
-    hub = request.app.get("event_hub")
+    hub = request.app.get(EVENT_HUB)
     if hub is not None:
         if isinstance(state, dict) and state:
             hub.set_state_report(petkit_id, state)
@@ -235,7 +238,7 @@ async def handle_event_report(request: web.Request) -> web.Response:
         # its embedded state — the ESP32's HTTP twin of the MQTT property/post
         # piggyback. See `mqtt.ble_relay.update_linked_k3`.
         if isinstance(state, dict):
-            k3 = update_linked_k3(device, state, request.app.get("ble_registry"))
+            k3 = update_linked_k3(device, state, request.app.get(BLE_REGISTRY))
             if k3:
                 await ha_publisher.publish_ble_discovery(k3)
                 await ha_publisher.publish_ble_state(k3)
@@ -252,7 +255,7 @@ async def handle_sound_get(request: web.Request) -> web.Response:
         sounds have been uploaded. An ARRAY, because the firmware iterates the
         result.
     """
-    config = request.app["config"]
+    config = request.app[CONFIG]
     device = request_device(request)
     if device:
         # Served over plain HTTP on the API port, the way the face photos are
@@ -287,7 +290,7 @@ async def handle_sound_download(request: web.Request) -> web.Response:
         (see `handle_sound_get`), and the list never names a file that is not
         on disk, so a device only gets here in the instant a sound is deleted.
     """
-    data_dir = request.app["config"].get("data_dir", "/data")
+    data_dir = request.app[CONFIG].get("data_dir", "/data")
     try:
         path = safe_join(safe_join(os.path.join(data_dir, "sounds"), request.match_info["device_id"]),
                          request.match_info["filename"])

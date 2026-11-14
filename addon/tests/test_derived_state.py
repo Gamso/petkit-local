@@ -19,6 +19,7 @@ from petkit_local.devices.base import Device
 from petkit_local.devices.registry import DeviceRegistry
 from petkit_local.events.ingest import apply_derived_state
 from petkit_local.events.store import EventStore
+from petkit_local.http import appkeys as device_keys
 from petkit_local.http.server import create_app
 
 
@@ -192,7 +193,7 @@ async def test_an_http_event_report_populates_the_derived_sensors():
         reg = DeviceRegistry()
         device = reg.get_or_create(petkit_id=100, device_type="t5", serial_number="SN100")
         app = create_app(reg, dict(CONFIG))
-        app["event_store"] = EventStore(Path(tmp) / "petkit.db")
+        app[device_keys.EVENT_STORE] = EventStore(Path(tmp) / "petkit.db")
         client = TestClient(TestServer(app))
         await client.start_server()
         try:
@@ -207,7 +208,7 @@ async def test_an_http_event_report_populates_the_derived_sensors():
             assert device.state.get("lastClean")
         finally:
             await client.close()
-            await app["event_store"].close()
+            await app[device_keys.EVENT_STORE].close()
 
 
 async def test_a_retried_http_event_report_is_counted_once():
@@ -222,7 +223,7 @@ async def test_a_retried_http_event_report_is_counted_once():
         t4 = reg.get_or_create(petkit_id=100, device_type="t4", serial_number="SN100")
         d4 = reg.get_or_create(petkit_id=101, device_type="d4", serial_number="SN101")
         app = create_app(reg, dict(CONFIG))
-        store = app["event_store"] = EventStore(Path(tmp) / "petkit.db")
+        store = app[device_keys.EVENT_STORE] = EventStore(Path(tmp) / "petkit.db")
         client = TestClient(TestServer(app))
         await client.start_server()
         try:

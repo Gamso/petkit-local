@@ -2,6 +2,7 @@
 toggle, retention config, media file serving (+ path-traversal safety),
 timeline, and pets."""
 import asyncio
+import io
 import os
 import tempfile
 from datetime import datetime
@@ -722,7 +723,9 @@ async def test_a_real_phone_photo_is_not_rejected_by_the_body_cap():
         big = JPEG_BYTES + b"\x00" * (3 * 1024 * 1024)
         c = await _client(app)
         try:
-            r = await c.post(f"/api/pets/{pet['id']}/faces", data=big)
+            # As a stream: a multi-megabyte `bytes` body is one blocking write,
+            # which aiohttp warns about (ResourceWarning) on the client side.
+            r = await c.post(f"/api/pets/{pet['id']}/faces", data=io.BytesIO(big))
             assert r.status == 200, await r.text()
             assert (await r.json())["face"]["id"]
         finally:

@@ -22,6 +22,7 @@ from urllib.parse import parse_qsl, urlparse
 
 from aiohttp import web
 
+from petkit_local.http.appkeys import CONFIG, EVENT_HUB, REGISTRY
 from petkit_local.http.handlers._common import request_device
 from petkit_local.patchers import esp32_ota
 from petkit_local.utils.capture import capture_record
@@ -55,7 +56,7 @@ def firmware_base_url(api_url: str) -> str:
 
 def _narrate(request: web.Request, device_id: int, line: str) -> None:
     """Put a job's progress where the panel's firmware card shows it."""
-    hub = request.app.get("event_hub")
+    hub = request.app.get(EVENT_HUB)
     if hub is not None:
         hub.publish("patcher", device_id, f"[esp32fw] {line}")
 
@@ -87,7 +88,7 @@ async def handle_ota_check(request: web.Request) -> web.Response:
     if job is None:
         return web.json_response(NO_UPDATE)
 
-    config = request.app["config"]
+    config = request.app[CONFIG]
     form = await _form(request)
     log.info("dev_ota_check from %d with a job armed: %s", device.petkit_id, form)
     release = esp32_ota.load_release(config.get("data_dir", "/data"),
@@ -136,7 +137,7 @@ async def handle_ota_progress(request: web.Request) -> web.Response:
         return ok
     form = await _form(request)
     endpoint = _endpoint(request)
-    config = request.app["config"]
+    config = request.app[CONFIG]
     if config.get("capture"):
         capture_record(config.get("capture_dir", "/data/capture"), endpoint,
                        {"id": device.petkit_id, "form": form})
@@ -150,7 +151,7 @@ async def handle_ota_progress(request: web.Request) -> web.Response:
     if line is None:
         log.info("%s from %d with no firmware job armed", endpoint, device.petkit_id)
         return ok
-    request.app["registry"].mark_dirty()
+    request.app[REGISTRY].mark_dirty()
     _narrate(request, device.petkit_id, line)
     return ok
 
@@ -167,7 +168,7 @@ async def handle_firmware_download(request: web.Request) -> web.StreamResponse:
     if mi["variant"] not in esp32_ota.VARIANTS or not filename.endswith(".bin"):
         return web.Response(status=404, text="not found")
     try:
-        path = esp32_ota.module_path(request.app["config"].get("data_dir", "/data"),
+        path = esp32_ota.module_path(request.app[CONFIG].get("data_dir", "/data"),
                                      mi["device_type"], mi["version"], mi["variant"],
                                      filename[:-len(".bin")])
     except UnsafePathError:

@@ -8,13 +8,13 @@ Three middlewares, in the order aiohttp applies them (outermost first):
   rather than in the handlers because *any* HTTP contact proves the device is
   up, and not every device model does MQTT or even an HTTP heartbeat.
 * `device_middleware` — parses the firmware's `X-Device` header and the URL
-  into ``request["x_device"]``, ``request["api_version"]`` and
-  ``request["device_type"]``, so no handler has to re-derive them.
+  into ``request[X_DEVICE]``, ``request[API_VERSION]`` and
+  ``request[DEVICE_TYPE]``, so no handler has to re-derive them.
 * `proxy_middleware` — when proxy mode is on, forwards the request to the real
   PetKit cloud and answers with its (redacted) reply instead of ours.
 
 That order is load-bearing in both directions. `device_middleware` runs before
-the proxy so `request["device_type"]` is set when the upstream is being chosen,
+the proxy so `request[DEVICE_TYPE]` is set when the upstream is being chosen,
 and `logging_middleware` stays outermost so the panel's live log and the capture
 file record **what the device actually received**, not what our handler would
 have said.
@@ -46,8 +46,9 @@ Handler = Callable[[web.Request], Awaitable[web.StreamResponse]]
 API_PREFIX = "/6/"
 
 #: Where `proxy_middleware` leaves what it did, for `logging_middleware` to fold
-#: into the entry it was already going to write.
-PROXY_OUTCOME = "proxy_outcome"
+#: into the entry it was already going to write. A `web.RequestKey`, defined
+#: with the other request keys in `http/appkeys.py`.
+from petkit_local.http.appkeys import PROXY_OUTCOME
 
 # Below the three values above on purpose: every submodule imports them back
 # from here. Importing `.logging` also rebinds the name `logging` on this module

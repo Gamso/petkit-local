@@ -20,7 +20,8 @@ from petkit_local.devices.registry import DeviceRegistry
 from petkit_local.events.normalize import visit_day_key
 from petkit_local.http.proxy import close_proxy_session, get_proxy_session
 from petkit_local.http.server import create_app
-from petkit_local.main.lifecycle import (BACKGROUND_TASKS, _seed_feed_state,
+from petkit_local.http.appkeys import BACKGROUND_TASKS
+from petkit_local.main.lifecycle import (_seed_feed_state,
                                          _seed_visit_counts, _spawn, _stop_tasks)
 
 CONFIG = {

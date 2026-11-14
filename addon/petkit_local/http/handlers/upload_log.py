@@ -35,6 +35,7 @@ import logging
 from aiohttp import web
 
 from petkit_local.devices import payloads
+from petkit_local.http.appkeys import CONFIG, EVENT_HUB
 from petkit_local.http.handlers._common import request_device
 from petkit_local.utils.coerce import to_int
 
@@ -65,7 +66,7 @@ async def handle_upload_log_token(request: web.Request) -> web.Response:
     if device is None or not device.config.get("log_upload_enabled", False):
         return web.json_response(NO_TOKEN)
 
-    config = request.app["config"]
+    config = request.app[CONFIG]
     body = payloads.to_log_upload_token(device, config.get("bucket_endpoint", ""))
     if not body.get("result"):
         log.warning("Device %d wants to upload its log, but bucket_endpoint %r "
@@ -105,7 +106,7 @@ async def handle_upload_log_done(request: web.Request) -> web.Response:
     # only exists on the PANEL app, so it was always None in production and this
     # line never appeared in the live log — while the test passed, because the
     # test set the key production does not use.
-    hub = request.app.get("event_hub")
+    hub = request.app.get(EVENT_HUB)
     if hub is not None:
         hub.publish("devlog", petkit_id, summary,
                     detail={"size": size, "key": key, "uploadres": reason})

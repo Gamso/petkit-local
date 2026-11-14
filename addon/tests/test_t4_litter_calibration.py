@@ -14,6 +14,7 @@ from petkit_local.events.normalize import apply_derived_state, apply_state_snaps
 from petkit_local.events.store import EventStore
 from petkit_local.ha.categories import get_entities_for_device
 from petkit_local.ha.commands import ALL_ACTIONS
+from petkit_local.http import appkeys as device_keys
 from petkit_local.http.server import create_app
 from petkit_local.web.hub import EventHub
 from petkit_local.web.panel import create_panel_app
@@ -79,7 +80,7 @@ async def test_panel_to_heartbeat_and_real_completion_survive_restart(
     config = {"capture": False, "api_url": "http://localhost/6/", "data_dir": str(tmp_path)}
     hub = EventHub()
     device_app = create_app(registry, config)
-    device_app["event_store"] = event_store
+    device_app[device_keys.EVENT_STORE] = event_store
     panel_app = create_panel_app(registry, None, hub, config)
     api = TestClient(TestServer(device_app))
     panel = TestClient(TestServer(panel_app))

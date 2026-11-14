@@ -17,6 +17,7 @@ import time
 from aiohttp import web
 
 from petkit_local.devices import addresses
+from petkit_local.http.appkeys import CONFIG, DEVICE_TYPE, EVENT_HUB, ON_DEVICE_SEEN, X_DEVICE
 from petkit_local.http.handlers._common import device_id, request_device
 from petkit_local.http.middleware import API_PREFIX, PROXY_OUTCOME, Handler
 from petkit_local.utils.capture import capture_record
@@ -76,10 +77,10 @@ async def logging_middleware(request: web.Request, handler: Handler) -> web.Stre
 
     resp = await handler(request)
     if request.path.startswith(API_PREFIX):
-        dt = request.get("device_type", "?")
-        pid = request.get("x_device", {}).get("id", "?")
+        dt = request.get(DEVICE_TYPE, "?")
+        pid = request.get(X_DEVICE, {}).get("id", "?")
         log.info("%s %s [%s id=%s] -> %d", request.method, request.path, dt, pid, resp.status)
-        hub = request.app.get("event_hub")
+        hub = request.app.get(EVENT_HUB)
         if hub is not None:
             did = device_id(request)
             resp_body = None
@@ -107,7 +108,7 @@ async def logging_middleware(request: web.Request, handler: Handler) -> web.Stre
                 detail["proxy"] = request[PROXY_OUTCOME]
             hub.record_http(did, request.method, request.path, resp.status, detail=detail)
 
-        config = request.app.get("config", {})
+        config = request.app.get(CONFIG, {})
         if config.get("capture"):
             capture_record(config.get("capture_dir", "/data/capture"), "requests", {
                 "method": request.method,
@@ -132,12 +133,12 @@ async def logging_middleware(request: web.Request, handler: Handler) -> web.Stre
             # spelling and not our lowercase codename — see `http/cloud_fetch.py`.
             # Recorded from live traffic rather than assumed, because a guess
             # here fails as an authentication error and nothing else.
-            wire_type = (request.get("x_device") or {}).get("type") or ""
+            wire_type = (request.get(X_DEVICE) or {}).get("type") or ""
             if wire_type and device.wire_type != wire_type:
                 device.wire_type = wire_type
             if not device.online:
                 device.online = True
-                cb = request.app.get("on_device_seen")
+                cb = request.app.get(ON_DEVICE_SEEN)
                 if cb is not None:
                     await cb(device)
     return resp

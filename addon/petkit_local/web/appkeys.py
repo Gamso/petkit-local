@@ -45,30 +45,54 @@ Both injected keys are set BEFORE `runner.setup()`, which freezes the
 Application: a key added after that is a DeprecationWarning today and an error
 under aiohttp 4.
 
-These are plain strings rather than `web.AppKey`s. An `AppKey` is a distinct
-object, not the string, so adopting one would change the identity of every key —
-including the two written from `main/lifecycle.py` and the ones every test's own
-app is built with — for a type-checking benefit this codebase does not collect.
-The values below are therefore the literal spellings already in use, and reads
-spell them out as they always have.
+Every key is a `web.AppKey`, and an `AppKey` is an object, not its name: a read
+finds a value only through the SAME object it was written with, so every writer
+and reader — `main/lifecycle.py` and the tests included — imports its key from
+here. A string spelling of one of these keys finds nothing. The device API has
+a vocabulary of its own in `http/appkeys.py`; where a name appears in both
+(`registry`, `event_store`, ...) they are still two objects, because they are
+two applications, and a handler that reads the other app's key gets nothing
+(`tests/test_app_keys.py`).
+
+The value types are annotations rather than `AppKey(name, t)` arguments, so
+this module imports none of the classes it names at runtime and can be
+imported from anywhere without a cycle.
 """
 from __future__ import annotations
 
-REGISTRY = "registry"
-BLE_REGISTRY = "ble_registry"
-HUB = "hub"
-CFG = "cfg"
-BRIDGE = "bridge"
-LIVE_CONFIG = "live_config"
-EVENT_STORE = "event_store"
-RETENTION_CONFIG = "retention_config"
-PET_REGISTRY = "pet_registry"
-HA_PUBLISHER = "ha_publisher"
+import asyncio
+from typing import TYPE_CHECKING, Any
 
-# aiohttp app key holding the strong references to in-flight background tasks
-# (see _spawn_background).
-BACKGROUND_TASKS = "background_tasks"
+from aiohttp import web
+
+if TYPE_CHECKING:
+    from amqtt.broker import Broker
+
+    from petkit_local.ai.pets import PetRegistry
+    from petkit_local.devices.ble import BLERegistry
+    from petkit_local.devices.registry import DeviceRegistry
+    from petkit_local.events.store import EventStore
+    from petkit_local.ha.publisher import HAPublisher
+    from petkit_local.media.go2rtc import Go2rtc
+    from petkit_local.media.retention import RetentionConfig
+    from petkit_local.mqtt.bridge import MQTTBridge
+    from petkit_local.web.hub import EventHub
+
+REGISTRY: web.AppKey[DeviceRegistry] = web.AppKey("registry")
+BLE_REGISTRY: web.AppKey[BLERegistry | None] = web.AppKey("ble_registry")
+HUB: web.AppKey[EventHub] = web.AppKey("hub")
+CFG: web.AppKey[dict[str, Any]] = web.AppKey("cfg")
+BRIDGE: web.AppKey[MQTTBridge | None] = web.AppKey("bridge")
+LIVE_CONFIG: web.AppKey[dict[str, Any]] = web.AppKey("live_config")
+EVENT_STORE: web.AppKey[EventStore | None] = web.AppKey("event_store")
+RETENTION_CONFIG: web.AppKey[RetentionConfig | None] = web.AppKey("retention_config")
+PET_REGISTRY: web.AppKey[PetRegistry | None] = web.AppKey("pet_registry")
+HA_PUBLISHER: web.AppKey[HAPublisher | None] = web.AppKey("ha_publisher")
+
+# The strong references to in-flight background tasks (see _spawn_background).
+# A set here; the device app's key of the same name holds a list.
+BACKGROUND_TASKS: web.AppKey[set[asyncio.Task[Any]]] = web.AppKey("background_tasks")
 
 #: Set from `main/lifecycle.py`, not from `create_panel_app`.
-MQTT_BROKER = "mqtt_broker"
-GO2RTC = "go2rtc"
+MQTT_BROKER: web.AppKey[Broker] = web.AppKey("mqtt_broker")
+GO2RTC: web.AppKey[Go2rtc] = web.AppKey("go2rtc")

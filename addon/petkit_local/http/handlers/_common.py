@@ -47,6 +47,7 @@ from typing import TYPE_CHECKING
 
 from aiohttp import web
 
+from petkit_local.http.appkeys import FORM, REGISTRY, X_DEVICE
 from petkit_local.utils.coerce import to_int
 
 if TYPE_CHECKING:
@@ -87,14 +88,14 @@ def device_field(request: web.Request, name: str) -> str | None:
     """One identity field, from whichever of the three places carries it.
 
     Header, then query string, then the urlencoded POST body
-    (``request["form"]``, filled by ``http/middleware/``). The first two are
+    (``request[FORM]``, filled by ``http/middleware/``). The first two are
     the Ingenic models; the third is the only one an ESP32 feeder uses, which
     is why it exists — see `parse_form_body`.
 
     Returns the first non-blank value, or None.
     """
-    x_device = request.get("x_device") or {}
-    form = request.get("form") or {}
+    x_device = request.get(X_DEVICE) or {}
+    form = request.get(FORM) or {}
     for source in (x_device.get(name), request.query.get(name), form.get(name)):
         if isinstance(source, str) and source.strip():
             return source.strip()
@@ -104,7 +105,7 @@ def device_field(request: web.Request, name: str) -> str | None:
 def device_id(request: web.Request) -> int | None:
     """Return the requesting device's petkit id, or None if unidentifiable.
 
-    Reads the X-Device header first (parsed into ``request["x_device"]`` by
+    Reads the X-Device header first (parsed into ``request[X_DEVICE]`` by
     ``http/middleware/``), then the ``id`` query parameter, then the ``id``
     field of an urlencoded POST body.
 
@@ -112,8 +113,8 @@ def device_id(request: web.Request) -> int | None:
         A positive int, or None when the id is missing, non-numeric, or <= 0.
         Never raises, whatever the device sent.
     """
-    x_device = request.get("x_device") or {}
-    form = request.get("form") or {}
+    x_device = request.get(X_DEVICE) or {}
+    form = request.get(FORM) or {}
     return (_coerce_device_id(x_device.get("id"))
             or _coerce_device_id(request.query.get("id"))
             or _coerce_device_id(form.get("id")))
@@ -134,7 +135,7 @@ def request_device(request: web.Request, registry: DeviceRegistry | None = None)
 
     Args:
         registry: Registry to look in. Defaults to the one the app was built
-            with (``request.app["registry"]``); if the app has none — as in
+            with (``request.app[REGISTRY]``); if the app has none — as in
             narrow unit tests — the result is None rather than a KeyError.
 
     Returns:
@@ -143,7 +144,7 @@ def request_device(request: web.Request, registry: DeviceRegistry | None = None)
         iot_device_info handlers.
     """
     if registry is None:
-        registry = request.app.get("registry")
+        registry = request.app.get(REGISTRY)
     if registry is None:
         return None
 

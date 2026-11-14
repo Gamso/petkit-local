@@ -13,6 +13,7 @@ from aiohttp.test_utils import TestClient, TestServer
 from petkit_local.devices import payloads
 from petkit_local.devices.base import Device
 from petkit_local.devices.registry import DeviceRegistry
+from petkit_local.http import appkeys as device_keys
 from petkit_local.http.handlers.heartbeat import IOT_STATUS_GRACE
 from petkit_local.http.server import create_app
 from petkit_local.patchers.common import cleanup_staged, stage_file
@@ -449,7 +450,7 @@ async def test_a_heartbeat_that_brings_a_device_back_tells_ha():
         seen.append((device.petkit_id, device.online))
 
     app = create_app(reg, CONFIG)
-    app["on_device_seen"] = on_device_seen
+    app[device_keys.ON_DEVICE_SEEN] = on_device_seen
     client = TestClient(TestServer(app))
     await client.start_server()
     try:

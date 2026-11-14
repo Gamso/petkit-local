@@ -22,9 +22,12 @@ from petkit_local.devices.ble import BLERegistry
 from petkit_local.devices.registry import DeviceRegistry
 from petkit_local.events.store import EventStore
 from petkit_local.ha.publisher import HAPublisher
+from petkit_local.http.appkeys import (
+    BACKGROUND_TASKS, BLE_REGISTRY, EVENT_HUB, EVENT_STORE, HA_PUBLISHER, ON_DEVICE_SEEN, ON_SIGNUP,
+    ON_STATE_REPORT, PET_REGISTRY, PROXY_UPSTREAM_CREDS,
+)
 from petkit_local.http.redact import RedactionPolicy
 from petkit_local.http.server import create_app
-from petkit_local.main.lifecycle import BACKGROUND_TASKS
 from petkit_local.media.crypto import resolve_key_string
 from petkit_local.media.go2rtc import Go2rtc
 from petkit_local.media.retention import RetentionConfig
@@ -249,23 +252,23 @@ def build_services(config: Config, args: argparse.Namespace) -> Services:
         ha_publisher.set_command_sink(mqtt_bridge)
 
     app = create_app(registry, app_config)
-    app["ble_registry"] = ble_registry
-    app["event_hub"] = hub
-    app["event_store"] = event_store
-    app["pet_registry"] = pet_registry
-    app["ha_publisher"] = ha_publisher
+    app[BLE_REGISTRY] = ble_registry
+    app[EVENT_HUB] = hub
+    app[EVENT_STORE] = event_store
+    app[PET_REGISTRY] = pet_registry
+    app[HA_PUBLISHER] = ha_publisher
     # Written by the proxy middleware when a proxied dev_iot_device_info reveals
     # the device's real Aliyun credentials — the only place they can be learned.
-    app["proxy_upstream_creds"] = upstream_creds
+    app[PROXY_UPSTREAM_CREDS] = upstream_creds
     # Populated by `_spawn` once the loop is up. Created here, before
     # `AppRunner` freezes the app — a frozen Application rejects new keys.
     app[BACKGROUND_TASKS] = []
 
     if ha_publisher:
-        app["on_state_report"] = partial(_on_state_report, ha_publisher, ble_registry)
+        app[ON_STATE_REPORT] = partial(_on_state_report, ha_publisher, ble_registry)
 
-    app["on_signup"] = partial(_on_signup, ha_publisher)
-    app["on_device_seen"] = partial(_on_device_seen, ha_publisher)
+    app[ON_SIGNUP] = partial(_on_signup, ha_publisher)
+    app[ON_DEVICE_SEEN] = partial(_on_device_seen, ha_publisher)
 
     cert_path = config.mqtt_cert or f"{config.data_dir}/certs/broker.crt"
 

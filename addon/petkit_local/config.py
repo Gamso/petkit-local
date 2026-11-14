@@ -470,7 +470,7 @@ class Config:
                 setattr(self, k, data[k])
 
     def to_app_config(self) -> dict[str, Any]:
-        """The subset the aiohttp app stores in `app["config"]`.
+        """The subset the aiohttp app stores in `app[CONFIG]` (`http/appkeys.py`).
 
         A plain dict rather than the `Config` itself, so a request handler can
         only read what the device-facing side legitimately needs (URLs, proxy

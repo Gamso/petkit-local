@@ -12,6 +12,7 @@ import hashlib
 import json
 import os
 import socket
+from pathlib import Path
 
 import aiomqtt
 import pytest
@@ -21,6 +22,7 @@ from aiohttp.test_utils import TestClient, TestServer
 from petkit_local.devices.base import Device
 from petkit_local.devices.ble import BLERegistry
 from petkit_local.devices.registry import DeviceRegistry
+from petkit_local.http import appkeys as device_keys
 from petkit_local.http.handlers.ota import firmware_base_url, offers_firmware
 from petkit_local.http.proxy import close_proxy_session
 from petkit_local.http.server import create_app
@@ -30,6 +32,7 @@ from petkit_local.patchers import esp32_ota
 from petkit_local.patchers.firmware import (
     FirmwareImageError, find_cert_slot, generate_ca_for_slot, verify_esp_image,
 )
+from petkit_local.web import appkeys as panel_keys
 from petkit_local.web.hub import EventHub
 from petkit_local.web.panel import create_panel_app
 from tests.test_patcher_esp32 import _cert_image, _crlf_slot, _slot_for_der
@@ -77,8 +80,8 @@ def test_a_release_keeps_stock_verbatim_and_patches_userbin_to_our_ca(tmp_path, 
 
     stock_path = esp32_ota.module_path(str(tmp_path), "d4", "1.267", "stock", "userbin")
     patched_path = esp32_ota.module_path(str(tmp_path), "d4", "1.267", "patched", "userbin")
-    assert open(stock_path, "rb").read() == stock_image
-    patched = open(patched_path, "rb").read()
+    assert Path(stock_path).read_bytes() == stock_image
+    patched = Path(patched_path).read_bytes()
     verify_esp_image(patched)
     s, e = find_cert_slot(patched)
     _key, ca = esp32_ota.load_ca(str(tmp_path))
@@ -255,7 +258,7 @@ async def _device_client(tmp_path, *, proxy_upstream: str = ""):
               "proxy_block_ota": True, "capture": False, "capture_dir": str(tmp_path)}
     reg = DeviceRegistry()
     app = create_app(reg, config)
-    app["event_hub"] = EventHub()
+    app[device_keys.EVENT_HUB] = EventHub()
     client = TestClient(TestServer(app))
     await client.start_server()
     await client.post("/6/d4/dev_signup", headers=HDR)
@@ -401,7 +404,7 @@ async def _panel(tmp_path, upstream: str, device_type: str = "d4"):
 
 
 async def _settle(client):
-    for task in list(client.app["background_tasks"]):
+    for task in list(client.app[panel_keys.BACKGROUND_TASKS]):
         await task
 
 
@@ -509,7 +512,7 @@ async def test_arming_a_job_takes_a_device_on_mqtt_back_to_the_heartbeat(tmp_pat
     broker = await start_broker(port, reg, hub=hub, data_dir=str(tmp_path))
     app = create_panel_app(reg, BLERegistry(), hub,
                            {"api_url": "http://192.0.2.5/6/", "data_dir": str(tmp_path)})
-    app["mqtt_broker"] = broker
+    app[panel_keys.MQTT_BROKER] = broker
     client = TestClient(TestServer(app))
     await client.start_server()
     try:

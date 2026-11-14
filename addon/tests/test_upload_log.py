@@ -9,6 +9,7 @@ from aiohttp.test_utils import TestClient, TestServer
 
 from petkit_local.devices.base import split_bucket_authority
 from petkit_local.devices.registry import DeviceRegistry
+from petkit_local.http import appkeys as device_keys
 from petkit_local.http.server import create_app
 from petkit_local.web.hub import EventHub
 
@@ -24,7 +25,7 @@ async def _client(enabled=False, config=None):
     # The key `main.py` actually wires on the device-facing app. This used to
     # say `hub`, which production never sets — so the devlog assertion below
     # passed against a handler that could only ever see None.
-    app["event_hub"] = hub
+    app[device_keys.EVENT_HUB] = hub
     client = TestClient(TestServer(app))
     await client.start_server()
     return client, device, hub

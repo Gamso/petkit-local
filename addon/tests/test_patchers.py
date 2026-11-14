@@ -23,6 +23,7 @@ from petkit_local.patchers.common import (
     set_patch_storage_dir,
 )
 from petkit_local.patchers.ssh import build_install_commands
+from petkit_local.web import appkeys as panel_keys
 
 
 # --- run_cmd delivery ---
@@ -290,7 +291,8 @@ async def test_talk_apply_stages_sink_and_wrapper(monkeypatch, tmp_path):
     monkeypatch.setattr(P.asyncio, "sleep", AsyncMock())
 
     d = Device(device_type="t6", petkit_id=7654, serial_number="SN")
-    app = {"registry": MagicMock(), "bridge": None, "cfg": {"data_dir": str(tmp_path)}}
+    app = {panel_keys.REGISTRY: MagicMock(), panel_keys.BRIDGE: None,
+           panel_keys.CFG: {"data_dir": str(tmp_path)}}
 
     # The bug made this raise TypeError; it must complete and record talk active.
     await P._patcher_apply(d, "talk", "192.168.1.50",

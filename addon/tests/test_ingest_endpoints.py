@@ -14,6 +14,7 @@ import pytest
 from petkit_local.ai.pets import PetRegistry
 from petkit_local.devices.registry import DeviceRegistry
 from petkit_local.events.store import EventStore
+from petkit_local.http import appkeys as device_keys
 from petkit_local.http.handlers import upload_file_info
 from petkit_local.http.server import create_app
 from petkit_local.web.hub import EventHub
@@ -85,13 +86,13 @@ async def _client(tmp, config=None, capabilities=None):
     hub = EventHub()
 
     app = create_app(reg, config or CONFIG)
-    app["event_store"] = store
-    app["event_hub"] = hub
+    app[device_keys.EVENT_STORE] = store
+    app[device_keys.EVENT_HUB] = hub
     raw_root = str(Path(tmp) / "raw")
     media_root = str(Path(tmp) / "media")
-    app["config"]["media_raw_root"] = raw_root
-    app["config"]["media_root"] = media_root
-    app["config"]["data_dir"] = tmp
+    app[device_keys.CONFIG]["media_raw_root"] = raw_root
+    app[device_keys.CONFIG]["media_root"] = media_root
+    app[device_keys.CONFIG]["data_dir"] = tmp
 
     client = TestClient(TestServer(app))
     await client.start_server()
@@ -164,9 +165,9 @@ async def test_event_report_with_pet_id_publishes_pet_discovery_and_state():
         fake_pub = _FakePetPublisher()
 
         app = create_app(reg, dict(CONFIG))
-        app["event_store"] = store
-        app["pet_registry"] = pet_registry
-        app["ha_publisher"] = fake_pub
+        app[device_keys.EVENT_STORE] = store
+        app[device_keys.PET_REGISTRY] = pet_registry
+        app[device_keys.HA_PUBLISHER] = fake_pub
 
         client = TestClient(TestServer(app))
         await client.start_server()

@@ -12,6 +12,7 @@ from urllib.parse import parse_qs
 
 from aiohttp import web
 
+from petkit_local.http.appkeys import API_VERSION, DEVICE_TYPE, FORM, X_DEVICE
 from petkit_local.http.middleware import Handler
 
 
@@ -83,9 +84,9 @@ async def parse_form_body(request: web.Request) -> dict[str, str]:
 async def device_middleware(request: web.Request, handler: Handler) -> web.StreamResponse:
     """Attach the requester's identity to the request, then hand it on.
 
-    Sets, when derivable: ``request["x_device"]`` (the parsed `X-Device` header,
-    only if it carries an id), ``request["form"]`` (the urlencoded POST body),
-    ``request["api_version"]`` and ``request["device_type"]``. All are optional
+    Sets, when derivable: ``request[X_DEVICE]`` (the parsed `X-Device` header,
+    only if it carries an id), ``request[FORM]`` (the urlencoded POST body),
+    ``request[API_VERSION]`` and ``request[DEVICE_TYPE]``. All are optional
     — handlers use `handlers/_common.py` to resolve a device and answer sensibly
     when none of this is present.
     """
@@ -94,23 +95,23 @@ async def device_middleware(request: web.Request, handler: Handler) -> web.Strea
     if x_device:
         info = parse_x_device(x_device)
         if info and "id" in info:
-            request["x_device"] = info
+            request[X_DEVICE] = info
 
-    request["form"] = await parse_form_body(request)
+    request[FORM] = await parse_form_body(request)
 
     path = request.path
     poll_m = re.match(r"^/(\d+)/poll/(\w+)/", path)
     m = re.match(r"^/(\d+)/(\w+)/", path)
     if poll_m:
-        request["api_version"] = poll_m.group(1)
-        request["device_type"] = poll_m.group(2)
+        request[API_VERSION] = poll_m.group(1)
+        request[DEVICE_TYPE] = poll_m.group(2)
     elif m and m.group(2) != "poll":
-        request["api_version"] = m.group(1)
-        request["device_type"] = m.group(2)
+        request[API_VERSION] = m.group(1)
+        request[DEVICE_TYPE] = m.group(2)
 
     # Fallback: device type from the X-Device `type` field (paths that omit it,
     # e.g. /6/dev_serverinfo or /6/poll/heartbeat).
-    if "device_type" not in request and info and info.get("type"):
-        request["device_type"] = info["type"].lower()
+    if DEVICE_TYPE not in request and info and info.get("type"):
+        request[DEVICE_TYPE] = info["type"].lower()
 
     return await handler(request)

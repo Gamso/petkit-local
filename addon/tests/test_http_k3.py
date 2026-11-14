@@ -21,6 +21,7 @@ import pytest
 from petkit_local.devices.ble import BLERegistry
 from petkit_local.devices.registry import DeviceRegistry
 from petkit_local.events.store import EventStore
+from petkit_local.http import appkeys as device_keys
 from petkit_local.http.server import create_app
 from petkit_local.mqtt.ble_relay import update_linked_k3
 
@@ -84,9 +85,9 @@ async def _close_stores():
 
 async def _client(reg, ble, pub) -> TestClient:
     app = create_app(reg, dict(CONFIG))
-    app["ble_registry"] = ble
-    app["ha_publisher"] = pub
-    app["event_store"] = store = EventStore(":memory:")
+    app[device_keys.BLE_REGISTRY] = ble
+    app[device_keys.HA_PUBLISHER] = pub
+    app[device_keys.EVENT_STORE] = store = EventStore(":memory:")
     _OPEN_STORES.append(store)
     # Mirror wiring.py: the HTTP handler treats a missing hook as no-op, so
     # installing exactly the same closure keeps behaviour production-shaped.
@@ -97,7 +98,7 @@ async def _client(reg, ble, pub) -> TestClient:
         if k3:
             await pub.publish_ble_discovery(k3)
             await pub.publish_ble_state(k3)
-    app["on_state_report"] = on_state_report
+    app[device_keys.ON_STATE_REPORT] = on_state_report
     client = TestClient(TestServer(app))
     await client.start_server()
     return client

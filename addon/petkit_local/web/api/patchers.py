@@ -41,6 +41,7 @@ from petkit_local.patchers.ssh import (
 from petkit_local.patchers.talk import PATCHER_INFO as TALK_PATCHER
 from petkit_local.patchers.verify import assert_download_plausible, elf_arch
 from petkit_local.web.api._common import _device_or_404, _json_body
+from petkit_local.web.appkeys import BRIDGE, CFG, HUB, REGISTRY
 
 if TYPE_CHECKING:
     from petkit_local.devices.base import Device
@@ -145,8 +146,8 @@ async def api_patcher_apply(request: web.Request) -> web.Response:
     progress as `patcher` events on the hub, which the UI follows over the
     WebSocket. Failures land there too, never in this response.
     """
-    reg = request.app["registry"]
-    hub = request.app["hub"]
+    reg = request.app[REGISTRY]
+    hub = request.app[HUB]
     d = _device_or_404(request)
     did = d.petkit_id
 
@@ -176,7 +177,7 @@ async def api_patcher_apply(request: web.Request) -> web.Response:
     if refusal:
         return web.json_response({"error": refusal}, status=400)
 
-    api_url = request.app["cfg"].get("api_url", "")
+    api_url = request.app[CFG].get("api_url", "")
     if not api_url:
         return web.json_response({"error": "api_url not configured"}, status=500)
 
@@ -254,12 +255,12 @@ async def _patcher_apply(d: Device, patcher_id: str, device_ip: str, download_ba
     reboots, so patchers compose instead of overwriting each other.
     """
     did = d.petkit_id
-    reg = app["registry"]
+    reg = app[REGISTRY]
     # Which transport each run_cmd takes is decided per command by
     # `send_run_cmd`: a device that has joined MQTT stops polling the heartbeat
     # entirely, and the queue it used to be given would never be drained.
-    bridge = app.get("bridge")
-    cfg = app.get("cfg", {})
+    bridge = app.get(BRIDGE)
+    cfg = app.get(CFG, {})
     data_dir = cfg.get("data_dir", "/data") if "data_dir" in cfg else "/data"
     P = f"[{patcher_id}]"
     storage_dir = await detect_patch_storage_dir(d, device_ip, bridge=bridge)
@@ -453,8 +454,8 @@ async def _patcher_remove(d: Device, patcher_id: str, device_ip: str, download_b
     wrapper itself is removed and the device boots stock again.
     """
     did = d.petkit_id
-    reg = app["registry"]
-    bridge = app.get("bridge")  # see _patcher_apply
+    reg = app[REGISTRY]
+    bridge = app.get(BRIDGE)  # see _patcher_apply
     P = f"[{patcher_id}]"
     await detect_patch_storage_dir(d, device_ip, bridge=bridge)
     reg.save()

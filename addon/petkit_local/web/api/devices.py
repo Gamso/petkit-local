@@ -34,7 +34,9 @@ from petkit_local.utils.dicts import dig_path
 from petkit_local.web.api._common import (
     _deliver, _device_log_reason, _device_or_404, _json_body,
 )
-from petkit_local.web.appkeys import HA_PUBLISHER, HUB
+from petkit_local.web.appkeys import (
+    BLE_REGISTRY, BRIDGE, GO2RTC, HA_PUBLISHER, HUB, MQTT_BROKER, REGISTRY,
+)
 
 log = logging.getLogger(__name__)
 
@@ -148,10 +150,10 @@ def _device_summary(d: Device, ble_registry: BLERegistry | None, hub: EventHub,
 
 async def api_devices(request: web.Request) -> web.Response:
     """A bare JSON array of `_device_summary` objects — no envelope object."""
-    reg = request.app["registry"]
-    ble = request.app["ble_registry"]
-    hub = request.app["hub"]
-    return web.json_response([_device_summary(d, ble, hub, request.app.get("mqtt_broker")) for d in reg.all()])
+    reg = request.app[REGISTRY]
+    ble = request.app[BLE_REGISTRY]
+    hub = request.app[HUB]
+    return web.json_response([_device_summary(d, ble, hub, request.app.get(MQTT_BROKER)) for d in reg.all()])
 
 
 # --- device detail: the four sidecar views ---------------------------------
@@ -227,13 +229,13 @@ async def api_device_detail(request: web.Request) -> web.Response:
     of button entities that map to a real command, flagged `destructive` when
     the UI should confirm first.
     """
-    ble = request.app["ble_registry"]
-    hub = request.app["hub"]
+    ble = request.app[BLE_REGISTRY]
+    hub = request.app[HUB]
     d = _device_or_404(request)
 
     entities = get_entities_for_device(d)
     doc = _state_doc(d)
-    detail = _device_summary(d, ble, hub, request.app.get("mqtt_broker"))
+    detail = _device_summary(d, ble, hub, request.app.get(MQTT_BROKER))
     detail.update({
         "state": d.state,
         "settings": d.config.get("settings", {}),
@@ -244,7 +246,7 @@ async def api_device_detail(request: web.Request) -> web.Response:
         # change to the firmware, and once that is done the address belongs
         # with everything else about the device. Empty until a probe has
         # confirmed the device is really serving (`media/go2rtc.py`).
-        "streams": stream_urls_with_rtsp(d, request.app.get("go2rtc")),
+        "streams": stream_urls_with_rtsp(d, request.app.get(GO2RTC)),
         # Every schedule this model has, with the value it is REALLY running:
         # `multi_config_ranges` resolves a stored one against the fallback the
         # device would otherwise be served, so the panel's editor and
@@ -297,9 +299,9 @@ async def api_send_command(request: web.Request) -> web.Response:
     to the heartbeat queue rather than erroring, because the device picks the
     command up on its next poll either way.
     """
-    reg = request.app["registry"]
-    hub = request.app["hub"]
-    bridge = request.app["bridge"]
+    reg = request.app[REGISTRY]
+    hub = request.app[HUB]
+    bridge = request.app[BRIDGE]
     d = _device_or_404(request)
 
     body = await _json_body(request)
@@ -400,7 +402,7 @@ async def api_timezone(request: web.Request) -> web.Response:
     as `5.8`. Delivery is immediate but the echo waits for an irregular
     `property/post`, so "sent" is not "visible".
     """
-    reg = request.app["registry"]
+    reg = request.app[REGISTRY]
     d = _device_or_404(request)
 
     if request.method == "GET":
@@ -431,7 +433,7 @@ async def api_timezone(request: web.Request) -> web.Response:
     # reported at signup (UTC for a box given only a locale) and fired its
     # scheduled meals two hours late. `push_timezone` does both, and is shared
     # with the DST loop (`ha/timezone_sync.py`) so the two cannot drift apart.
-    delivered = await push_timezone(d, request.app.get("bridge"), request.app["hub"])
+    delivered = await push_timezone(d, request.app.get(BRIDGE), request.app[HUB])
     reg.save()
 
     return web.json_response({"ok": True, "delivered": delivered, **_timezone_view(d)})
@@ -447,7 +449,7 @@ async def api_capabilities(request: web.Request) -> web.Response:
     it recognises and republishes HA state, since the capability switches are
     entities there too.
     """
-    reg = request.app["registry"]
+    reg = request.app[REGISTRY]
     d = _device_or_404(request)
 
     if request.method == "GET":
@@ -461,7 +463,7 @@ async def api_capabilities(request: web.Request) -> web.Response:
             caps[ct] = bool(body[ct])
     reg.save()
 
-    ha_publisher = request.app.get("ha_publisher")
+    ha_publisher = request.app.get(HA_PUBLISHER)
     if ha_publisher is not None:
         await ha_publisher.publish_state(d)
 
@@ -477,7 +479,7 @@ async def api_ai_settings(request: web.Request) -> web.Response:
     is stored for every device, including those that cannot do recognition, so
     the value survives if a device is later replaced by one that can.
     """
-    reg = request.app["registry"]
+    reg = request.app[REGISTRY]
     d = _device_or_404(request)
 
     if request.method == "GET":
@@ -500,7 +502,7 @@ async def api_device_log_settings(request: web.Request) -> web.Response:
     upload itself so switching it off takes effect before the device's token
     would have expired.
     """
-    reg = request.app["registry"]
+    reg = request.app[REGISTRY]
     d = _device_or_404(request)
 
     if request.method == "POST":
@@ -514,7 +516,7 @@ async def api_device_log_settings(request: web.Request) -> web.Response:
 
 async def api_device_delete(request: web.Request) -> web.Response:
     """Remove a device from the registry and clean up its HA entities."""
-    reg = request.app["registry"]
+    reg = request.app[REGISTRY]
     d = _device_or_404(request)
     did = d.petkit_id
 
@@ -522,7 +524,7 @@ async def api_device_delete(request: web.Request) -> web.Response:
     if publisher:
         await publisher.unpublish_discovery(d)
 
-    ble = request.app.get("ble_registry")
+    ble = request.app.get(BLE_REGISTRY)
     orphaned = []
     if ble:
         for acc in ble.get_linked(did):

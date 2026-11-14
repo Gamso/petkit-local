@@ -11,11 +11,12 @@ real lookup and asking the system one would answer for a different view.
 import pytest
 
 from petkit_local.http.cloud_fetch import CloudRefused
+from petkit_local.web import appkeys as panel_keys
 from petkit_local.web.api import firmware
 
 
 def _app(api_url="http://192.168.2.75/6/"):
-    return {"cfg": {"api_url": api_url}}
+    return {panel_keys.CFG: {"api_url": api_url}}
 
 
 def _resolver(mapping):

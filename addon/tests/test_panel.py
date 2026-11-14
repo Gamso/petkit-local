@@ -18,6 +18,7 @@ from petkit_local.devices.registry import DeviceRegistry
 from petkit_local.devices.ble import BLERegistry
 from petkit_local.ha.categories import get_entities_for_device
 from petkit_local.ha.commands import ALL_ACTIONS
+from petkit_local.web import appkeys as panel_keys
 from petkit_local.web.hub import EventHub
 from petkit_local.web.api.settings import LIVE_SETTINGS
 from petkit_local.web.panel import create_panel_app
@@ -1120,7 +1121,7 @@ async def test_the_stream_addresses_live_on_the_device_not_on_the_patcher():
         def stream_url_for(self, device):
             return "rtsp://addon-host:8554/1"
 
-    app["go2rtc"] = _Sidecar()
+    app[panel_keys.GO2RTC] = _Sidecar()
     c = await _mk_client(app)
     try:
         detail = await (await c.get("/api/devices/1")).json()
@@ -1525,7 +1526,7 @@ async def test_the_ha_indicator_reports_ha_not_the_device_bridge():
 
     # Configured but not connected must NOT read the same as connected.
     app, _, _ = _panel(reg=reg)
-    app["ha_publisher"] = FakePublisher(False)
+    app[panel_keys.HA_PUBLISHER] = FakePublisher(False)
     c = await _mk_client(app)
     try:
         info = await (await c.get("/api/info")).json()
@@ -1534,7 +1535,7 @@ async def test_the_ha_indicator_reports_ha_not_the_device_bridge():
         await c.close()
 
     app, _, _ = _panel(reg=reg)
-    app["ha_publisher"] = FakePublisher(True)
+    app[panel_keys.HA_PUBLISHER] = FakePublisher(True)
     c = await _mk_client(app)
     try:
         assert (await (await c.get("/api/info")).json())["ha_publishing"] is True
@@ -1596,7 +1597,7 @@ def _paired_ctw3_app():
         {"device": {"mac": "aabbccddeeff"},
          "payload": [{"cmd": 230, "data": CTW3_CMD230}]})
     dev.last_seen = 1785625866
-    app["ble_registry"] = ble
+    app[panel_keys.BLE_REGISTRY] = ble
     return app, reg, ble
 
 
@@ -1640,7 +1641,7 @@ async def test_the_panel_can_set_an_accessory_control():
             return True
 
     bridge = _Bridge()
-    app["bridge"] = bridge
+    app[panel_keys.BRIDGE] = bridge
     c = await _mk_client(app)
     try:
         r = await c.post("/api/ble/700/command",
@@ -1673,7 +1674,7 @@ async def test_the_panel_can_press_an_accessory_button():
             self.sent.append((cmd, payload))
             return True
 
-    app["bridge"] = _Bridge()
+    app[panel_keys.BRIDGE] = _Bridge()
     c = await _mk_client(app)
     try:
         r = await c.post("/api/ble/700/command", json={"entity": "ctw3_reset_filter"})
@@ -1689,7 +1690,7 @@ async def test_an_accessory_write_says_why_it_cannot_be_delivered():
     nothing to queue into, so silence would be a lie."""
     app, reg, ble = _paired_ctw3_app()
     reg.get(10).mqtt_connected = False
-    app["bridge"] = type("B", (), {"_client": object()})()
+    app[panel_keys.BRIDGE] = type("B", (), {"_client": object()})()
     c = await _mk_client(app)
     try:
         r = await c.post("/api/ble/700/command",
@@ -1708,8 +1709,8 @@ async def test_an_accessory_write_is_refused_before_the_first_reading():
     parent.online = parent.mqtt_connected = True
     ble = BLERegistry()
     ble.register(ble_type="ctw3", petkit_id=700, mac="AABBCCDDEEFF", link_with=10)
-    app["ble_registry"] = ble
-    app["bridge"] = type("B", (), {"_client": object()})()
+    app[panel_keys.BLE_REGISTRY] = ble
+    app[panel_keys.BRIDGE] = type("B", (), {"_client": object()})()
     c = await _mk_client(app)
     try:
         r = await c.post("/api/ble/700/command",
@@ -1758,7 +1759,7 @@ async def test_the_panel_can_ask_for_a_reading_now():
             _Bridge.asked = (parent.petkit_id, dev.petkit_id)
             return True
 
-    app["bridge"] = _Bridge()
+    app[panel_keys.BRIDGE] = _Bridge()
     c = await _mk_client(app)
     try:
         r = await c.post("/api/ble/700/poll")

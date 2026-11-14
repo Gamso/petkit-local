@@ -9,6 +9,7 @@ from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer, make_mocked_request
 
 from petkit_local.devices.registry import DeviceRegistry
+from petkit_local.http import appkeys as device_keys
 from petkit_local.http.handlers._common import (
     device_id, device_serial, no_device_response, request_device,
 )
@@ -29,7 +30,7 @@ async def _probe(request: web.Request) -> web.Response:
 async def _client(registry: DeviceRegistry | None) -> TestClient:
     app = web.Application(middlewares=[device_middleware])
     if registry is not None:
-        app["registry"] = registry
+        app[device_keys.REGISTRY] = registry
     app.router.add_get(PROBE_PATH, _probe)
     client = TestClient(TestServer(app))
     await client.start_server()
@@ -57,9 +58,9 @@ def _mocked(x_device=None, query="", form=None) -> web.Request:
     carry (e.g. a 5000-digit id would exceed aiohttp's header size limit)."""
     request = make_mocked_request("GET", PROBE_PATH + query)
     if x_device is not None:
-        request["x_device"] = x_device
+        request[device_keys.X_DEVICE] = x_device
     if form is not None:
-        request["form"] = form
+        request[device_keys.FORM] = form
     return request
 
 

@@ -21,6 +21,7 @@ from aiohttp.test_utils import TestClient, TestServer
 
 from petkit_local.ai.pets import MAX_CLOUD_FACES, PetRegistry, cloud_pets
 from petkit_local.devices.registry import DeviceRegistry
+from petkit_local.web import appkeys as panel_keys
 from petkit_local.web.hub import EventHub
 from petkit_local.web.panel import create_panel_app
 
@@ -101,8 +102,8 @@ async def _panel(pet_registry, store, upstream=""):
     cfg = {"api_url": "http://x/6/", "capture": False, "capture_dir": "/nope"}
     app = create_panel_app(reg, None, EventHub(), cfg, store,
                            live_config={"proxy_upstream": upstream})
-    app["pet_registry"] = pet_registry
-    app["event_store"] = store
+    app[panel_keys.PET_REGISTRY] = pet_registry
+    app[panel_keys.EVENT_STORE] = store
     client = TestClient(TestServer(app))
     await client.start_server()
     return client

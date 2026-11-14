@@ -18,6 +18,7 @@ from aiohttp.test_utils import TestClient, TestServer
 
 from petkit_local.devices.registry import DeviceRegistry
 from petkit_local.events.store import EventStore
+from petkit_local.http import appkeys as device_keys
 from petkit_local.http.proxy import close_proxy_session
 from petkit_local.http.server import create_app
 from petkit_local.web.hub import EventHub
@@ -52,12 +53,16 @@ async def _cloud(handler):
     return client, str(client.make_url("")).rstrip("/")
 
 
-async def _device_app(config, *, registry=None, store=None, hub=None):
+async def _device_app(config, *, registry=None, store=None, hub=None, creds=None):
     registry = registry if registry is not None else DeviceRegistry()
     app = create_app(registry, config)
-    app["event_hub"] = hub if hub is not None else EventHub()
+    app[device_keys.EVENT_HUB] = hub if hub is not None else EventHub()
     if store is not None:
-        app["event_store"] = store
+        app[device_keys.EVENT_STORE] = store
+    # Before the server starts, as `main/wiring.py` does: a started app is
+    # frozen, and changing it is a DeprecationWarning (an error in aiohttp 4).
+    if creds is not None:
+        app[device_keys.PROXY_UPSTREAM_CREDS] = creds
     client = TestClient(TestServer(app))
     await client.start_server()
     return client, registry
@@ -105,7 +110,7 @@ async def test_proxy_on_delivers_the_cloud_reply():
     client, _ = await _device_app(_config(proxy_upstream=base))
     try:
         await _register(client)
-        client.app["config"]["proxy_mode"] = True
+        client.app[device_keys.CONFIG]["proxy_mode"] = True
 
         r = await client.post("/6/t5/dev_device_info", headers=HDR)
         body = await r.json()
@@ -132,7 +137,7 @@ async def test_the_device_is_never_handed_back_to_petkit():
     client, _ = await _device_app(_config(proxy_upstream=base))
     try:
         await _register(client)
-        client.app["config"]["proxy_mode"] = True
+        client.app[device_keys.CONFIG]["proxy_mode"] = True
 
         r = await client.post("/6/t5/dev_serverinfo", headers=HDR)
         result = (await r.json())["result"]
@@ -161,7 +166,7 @@ async def test_mqtt_credentials_are_never_handed_back_either():
     client, registry = await _device_app(_config(proxy_upstream=base))
     try:
         await _register(client)
-        client.app["config"]["proxy_mode"] = True
+        client.app[device_keys.CONFIG]["proxy_mode"] = True
         device = registry.get(100)
 
         r = await client.post("/6/t5/dev_only_iot_device_info", headers=HDR)
@@ -187,14 +192,14 @@ async def test_media_stays_local_unless_the_toggle_says_otherwise():
     client, _ = await _device_app(_config(proxy_upstream=base))
     try:
         await _register(client)
-        client.app["config"]["proxy_mode"] = True
+        client.app[device_keys.CONFIG]["proxy_mode"] = True
 
         r = await client.post("/6/t5/dev_oss_sts_info_new_v2", headers=HDR)
         entries = (await r.json())["result"]["capability"]
         assert all("192.0.2.199:9000" in e["primaryParUrl"] for e in entries)
 
         # Flipped on, the device is sent to PetKit's OSS untouched.
-        client.app["config"]["proxy_media_real_oss"] = True
+        client.app[device_keys.CONFIG]["proxy_media_real_oss"] = True
         r = await client.post("/6/t5/dev_oss_sts_info_new_v2", headers=HDR)
         entries = (await r.json())["result"]["capability"]
         assert entries[0]["primaryParUrl"] == "https://petkit-oss.aliyuncs.com/"
@@ -212,7 +217,7 @@ async def test_unreachable_upstream_falls_back_to_the_local_answer():
     client, _ = await _device_app(_config(proxy_upstream="http://127.0.0.1:1"))
     try:
         await _register(client)
-        client.app["config"]["proxy_mode"] = True
+        client.app[device_keys.CONFIG]["proxy_mode"] = True
 
         r = await client.post("/6/t5/dev_serverinfo", headers=HDR)
         assert r.status == 200
@@ -271,7 +276,7 @@ async def _heartbeat_client(cloud_result, *, queued=None):
     up, base = await _cloud(cloud)
     client, registry = await _device_app(_config(proxy_upstream=base))
     await _register(client)
-    client.app["config"]["proxy_mode"] = True
+    client.app[device_keys.CONFIG]["proxy_mode"] = True
     if queued:
         for cmd in queued:
             registry.get(100).command_queue.append(cmd)
@@ -294,7 +299,7 @@ async def test_a_heartbeat_carrying_a_command_is_not_forwarded_at_all():
     client, registry = await _device_app(_config(proxy_upstream=base))
     try:
         await _register(client)
-        client.app["config"]["proxy_mode"] = True
+        client.app[device_keys.CONFIG]["proxy_mode"] = True
         registry.get(100).command_queue.append(
             json.dumps({"msgType": 0, "user_cmd": {"reboot": 1}}))
 
@@ -332,7 +337,7 @@ async def test_heartbeat_command_survives_an_unreachable_upstream():
     client, registry = await _device_app(_config(proxy_upstream="http://127.0.0.1:1"))
     try:
         await _register(client)
-        client.app["config"]["proxy_mode"] = True
+        client.app[device_keys.CONFIG]["proxy_mode"] = True
         registry.get(100).command_queue.append(json.dumps({"user_cmd": {"reboot": 1}}))
 
         r = await client.get("/6/poll/t5/heartbeat", headers=HDR)
@@ -351,7 +356,7 @@ async def test_heartbeat_command_survives_a_garbage_upstream_reply():
     client, registry = await _device_app(_config(proxy_upstream=base))
     try:
         await _register(client)
-        client.app["config"]["proxy_mode"] = True
+        client.app[device_keys.CONFIG]["proxy_mode"] = True
         registry.get(100).command_queue.append(json.dumps({"user_cmd": {"reboot": 1}}))
 
         r = await client.get("/6/poll/t5/heartbeat", headers=HDR)
@@ -371,7 +376,7 @@ async def test_heartbeat_command_survives_an_upstream_error_status():
     client, registry = await _device_app(_config(proxy_upstream=base))
     try:
         await _register(client)
-        client.app["config"]["proxy_mode"] = True
+        client.app[device_keys.CONFIG]["proxy_mode"] = True
         registry.get(100).command_queue.append(json.dumps({"user_cmd": {"reboot": 1}}))
 
         r = await client.get("/6/poll/t5/heartbeat", headers=HDR)
@@ -423,7 +428,7 @@ async def test_local_handler_side_effects_survive_being_overridden(event_store: 
     client, _ = await _device_app(_config(proxy_upstream=base), store=event_store)
     try:
         await _register(client)
-        client.app["config"]["proxy_mode"] = True
+        client.app[device_keys.CONFIG]["proxy_mode"] = True
 
         r = await client.post("/6/t5/dev_event_report", headers=HDR,
                               data="eventType=10&eventId=abc123&timestamp=1700000000")
@@ -454,7 +459,7 @@ async def test_a_blocked_attempt_is_persisted_but_a_rewrite_is_not(event_store: 
     client, _ = await _device_app(_config(proxy_upstream=base), store=event_store, hub=hub)
     try:
         await _register(client)
-        client.app["config"]["proxy_mode"] = True
+        client.app[device_keys.CONFIG]["proxy_mode"] = True
 
         await client.post("/6/t5/dev_serverinfo", headers=HDR)
         assert await event_store.recent_blocked_attempts() == []
@@ -489,7 +494,7 @@ async def test_recording_failures_do_not_cost_the_device_its_answer():
     client, _ = await _device_app(_config(proxy_upstream=base), store=_BrokenStore())
     try:
         await _register(client)
-        client.app["config"]["proxy_mode"] = True
+        client.app[device_keys.CONFIG]["proxy_mode"] = True
 
         r = await client.post("/6/t5/dev_ota_check", headers=HDR)
         assert r.status == 200
@@ -512,7 +517,7 @@ async def _capture_run(tmp_path, *, capture, proxy):
                                           capture_dir=str(tmp_path)))
     try:
         await _register(client)
-        client.app["config"]["proxy_mode"] = proxy
+        client.app[device_keys.CONFIG]["proxy_mode"] = proxy
         await client.post("/6/t5/dev_serverinfo", headers=HDR)
     finally:
         await close_proxy_session(client.app)
@@ -564,7 +569,7 @@ async def test_a_refusing_upstream_is_recorded_but_not_relayed():
     client, _ = await _device_app(_config(proxy_upstream=base))
     try:
         await _register(client)
-        client.app["config"]["proxy_mode"] = True
+        client.app[device_keys.CONFIG]["proxy_mode"] = True
 
         r = await client.post("/6/t5/dev_serverinfo", headers=HDR)
         assert r.status == 200
@@ -583,7 +588,7 @@ async def test_an_upstream_500_on_the_catchall_still_answers_200():
     client, _ = await _device_app(_config(proxy_upstream=base))
     try:
         await _register(client)
-        client.app["config"]["proxy_mode"] = True
+        client.app[device_keys.CONFIG]["proxy_mode"] = True
 
         r = await client.post("/6/t5/dev_something_new", headers=HDR)
         assert r.status == 200
@@ -608,7 +613,7 @@ async def test_a_body_that_breaks_redaction_still_answers_locally():
     client, _ = await _device_app(_config(proxy_upstream=base))
     try:
         await _register(client)
-        client.app["config"]["proxy_mode"] = True
+        client.app[device_keys.CONFIG]["proxy_mode"] = True
 
         r = await client.post("/6/t5/dev_serverinfo", headers=HDR)
         assert r.status == 200
@@ -633,7 +638,7 @@ async def test_routine_polling_does_not_fill_the_attempts_table(event_store: Eve
     client, _ = await _device_app(_config(proxy_upstream=base), store=event_store, hub=hub)
     try:
         await _register(client)
-        client.app["config"]["proxy_mode"] = True
+        client.app[device_keys.CONFIG]["proxy_mode"] = True
 
         for _ in range(3):
             await client.post("/6/t5/dev_device_info", headers=HDR)
@@ -662,11 +667,10 @@ async def test_a_partial_mqtt_credential_capture_is_discarded():
 
     creds = _Creds()
     up, base = await _cloud(cloud)
-    client, _ = await _device_app(_config(proxy_upstream=base))
-    client.app["proxy_upstream_creds"] = creds
+    client, _ = await _device_app(_config(proxy_upstream=base), creds=creds)
     try:
         await _register(client)
-        client.app["config"]["proxy_mode"] = True
+        client.app[device_keys.CONFIG]["proxy_mode"] = True
 
         await client.post("/6/t5/dev_only_iot_device_info", headers=HDR)
         assert creds.stored == {}
@@ -695,11 +699,10 @@ async def test_credentials_split_across_two_objects_are_merged():
 
     creds = _Creds()
     up, base = await _cloud(cloud)
-    client, _ = await _device_app(_config(proxy_upstream=base))
-    client.app["proxy_upstream_creds"] = creds
+    client, _ = await _device_app(_config(proxy_upstream=base), creds=creds)
     try:
         await _register(client)
-        client.app["config"]["proxy_mode"] = True
+        client.app[device_keys.CONFIG]["proxy_mode"] = True
 
         await client.post("/6/t5/dev_only_iot_device_info", headers=HDR)
         assert creds.stored[100]["mqtt_host"] == "realpk.iot-as-mqtt.example"
@@ -721,7 +724,7 @@ async def test_a_200_carrying_petkits_refusal_is_served_locally():
     client, _ = await _device_app(_config(proxy_upstream=base))
     try:
         await _register(client)
-        client.app["config"]["proxy_mode"] = True
+        client.app[device_keys.CONFIG]["proxy_mode"] = True
 
         # The takeover-critical one.
         r = await client.post("/6/t5/dev_serverinfo", headers=HDR)
@@ -753,7 +756,7 @@ async def test_the_refusal_is_still_recorded_for_the_operator(tmp_path):
                                           capture_dir=str(tmp_path)))
     try:
         await _register(client)
-        client.app["config"]["proxy_mode"] = True
+        client.app[device_keys.CONFIG]["proxy_mode"] = True
         await client.post("/6/t5/dev_device_info", headers=HDR)
 
         rec = json.loads((tmp_path / "proxy_http.jsonl").read_text().splitlines()[-1])
@@ -780,7 +783,7 @@ async def test_a_proxied_call_is_visible_in_the_request_it_belongs_to():
     client, _ = await _device_app(_config(proxy_upstream=base), hub=hub)
     try:
         await _register(client)
-        client.app["config"]["proxy_mode"] = True
+        client.app[device_keys.CONFIG]["proxy_mode"] = True
         await client.get("/6/poll/t5/heartbeat", headers=HDR)
 
         entry = [e for e in hub.recent() if e["kind"] == "http"][-1]
@@ -809,7 +812,7 @@ async def test_upstream_outcomes_are_counted():
     client, _ = await _device_app(_config(proxy_upstream=base), hub=hub)
     try:
         await _register(client)
-        client.app["config"]["proxy_mode"] = True
+        client.app[device_keys.CONFIG]["proxy_mode"] = True
         await client.get("/6/poll/t5/heartbeat", headers=HDR)
         await client.get("/6/poll/t5/heartbeat", headers=HDR)
         await client.post("/6/t5/dev_device_info", headers=HDR)
@@ -846,14 +849,14 @@ async def test_the_real_api_secret_is_adopted_and_then_served_locally():
     client, registry = await _device_app(_config(proxy_upstream=base))
     try:
         await _register(client)
-        client.app["config"]["proxy_mode"] = True
+        client.app[device_keys.CONFIG]["proxy_mode"] = True
 
         r = await client.post("/6/t5/dev_signup", headers=HDR)
         assert (await r.json())["result"]["secret"] == "0123456789abcdef"
         assert registry.get(100).api_secret == "0123456789abcdef"
 
         # Proxy off: our own answer now carries the adopted secret too.
-        client.app["config"]["proxy_mode"] = False
+        client.app[device_keys.CONFIG]["proxy_mode"] = False
         r = await client.post("/6/t5/dev_signup", headers=HDR)
         assert (await r.json())["result"]["secret"] == "0123456789abcdef"
 
@@ -891,7 +894,7 @@ async def test_the_ble_list_is_always_ours():
     client, _ = await _device_app(_config(proxy_upstream=base), hub=hub)
     try:
         await _register(client)
-        client.app["config"]["proxy_mode"] = True
+        client.app[device_keys.CONFIG]["proxy_mode"] = True
 
         r = await client.get("/6/t5/dev_ble_device", headers=HDR)
         body = await r.json()
@@ -929,7 +932,7 @@ async def test_a_reply_with_trailing_garbage_is_served_locally(tail):
     client, _ = await _device_app(_config(proxy_upstream=base), hub=hub)
     try:
         await _register(client)
-        client.app["config"]["proxy_mode"] = True
+        client.app[device_keys.CONFIG]["proxy_mode"] = True
 
         r = await client.post("/6/t5/dev_device_info", headers=HDR)
         raw = await r.read()
@@ -959,7 +962,7 @@ async def test_an_empty_upstream_reply_is_still_relayed():
     client, _ = await _device_app(_config(proxy_upstream=base))
     try:
         await _register(client)
-        client.app["config"]["proxy_mode"] = True
+        client.app[device_keys.CONFIG]["proxy_mode"] = True
 
         r = await client.post("/6/t5/dev_device_info", headers=HDR)
         assert r.status == 200
