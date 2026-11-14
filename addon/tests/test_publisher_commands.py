@@ -155,6 +155,7 @@ async def test_start_keeps_one_subscription_across_a_bad_command():
     fake_aiomqtt = types.ModuleType("aiomqtt")
     fake_aiomqtt.Client = FakeClient
     fake_aiomqtt.MqttError = type("MqttError", (Exception,), {})
+    fake_aiomqtt.Will = lambda *a, **kw: (a, kw)
 
     real_aiomqtt = sys.modules.get("aiomqtt")
     sys.modules["aiomqtt"] = fake_aiomqtt
