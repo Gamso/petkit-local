@@ -23,7 +23,7 @@ info:
     Writes go to the device the way Home Assistant's do: published at once when it
     holds an MQTT session, otherwise queued for its next HTTP poll. Each answers
     `delivered`: `mqtt`, `queued`, or `local` when only petkit-local's own state
-    changed. A device confirms a write in its next report.
+    changed. A device confirms a write in its next report, which `/ws` relays.
 
     Adding a field to a response is a compatible change; removing or renaming one
     is not and requires `/app/v2`.
@@ -40,6 +40,7 @@ tags:
   - name: pets
   - name: controls
   - name: feeding
+  - name: live
 
 paths:
   /info:
@@ -541,6 +542,51 @@ paths:
         "404": { $ref: "#/components/responses/NotFound" }
         "503": { $ref: "#/components/responses/Unavailable" }
 
+  /ws:
+    get:
+      tags: [live]
+      operationId: openLiveUpdates
+      summary: Live updates over a WebSocket.
+      description: |
+        Upgrade with `Authorization: Bearer <token>` on the request (a native client
+        can send headers on the upgrade). Every frame the server sends is one JSON
+        text message, a `LiveMessage` told apart by `type`:
+
+        * `hello` — first, once: every device as `DeviceDetail`. Start from it rather
+          than from an earlier `GET`, so nothing falls between the two.
+        * `state` — a device's entities whose value changed, and only those. A device
+          is looked at at most once a second, so a burst of reports is one message.
+        * `device` — a device's summary when anything other than `last_seen` changed
+          (online or offline, transport, firmware), or when a new device appears
+          (fetch `/devices/{id}` for its entities).
+        * `device_removed`.
+        * `timeline` — a timeline card that is new or changed (its photos or video
+          arrived, a cleaning attached). Replace any card with the same `id`, and
+          drop those listed in `replaces`: an episode still in progress is keyed on
+          its newest report until the one that closes it arrives. For history,
+          open the socket first, then `GET /timeline`, and merge by `id`.
+
+        The server pings every 25 s at the protocol level. The app may send
+        `{"type": "ping"}` for an application-level `{"type": "pong"}`; anything else
+        it sends is ignored.
+
+        Close codes: `1001` server shutting down; `4001` the session ended (logout,
+        revoked in the panel, password changed or removed) — sign in again; `4008`
+        the app read too slowly and its queue filled — reconnect, which starts from a
+        fresh `hello`.
+      responses:
+        "101":
+          description: Switching to the WebSocket protocol; each message is a `LiveMessage`.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/LiveMessage" }
+        "400":
+          description: Not a WebSocket upgrade request.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
 components:
   securitySchemes:
     bearer:
@@ -783,6 +829,16 @@ components:
         ok: { type: boolean, const: true }
         delivered: { $ref: "#/components/schemas/Delivered" }
         entity: { $ref: "#/components/schemas/Entity" }
+
+    EntityChange:
+      type: object
+      description: The changing part of an `Entity`, as a live `state` message carries it.
+      required: [key, value, display]
+      properties:
+        key: { type: string }
+        value:
+          description: As `Entity.value`.
+        display: { type: [string, "null"] }
 
     Entity:
       type: object
@@ -1072,3 +1128,76 @@ components:
               type: array
               description: Up to 20 visits from the last 7 days, newest first.
               items: { $ref: "#/components/schemas/TimelineItem" }
+
+    LiveMessage:
+      description: One WebSocket message from `/ws`, told apart by `type`.
+      oneOf:
+        - { $ref: "#/components/schemas/LiveHello" }
+        - { $ref: "#/components/schemas/LiveState" }
+        - { $ref: "#/components/schemas/LiveDevice" }
+        - { $ref: "#/components/schemas/LiveDeviceRemoved" }
+        - { $ref: "#/components/schemas/LiveTimeline" }
+        - { $ref: "#/components/schemas/LivePong" }
+      discriminator:
+        propertyName: type
+        mapping:
+          hello: "#/components/schemas/LiveHello"
+          state: "#/components/schemas/LiveState"
+          device: "#/components/schemas/LiveDevice"
+          device_removed: "#/components/schemas/LiveDeviceRemoved"
+          timeline: "#/components/schemas/LiveTimeline"
+          pong: "#/components/schemas/LivePong"
+
+    LiveHello:
+      type: object
+      required: [type, server_time, heartbeat_sec, devices]
+      properties:
+        type: { type: string, const: hello }
+        server_time: { type: number }
+        heartbeat_sec: { type: number, description: The protocol ping interval. }
+        devices:
+          type: array
+          items: { $ref: "#/components/schemas/DeviceDetail" }
+
+    LiveState:
+      type: object
+      required: [type, device_id, ts, entities]
+      properties:
+        type: { type: string, const: state }
+        device_id: { type: integer }
+        ts: { type: number }
+        entities:
+          type: array
+          description: Only the entities whose value changed.
+          items: { $ref: "#/components/schemas/EntityChange" }
+
+    LiveDevice:
+      type: object
+      required: [type, device]
+      properties:
+        type: { type: string, const: device }
+        device: { $ref: "#/components/schemas/DeviceSummary" }
+
+    LiveDeviceRemoved:
+      type: object
+      required: [type, device_id]
+      properties:
+        type: { type: string, const: device_removed }
+        device_id: { type: integer }
+
+    LiveTimeline:
+      type: object
+      required: [type, item, replaces]
+      properties:
+        type: { type: string, const: timeline }
+        item: { $ref: "#/components/schemas/TimelineItem" }
+        replaces:
+          type: array
+          description: Ids of cards sent earlier that this one now stands for; drop them.
+          items: { type: integer }
+
+    LivePong:
+      type: object
+      required: [type]
+      properties:
+        type: { type: string, const: pong }

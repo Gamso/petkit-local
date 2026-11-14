@@ -355,6 +355,16 @@ class AppAuth:
                 await self._save()
         return session
 
+    def is_live(self, session: AppSession) -> bool:
+        """Whether `session` still stands — without sliding its expiry.
+
+        What an open WebSocket asks every second or so: it authenticated once,
+        on the upgrade, and must stop the moment the session is signed out,
+        revoked, dropped by a password change, or the password is removed.
+        """
+        current = self._sessions.get(session.token_hash) if self.password_set else None
+        return current is session and current.expires > self._clock()
+
     async def revoke(self, session_id: str) -> bool:
         """Revoke one session by its public id; False if there is none."""
         async with self._lock:

@@ -22,7 +22,9 @@ key                     what it holds                                set by
 `HA_PUBLISHER`          `HAPublisher`, told of each write so Home    create_app_api
                         Assistant shows it at once; or None
 `HUB`                   the panel's `EventHub`, typed `Any` here     create_app_api
-                        (`web` is off limits): writes narrate into it
+                        (`web` is off limits): writes narrate into
+                        it and the WebSocket feed reads from it
+`LIVE`                  `LiveFeed`, the WebSocket fan-out            create_app_api
 ======================  ===========================================  ==========
 
 `SESSION` is set on each request by the auth middleware once a bearer token
@@ -37,6 +39,7 @@ from aiohttp import web
 if TYPE_CHECKING:
     from petkit_local.ai.pets import PetRegistry
     from petkit_local.app_api.auth import AppAuth, AppSession
+    from petkit_local.app_api.live import LiveFeed
     from petkit_local.app_api.throttle import LoginThrottle
     from petkit_local.devices.registry import DeviceRegistry
     from petkit_local.events.store import EventStore
@@ -53,6 +56,7 @@ DATA_DIR: web.AppKey[str] = web.AppKey("app_data_dir")
 COMMAND_SINK: web.AppKey[MQTTBridge | None] = web.AppKey("app_command_sink")
 HA_PUBLISHER: web.AppKey[HAPublisher | None] = web.AppKey("app_ha_publisher")
 HUB: web.AppKey[Any] = web.AppKey("app_hub")
+LIVE: web.AppKey[LiveFeed] = web.AppKey("app_live")
 
 #: The session the bearer token belongs to.
 SESSION: web.RequestKey[AppSession] = web.RequestKey("app_session")

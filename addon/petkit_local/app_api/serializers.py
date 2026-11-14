@@ -149,6 +149,11 @@ def entity_value(entity: EntityDef, doc: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def entity_change(value: dict[str, Any]) -> dict[str, Any]:
+    """The part of an `entity_value` that changes: what a live update carries."""
+    return {"key": value["key"], "value": value["value"], "display": value["display"]}
+
+
 def device_action(entity: EntityDef) -> dict[str, Any]:
     """One button the app may press. `destructive` ones need `{"confirm": true}`."""
     return {"key": entity.key, "name": entity.name,

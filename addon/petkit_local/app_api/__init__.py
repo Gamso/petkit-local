@@ -11,8 +11,9 @@ authenticate), every request here is authenticated by petkit-local itself.
                     trusted proxies, persisted to `{data_dir}/app_api.json`
     throttle.py     failed-login lockouts, and which client address a request is charged to
     serializers.py  every JSON shape returned, explicit, so the panel can change freely
+    live.py         the WebSocket feed: one EventHub subscription, diffed, fanned out
     handlers/       one module per area: meta, auth, devices, controls (actions and
-                    settings), feeding (plan, one-off feeds), timeline, media, pets
+                    settings), feeding (plan, one-off feeds), timeline, media, pets, live
     openapi.yaml    the contract the app's client is generated from (tested against ROUTES)
 
 Layering: this package reads the same stores, registries and helpers the panel

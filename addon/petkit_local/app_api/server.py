@@ -10,10 +10,10 @@ reverse proxy be pointed at this one without exposing either of the others —
 `ROUTES` is the table; `openapi.yaml` describes exactly these entries, and a
 test fails the moment the two differ. Writes (phase 2) are ordinary rows:
 every route needs a session unless marked otherwise, so a write is
-authenticated by default. Extension points for the later phases:
+authenticated by default. The WebSocket (phase 3) is one too — the bearer
+check runs on the upgrade request like any other — fed by `live.LiveFeed`.
+Extension points for the later phases:
 
-* phase 3 (WebSocket) — a `GET /app/v1/ws` row; the bearer check runs on the
-  upgrade request like any other, so a socket opens only with a session;
 * phase 4 (ntfy) — no route here: a publisher fed by the `EventHub`, with its
   settings in the panel;
 * phase 5 (live video) — a `GET /app/v1/devices/{id}/live` row proxying that
@@ -27,12 +27,13 @@ from typing import TYPE_CHECKING, Any
 from aiohttp import web
 
 from petkit_local.app_api.appkeys import (
-    AUTH, COMMAND_SINK, DATA_DIR, EVENT_STORE, HA_PUBLISHER, HUB, MEDIA_ROOT,
+    AUTH, COMMAND_SINK, DATA_DIR, EVENT_STORE, HA_PUBLISHER, HUB, LIVE, MEDIA_ROOT,
     PET_REGISTRY, REGISTRY, THROTTLE,
 )
 from petkit_local.app_api.handlers import (
-    auth, controls, devices, feeding, media, meta, pets, timeline,
+    auth, controls, devices, feeding, live, media, meta, pets, timeline,
 )
+from petkit_local.app_api.live import LiveFeed
 from petkit_local.app_api.middleware import app_api_middleware
 from petkit_local.app_api.throttle import LoginThrottle
 
@@ -76,6 +77,7 @@ ROUTES: tuple[tuple[str, str, Handler], ...] = (
     ("GET", "/pets", pets.list_pets),
     ("GET", "/pets/{id}", pets.pet_detail),
     ("GET", "/pets/{id}/photo", pets.pet_photo),
+    ("GET", "/ws", live.live),
 )
 
 
@@ -92,7 +94,8 @@ def create_app_api(app_auth: AppAuth, registry: DeviceRegistry, *,
     Everything after `registry` is optional so a test can build one without
     the full stack; a handler whose collaborator is missing answers 503.
     Without a `command_sink` every write is queued for the device's heartbeat;
-    without a `hub` (the panel's `EventHub`) nothing is narrated.
+    without a `hub` (the panel's `EventHub`) the WebSocket still works, on its
+    periodic sweep alone.
     """
     app = web.Application(client_max_size=MAX_BODY, middlewares=[app_api_middleware])
     app[AUTH] = app_auth
@@ -105,8 +108,20 @@ def create_app_api(app_auth: AppAuth, registry: DeviceRegistry, *,
     app[COMMAND_SINK] = command_sink
     app[HA_PUBLISHER] = ha_publisher
     app[HUB] = hub
+    app[LIVE] = LiveFeed(app_auth, registry, hub, event_store=event_store,
+                         pet_registry=pet_registry, media_root=media_root)
+    app.on_shutdown.append(_close_live_sockets)
     for method, path, handler in ROUTES:
         # `add_get` would also register HEAD; the OpenAPI file lists GET only.
         app.router.add_route(method, PREFIX + path, handler)
     return app
 
+
+async def _close_live_sockets(app: web.Application) -> None:
+    """Close every WebSocket (1001) BEFORE the runner's bounded drain starts.
+
+    An open socket is a request that never finishes on its own, so left to the
+    drain it would hold shutdown for the whole `shutdown_timeout` and then be
+    cut without a close frame.
+    """
+    await app[LIVE].shutdown()
