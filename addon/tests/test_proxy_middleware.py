@@ -53,12 +53,16 @@ async def _cloud(handler):
     return client, str(client.make_url("")).rstrip("/")
 
 
-async def _device_app(config, *, registry=None, store=None, hub=None):
+async def _device_app(config, *, registry=None, store=None, hub=None, creds=None):
     registry = registry if registry is not None else DeviceRegistry()
     app = create_app(registry, config)
     app[device_keys.EVENT_HUB] = hub if hub is not None else EventHub()
     if store is not None:
         app[device_keys.EVENT_STORE] = store
+    # Before the server starts, as `main/wiring.py` does: a started app is
+    # frozen, and changing it is a DeprecationWarning (an error in aiohttp 4).
+    if creds is not None:
+        app[device_keys.PROXY_UPSTREAM_CREDS] = creds
     client = TestClient(TestServer(app))
     await client.start_server()
     return client, registry
@@ -663,8 +667,7 @@ async def test_a_partial_mqtt_credential_capture_is_discarded():
 
     creds = _Creds()
     up, base = await _cloud(cloud)
-    client, _ = await _device_app(_config(proxy_upstream=base))
-    client.app[device_keys.PROXY_UPSTREAM_CREDS] = creds
+    client, _ = await _device_app(_config(proxy_upstream=base), creds=creds)
     try:
         await _register(client)
         client.app[device_keys.CONFIG]["proxy_mode"] = True
@@ -696,8 +699,7 @@ async def test_credentials_split_across_two_objects_are_merged():
 
     creds = _Creds()
     up, base = await _cloud(cloud)
-    client, _ = await _device_app(_config(proxy_upstream=base))
-    client.app[device_keys.PROXY_UPSTREAM_CREDS] = creds
+    client, _ = await _device_app(_config(proxy_upstream=base), creds=creds)
     try:
         await _register(client)
         client.app[device_keys.CONFIG]["proxy_mode"] = True
