@@ -170,6 +170,23 @@ async def test_frontend_has_no_inline_event_handlers():
         await c.close()
 
 
+async def test_live_traffic_can_be_narrowed_to_one_device():
+    """The picker is bound by delegation, so the template's `data-change` name
+    and the handler `log.js` registers have to be the same string — a mismatch
+    is a select that silently does nothing."""
+    app, reg, hub = _panel()
+    c = await _mk_client(app)
+    try:
+        html = await (await c.get("/")).text()
+        js = _panel_js()
+        assert re.search(r'<select id="logDevice" data-change="log-device">', html)
+        assert "onChange('log-device'" in js
+        # The download saves what is on screen, so it has to apply the same filter.
+        assert "LOG.rows.filter(e => matchesLogDevice(e)" in js
+    finally:
+        await c.close()
+
+
 async def test_devices_tab_is_one_collapsible_panel_per_device():
     """The grid plus a single shared detail pane is gone. That pane is why the
     `<details>` sections inside it collapsed a few seconds after being opened:
