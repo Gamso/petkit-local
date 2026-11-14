@@ -64,6 +64,8 @@ LITTER_T6_BUTTONS = [
               icon="mdi:arrow-right-bold"),
     EntityDef(component="button", key="ptz_flip", name="Flip Camera",
               icon="mdi:camera-flip"),
+    EntityDef(component="button", key="reset_bagbox", name="Reset Bag Counter",
+              icon="mdi:counter"),
 ]
 
 FEEDER_BUTTONS = [

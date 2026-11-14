@@ -259,14 +259,10 @@ class CommandRouter:
                     await self._command_sink.publish_to_device(device, service_suffix, mqtt_payload)
                 except Exception as e:
                     log.warning("MQTT delivery failed for device %d, queuing for heartbeat: %s", device_id, e)
-                    if isinstance(mqtt_payload, dict):
-                        mqtt_payload["_service_suffix"] = service_suffix
-                    device.command_queue.append(mqtt_payload)
+                    device.queue_command(mqtt_payload, service_suffix)
             else:
                 log.info("Device %d not on MQTT, queuing command for HTTP heartbeat", device_id)
-                if isinstance(mqtt_payload, dict):
-                    mqtt_payload["_service_suffix"] = service_suffix
-                device.command_queue.append(mqtt_payload)
+                device.queue_command(mqtt_payload, service_suffix)
 
         # Reflect optimistic state and persist.
         self._registry.mark_dirty()

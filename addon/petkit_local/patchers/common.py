@@ -529,6 +529,18 @@ TALK_SINK_SCRIPT = (
     "#!/bin/sh\n"
     "F=/tmp/pktalk.$$\n"
     "rm -f $F; mknod $F p\n"
+    # The pipe is opened read+write by the shell BEFORE pktool is started, and
+    # `cat` writes through that descriptor. Opening a FIFO O_RDWR never blocks on
+    # Linux, so nothing here waits for media to open its end -- and nothing can
+    # be interrupted while waiting. The plain `cat > $F` that was here blocked
+    # in open() until media arrived as the reader, and on the Axera generation
+    # (YumShare Dual-Hopper 2) pktool exits ~50 ms after sending its message,
+    # before media has opened the pipe: the SIGCHLD cut the open short ("can't
+    # create /tmp/pktalk.N: Interrupted system call", seen with `sh -x`), the
+    # script fell through, and the device closed the talk connection with no
+    # audio ever written. The MIPS models the sink was written on were not
+    # that quick. Closing fd 3 at the end is what hands media its EOF.
+    "exec 3<>$F\n"
     # /app/bin FIRST: that is where `libbase.so` (and pktool's other deps) live on
     # the D4SH — the firmware's own `media` process runs with LD_LIBRARY_PATH=
     # /app/bin:/usr/lib. Without it pktool dies at load ("libbase.so: cannot open
@@ -536,9 +548,21 @@ TALK_SINK_SCRIPT = (
     # opens the FIFO leaves `cat > $F` blocked forever, and `nc -e` has replaced
     # the accept loop, so one connection killed the port. The rest of the path is
     # kept as a fallback for models that place the lib elsewhere (T6).
-    "LD_LIBRARY_PATH=/app/bin:/syslib/lib:/app/lib:/system/lib:/usr/lib:/lib "
-    "/app/bin/pktool play_aac $F &\n"
-    "cat > $F\n"
+    #
+    # /soc/usr/lib, /soc/lib and /alg: the Axera generation (YumShare Dual-Hopper
+    # 2, D4SH3). Its stock init exports exactly
+    # /soc/usr/lib:/soc/lib:/app/bin:/app/lib:/alg, and its pktool links
+    # libssl.so.1.0.0 out of /soc/lib -- with the path above it died at load
+    # ("libssl.so.1.0.0: cannot open shared object file"), seen on fw 895.
+    # Verified there by hand that pktool play_aac on a FIFO plays through media
+    # once it loads; the directories do not exist on the MIPS models, where the
+    # loader just skips them.
+    "LD_LIBRARY_PATH=/app/bin:/soc/usr/lib:/soc/lib:/alg:/syslib/lib:/app/lib:/system/lib:/usr/lib:/lib "
+    # pktool's stdout is the talk socket under `nc -e`; its debug line is not
+    # for the sender.
+    "/app/bin/pktool play_aac $F >/dev/null 2>&1 &\n"
+    "cat >&3\n"
+    "exec 3>&-\n"
     "rm -f $F\n"
 )
 

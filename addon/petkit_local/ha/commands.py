@@ -31,8 +31,7 @@ from petkit_local.events import codes
 from petkit_local.ha.discovery import EntityDef
 from petkit_local.utils.coerce import to_bool, to_float, to_int
 from petkit_local.utils.const import DEVICE_TYPES_FEEDER_DUAL, DEVICE_TYPES_FEEDER_NEXT_GEN
-from petkit_local.http.handlers.feed import _build_latest as _feed_latest
-from petkit_local.http.handlers.feed import _compute_next_tick as _feed_next_tick
+from petkit_local.http.handlers.feed import feed_push
 from petkit_local.utils.timeutil import local_day_start
 
 log = logging.getLogger(__name__)
@@ -79,7 +78,16 @@ SURPLUS_CONTROL_TO_STANDARD = {30: 1, 60: 2, 80: 3}
 #: what PetKit's app sends for its own default manual feed on a Dual-Hopper,
 #: captured through proxy mode in issue #2 as
 #: `{"amount1": 1, "amount2": 1, "id": "r_20260801_72849_72849-1"}`.
-LOCAL_DEFAULTS: dict[str, Any] = {"feedAmount1": 1, "feedAmount2": 1}
+#:
+#: `feedScheduleActive` is the pause on a feeder's recurring meals
+#: (`Device.feed_schedule_active`). It is local for the same reason: the
+#: firmware has no "schedule enabled" field, so parked in settings it would be
+#: served to the device as one.
+LOCAL_DEFAULTS: dict[str, Any] = {"feedAmount1": 1, "feedAmount2": 1,
+                                  "feedScheduleActive": True}
+
+#: The switch that pauses the feeding plan without deleting it.
+FEED_SCHEDULE_SWITCH = "feeding_schedule_active"
 
 
 def _envelope(method: str, params: dict, ms_id: bool = False) -> dict[str, Any]:
@@ -212,6 +220,20 @@ def _ptz(device: Device, kind: str) -> Command:
     return ("user/get", json.dumps({"msgType": 0, "user_cmd": {"run_cmd": cmd}}))
 
 
+def _reset_bagbox(_device: Device) -> Command:
+    """Reset the T6 waste-bag NFC use counter through its native service.
+
+    Verified on both T6 firmware 929 and 951: after this command the device
+    reported ``packageCount`` zero, retained zero across a normal reboot, and
+    incremented it to one after a real pack cycle. The action is deliberately
+    a service of its own, not a ``start_action`` code or settings write.
+    """
+    return (
+        "reset_bagbox",
+        _envelope("thing.service.reset_bagbox", {}, ms_id=True),
+    )
+
+
 def _litter_ctrl(action_key: str, code: int) -> Command:
     """Interrupt a running litter action (pause/resume).
 
@@ -270,11 +292,27 @@ LITTER_ACTIONS = {
     "ptz_left": lambda device: _ptz(device, "left"),
     "ptz_right": lambda device: _ptz(device, "right"),
     "ptz_flip": lambda device: _ptz(device, "flip"),
+    "reset_bagbox": _reset_bagbox,
     # no localkit reference; best-effort control verbs
     "pause": lambda device: _litter_ctrl("stop_action", 0),
     "resume": lambda device: _litter_ctrl("continue_action", 0),
     "reset": lambda device: _litter_end(0),
 }
+
+
+def feed_schedule_command(device: Device) -> Command:
+    """Hand the device the plan it is to run now, over both transports.
+
+    A `feed_get: 1` on the heartbeat queue has a device on HTTP fetch
+    `dev_feed_get` again; the `property.set{feed}` is the same plan for one on
+    the broker. Both read `Device.feed_schedule_active`, so a paused device is
+    told it has no meals whichever way it listens.
+    """
+    device.command_queue.append({"msgType": 1,
+                                 "payload": {"feed_get": "1"},
+                                 "timestamp": int(time.time())})
+    return (PROPERTY_SET_SUFFIX, make_mqtt_property_set(
+        {"feed": json.dumps(feed_push(device), separators=(",", ":"))}))
 
 
 def _feed_id(now: float | None = None) -> str:
@@ -760,23 +798,21 @@ def handle_ha_command(device: Device, entity: EntityDef, payload: str) -> Comman
             # A raw save is current-format by definition — the stamp keeps the
             # one-time minute migration (feed.migrate_minute_schedule) off it.
             parsed["v"] = 2
-            device.command_queue.append({"msgType": 1,
-                                         "payload": {"feed_get": "1"},
-                                         "timestamp": int(time.time())})
-            latest = _feed_latest(parsed, time.time())
-            wire_groups = [{"re": g.get("re", ""), "it": g.get("it", [])}
-                           for g in parsed.get("schedule", [])]
-            wire = {
-                "schedule": wire_groups,
-                "nextTick": _feed_next_tick(latest),
-                "latest": latest,
-            }
-            return (PROPERTY_SET_SUFFIX, make_mqtt_property_set(
-                {"feed": json.dumps(wire, separators=(",", ":"))}))
+            return feed_schedule_command(device)
         if key == "schedule" and isinstance(parsed, (dict, list)):
             return (PROPERTY_SET_SUFFIX, make_mqtt_property_set(
                 {"schedule": json.dumps(parsed, separators=(",", ":"))}))
         return None
+
+    if comp == "switch" and entity.key == FEED_SCHEDULE_SWITCH:
+        # Ahead of the generic `local.` branch below, which stores and sends
+        # nothing: this one is stored the same way but has to reach the device,
+        # as the plan with its meals taken out or put back.
+        active = bool(_coerce_switch(payload))
+        device.config.setdefault("local", {})[entity.setting_field] = active
+        log.info("Feeding schedule %s for device %d",
+                 "resumed" if active else "paused", device.petkit_id)
+        return feed_schedule_command(device)
 
     if comp not in ("switch", "number", "select", "time"):
         return None

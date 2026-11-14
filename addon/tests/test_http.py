@@ -799,6 +799,32 @@ async def test_unknown_endpoint_returns_empty_result():
         await client.close()
 
 
+async def test_a_refill_ring_is_vouched_for_rather_than_answered_empty():
+    """`dev_package_auth` used to reach the catch-all, and its `{}` is what a
+    T6 reads as "refill ring is not usable". The cloud's shape is an install
+    time and a used-cycle count; the ring's `sn`/`secret` are not weighed, and
+    a request without them is answered the same way rather than refused."""
+    reg = DeviceRegistry()
+    client = await _client(reg)
+    try:
+        before = int(time.time())
+        for url in ("/6/t6/dev_package_auth?sn=RING1&secret=abc",
+                    "/6/t6/dev_package_auth"):
+            r = await client.get(url, headers=HDR)
+            assert r.status == 200
+            result = (await r.json())["result"]
+            assert set(result) == {"packageInstallTime", "count"}
+            assert isinstance(result["packageInstallTime"], int)
+            assert before <= result["packageInstallTime"] <= int(time.time())
+            assert result["count"] == 0
+        r = await client.post("/6/t6/dev_package_auth", headers=HDR,
+                              data={"sn": "RING1", "secret": "abc"})
+        assert r.status == 200
+        assert (await r.json())["result"]["count"] == 0
+    finally:
+        await client.close()
+
+
 async def test_malformed_device_id_never_returns_500():
     # One request per handler that used to do `int(x_dev["id"])`. The point is
     # the status code: anything but a 5xx means the coercion degraded instead

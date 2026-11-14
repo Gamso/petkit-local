@@ -20,6 +20,7 @@ import hashlib
 import hmac
 import logging
 import re
+import secrets
 import time
 from typing import TYPE_CHECKING, Any
 
@@ -45,14 +46,34 @@ CLIENT_ID_PATTERN = re.compile(
 )
 
 
+#: The one client that is not a device: `mqtt/bridge.py`, which holds the `#`
+#: subscription and publishes every command. It is recognised by a secret minted
+#: per process and never written anywhere, NOT by the shape of its client id —
+#: a shape is something any host on the LAN can copy, and the client it would
+#: be copying reads every device's `XDevice` credential and can command them all.
+INTERNAL_USERNAME = "petkit-local-bridge"
+_INTERNAL_PASSWORD = secrets.token_hex(32)
+
+
+def internal_credentials() -> tuple[str, str]:
+    """The username and password the add-on's own bridge connects with."""
+    return INTERNAL_USERNAME, _INTERNAL_PASSWORD
+
+
+def _is_internal(username: str, password: str) -> bool:
+    """Whether a CONNECT carries this process's bridge secret."""
+    return username == INTERNAL_USERNAME and hmac.compare_digest(
+        password.encode(), _INTERNAL_PASSWORD.encode())
+
+
 def parse_client_id(client_id: str) -> dict | None:
     """Split an Aliyun client id into its identity and connection parameters.
 
     Returns:
         ``{"product_key": str, "device_name": str, "timestamp": str,
         "params": {k: v}}``, or None when the id doesn't have the Aliyun
-        shape at all — which is how a non-device client (our own bridge)
-        is told apart from a device.
+        shape at all. That is not a device — but it is not thereby our own
+        bridge either; see `internal_credentials`.
     """
     m = CLIENT_ID_PATTERN.match(client_id)
     if not m:
@@ -424,8 +445,10 @@ class AliyunAuthPlugin(BaseAuthPlugin):
     async def authenticate(self, *, session: Session) -> bool:
         """Decide whether one CONNECT may proceed (amqtt's auth hook).
 
-        A client whose id is not in the Aliyun shape at all is our own bridge,
-        and is always allowed: only devices are authenticated here.
+        Our own bridge is admitted on its per-process secret
+        (`internal_credentials`). Any other client whose id is not in the
+        Aliyun shape is a stranger: refused under `set_strict`, and otherwise
+        let in like everything else on a fail-open broker, but reported.
 
         Returns:
             True to accept. A failed check returns False only under
@@ -445,9 +468,23 @@ class AliyunAuthPlugin(BaseAuthPlugin):
         username = session.username or ""
         password = session.password or ""
 
+        if _is_internal(username, password):
+            log.debug("Internal bridge client '%s' - allowing", client_id)
+            return True
+
         parsed = parse_client_id(client_id)
         if not parsed:
-            log.debug("Non-Aliyun client '%s' - allowing (internal)", client_id)
+            # Not a device and not us. It could subscribe `#` and publish
+            # commands exactly as the bridge does, so it is never waved through
+            # as "internal" — strict refuses it, non-strict says it happened.
+            self._record(None, client_id, username, "", False,
+                         refused="not a device" if self._strict else "")
+            if self._strict:
+                log.warning("Non-device MQTT client '%s' (rejected)", client_id)
+                return False
+            log.warning("Non-device MQTT client '%s' (allowed, non-strict) - it can "
+                        "read and command every device; set mqtt_strict_auth to "
+                        "refuse it", client_id)
             return True
 
         pk = parsed["product_key"]
@@ -482,7 +519,8 @@ class AliyunAuthPlugin(BaseAuthPlugin):
         # Compared exactly, a real device fails on every CONNECT — invisible
         # today only because non-strict lets it in anyway, and an instant
         # lockout the moment mqtt_strict_auth is turned on.
-        if password.lower() == expected_sign.lower():
+        # compare_digest so the time taken does not say how much of it matched.
+        if hmac.compare_digest(password.lower().encode(), expected_sign.lower().encode()):
             # keep_alive is logged because it is the whole reaping policy: amqtt
             # uses it verbatim as the read timeout, and 0 means "wait forever",
             # which leaves a rebooted device's socket ESTABLISHED for the life of

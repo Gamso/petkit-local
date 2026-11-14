@@ -298,6 +298,9 @@ async def test_start_keeps_one_subscription_across_a_malformed_frame():
             sys.modules["aiomqtt"] = real_aiomqtt
 
     assert len(connects) == 1, "the malformed frame forced a reconnect"
+    # The broker tells the bridge from a stranger by this, not by its client id.
+    from petkit_local.mqtt.auth import internal_credentials
+    assert (connects[0]["username"], connects[0]["password"]) == internal_credentials()
     assert subscriptions == ["#"], "the malformed frame dropped the subscription"
     assert dev.state["sandPercent"] == 41
 
