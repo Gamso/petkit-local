@@ -93,6 +93,13 @@ class RedactionResult:
     body: bytes
     records: list[Redaction] = field(default_factory=list)
     captured: dict[str, Any] = field(default_factory=dict)
+    #: The body is not empty and did not decode to a JSON object or array, so
+    #: no rule ever looked at it. `body` is then the upstream's bytes verbatim,
+    #: and the CALLER must not hand them to a device: firmware parses with
+    #: cJSON, which stops at the end of the first value and ignores what
+    #: follows, so `{"result": ...run_cmd...}` plus one stray byte is a body
+    #: Python refuses and the device obeys.
+    unreadable: bool = False
 
     @property
     def blocked(self) -> list[Redaction]:
@@ -231,15 +238,17 @@ def redact_body(body: bytes, *, endpoint: str, policy: RedactionPolicy) -> Redac
 
     Returns:
         A `RedactionResult` whose `body` is what the device should receive. A
-        body that is not JSON is returned BYTE-FOR-BYTE — the rules all operate
-        on decoded structures, and re-framing something we cannot read would be
-        a worse risk than the one we are guarding against. A body that IS JSON
-        is re-serialized even when nothing changed, so byte-level formatting can
-        differ from upstream's; only the decoded value is preserved.
+        body that is not JSON is returned BYTE-FOR-BYTE and flagged
+        `unreadable` — the rules all operate on decoded structures, so nothing
+        here vouches for it and the caller serves its own answer instead
+        (`http/proxy.py::Exchange.usable`). An empty body is not flagged: there
+        is nothing in it to withhold. A body that IS JSON is re-serialized even
+        when nothing changed, so byte-level formatting can differ from
+        upstream's; only the decoded value is preserved.
     """
     data = _decode(body)
     if data is None:
-        return RedactionResult(body)
+        return RedactionResult(body, unreadable=bool(body))
 
     result = RedactionResult(body)
 
@@ -305,11 +314,13 @@ def redact_mqtt(payload: bytes, *, topic: str, policy: RedactionPolicy) -> Redac
 
     Same rules as `redact_body` minus the OTA *endpoint* rule, which has no
     meaning here — an upgrade arrives on its own topic and is blocked by the
-    caller before it ever reaches this function (`mqtt/upstream.py`).
+    caller before it ever reaches this function (`mqtt/upstream.py`). A frame
+    that is not JSON comes back flagged `unreadable`, and the caller does not
+    republish it.
     """
     data = _decode(payload)
     if data is None:
-        return RedactionResult(payload)
+        return RedactionResult(payload, unreadable=bool(payload))
 
     result = RedactionResult(payload)
     cleaned = _walk(data, "", policy, result, in_list=False)
@@ -343,8 +354,8 @@ def cloud_error(body: bytes) -> dict | None:
 
     Returns:
         The error object, or None for anything else — including a body that is
-        not JSON, since `redact_body` passes those through untouched and the
-        caller's fallback would be the wrong response to a shape we cannot read.
+        not JSON, which is refused on its own account
+        (`RedactionResult.unreadable`).
     """
     data = _decode(body)
     if not isinstance(data, dict):
@@ -358,9 +369,8 @@ def cloud_error(body: bytes) -> dict | None:
 def _decode(body: bytes) -> Any | None:
     """Decode a body, or None when it is not JSON we can walk.
 
-    None means "hand it back untouched": every rule works on decoded structures,
-    so a body we cannot read is one we cannot reason about, and re-framing it
-    would risk more than it protects.
+    None means no rule can look at it: every rule works on decoded structures.
+    The entry points flag such a body `unreadable` unless it is empty.
     """
     if not body:
         return None
