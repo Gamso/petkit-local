@@ -18,7 +18,7 @@ dependencies = [
     "pyelftools>=0.33",
     # [asyncio] pulls in greenlet, which SQLAlchemy's async engine needs to
     # bridge its synchronous internals — without it every await raises.
-    "SQLAlchemy[asyncio]>=2.0,<3",
+    "SQLAlchemy[asyncio]>=2.1.8,<3",
     "aiosqlite>=0.19",
     "Jinja2>=3.1",
     "aiohttp-jinja2>=1.6",
