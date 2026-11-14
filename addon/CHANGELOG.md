@@ -1,14 +1,5 @@
 # Changelog
 
-## 2.3.1 — 2026-11-14
-
-- **The add-on starts again with the device MQTT TLS listener on.** 2.3.0
-  crashed on every start where `--mqtt-tls` is set, which is every compose and
-  add-on install: the broker's TLS hook called amqtt's `_create_ssl_context`
-  the way amqtt 0.11 defined it, and amqtt 0.12, which the image installs,
-  made it an instance method. The broker now calls it bound, and a test starts
-  the broker with its TLS listener and completes a handshake.
-
 ## 2.3.0 — 2026-11-14
 
 The first release published from this fork's own image, `ghcr.io/gamso/petkit-local`.
