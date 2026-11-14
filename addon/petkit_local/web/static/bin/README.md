@@ -97,3 +97,21 @@ Fallback paths only — the patcher starts dropbear with
 Dropbear's licence requires its copyright notice to accompany binary
 redistributions, which is what `LICENSE.dropbear` is doing here. It is
 unaffected by this project's own GPL-3.0 licence.
+
+## `ptz_left` / `ptz_right` / `ptz_flip`
+
+The T6 (Purobot Ultra) camera-move helpers (`petkit_local/ptz.py`,
+`ha/commands.py::_ptz`). Each is a 464-byte static MIPS32 little-endian ELF that
+opens the firmware's `msg_dispatch_2` message queue, sends one 16-byte internal
+message 4100, prints `K` or `E` and exits. Fetched to `/tmp` on the device, run
+and deleted; nothing is written to persistent storage.
+
+They are not compiler output: `addon/tools/ptz-helper/build_ptz.py` emits them
+byte for byte, and `tests/test_ptz_helpers.py` fails if a committed file is not
+exactly what the generator produces.
+
+| | SHA-256 |
+|---|---|
+| `ptz_left` | `5b24d7c2f3a7c7d25ae8255c9a7840d0fc6643e655d325456ed07714b79fe5c2` |
+| `ptz_right` | `3561534a90f72622613aab9cac925673bb7a31eef710750cd4d777d25f47793d` |
+| `ptz_flip` | `af59c788be0c92b4f3dcadac89689edb3d60484854e5ec2602cccb74d09c47cf` |

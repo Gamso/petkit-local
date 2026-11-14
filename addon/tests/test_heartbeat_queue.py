@@ -10,7 +10,7 @@ import logging
 
 from aiohttp.test_utils import TestClient, TestServer
 
-from petkit_local.devices.base import MAX_QUEUED_COMMANDS, QUEUED_AT_KEY, Device
+from petkit_local.devices.base import MAX_QUEUED_COMMANDS, QUEUED_AT_KEY, Device, Refused
 from petkit_local.devices.registry import DeviceRegistry
 from petkit_local.ha.commands import ALL_ACTIONS, make_mqtt_property_set
 from petkit_local.ha.publisher import HAPublisher
@@ -32,6 +32,15 @@ def _queue_feed(device: Device) -> dict:
     suffix, envelope = ALL_ACTIONS["feed"](device)
     device.queue_command(envelope, suffix)
     return envelope
+
+
+def _built_or_none(build, device: Device):
+    """An action's command, or None for one this device refuses (the T6
+    camera moves refuse every other model before building anything)."""
+    try:
+        return build(device)
+    except Refused:
+        return None
 
 
 def _queue_setting(device: Device, **params) -> dict:
@@ -87,8 +96,9 @@ def test_a_button_that_is_a_settings_write_is_kept_too():
     """`reset_desiccant` and friends are `property/set`: setting a value late
     is setting the same value."""
     device = _feeder()
-    suffix, envelope = next(build(device) for build in ALL_ACTIONS.values()
-                            if build(device)[0] == "property/set")
+    suffix, envelope = next(cmd for cmd in map(_built_or_none, ALL_ACTIONS.values(),
+                                               [device] * len(ALL_ACTIONS))
+                            if cmd and cmd[0] == "property/set")
     device.queue_command(envelope, suffix)
     _age(envelope, 24 * 3600)
     assert still_wanted(device, device.pop_commands()) == [envelope]
