@@ -60,9 +60,12 @@ if TYPE_CHECKING:
 # as the one you are recovering from is exactly backwards.
 #   * `fountain_drain` empties a W7H and leaves its FlowLift module raised
 #     until somebody runs Refill.
+#   * `fountain_deep_clean` started with nobody there to pour boiling water in
+#     aborts and latches a pump fault that refuses every later deep clean until
+#     it is reset by hand.
 DESTRUCTIVE_ACTIONS = {
     "dump_litter", "maintenance_start", "reset_n50", "reset_n60", "reset_desiccant",
-    "fountain_drain", "reset_bagbox",
+    "fountain_drain", "fountain_deep_clean", "reset_bagbox",
     # The 180-degree flip repositions the camera; the small left/right steps do
     # not warrant a confirmation on every press.
     "ptz_flip",

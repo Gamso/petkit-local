@@ -90,7 +90,9 @@ EXPECTED_ENTITY_COUNTS = {
     # d4h -4 on 2026-10-23: Device Status and the D4SH's three IR readings,
     # none of which a D4H reports (upstream issue #36); retired from HA.
     "d4h": 54, "d4sh": 68,
-    "w4": 24, "w5": 24, "ctw2": 24, "ctw3": 24, "w7h": 81,
+    # w7h +5: the deep clean and pump-reset buttons, and the deep-clean
+    # stage, last-run and result sensors.
+    "w4": 24, "w5": 24, "ctw2": 24, "ctw3": 24, "w7h": 86,
     "k2": 12, "k3": 12,
 }
 
