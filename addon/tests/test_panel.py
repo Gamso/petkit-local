@@ -985,7 +985,11 @@ async def test_background_task_exception_is_retrieved():
     panel_log.disabled = True  # the failure is logged; keep the test output clean
     try:
         task = _spawn_background(app, _boom(), name="test-boom")
-        await asyncio.sleep(0.05)
+        # Wait for the task itself, not a fixed 50ms a loaded runner may not
+        # give it. Its done-callback was registered before `wait`'s, so it has
+        # run by the time `wait` returns; the extra turn is belt and braces.
+        await asyncio.wait({task}, timeout=5)
+        await asyncio.sleep(0)
     finally:
         panel_log.disabled = False
     assert task.done() and isinstance(task.exception(), RuntimeError)
