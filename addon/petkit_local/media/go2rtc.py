@@ -84,10 +84,15 @@ API_USERNAME = "petkit"
 #: caller's choosing, i.e. a shell in this container for whoever holds the
 #: password — plus `/api/exit`, the log and every discovery helper. Checked
 #: against go2rtc 1.9.14: with this list those answer 404, without it 200.
+#: The list is enforced on loopback too, so whatever the app API proxies
+#: (`app_api/video.py`) must be on it. `/api/stream.m3u8` is HLS's entry point —
+#: it opens the session the `/api/hls/...` files are then fetched under — and
+#: without it every HLS session 404s once the API is published (checked on
+#: 1.9.14: 404 with the list, 200 without).
 API_PUBLIC_PATHS = (
     "/", "/api", "/api/streams", "/api/ws", "/api/webrtc",
     "/api/frame.jpeg", "/api/frame.mp4", "/api/stream.mp4", "/api/stream.mjpeg",
-    "/api/hls/playlist.m3u8", "/api/hls/init.mp4",
+    "/api/stream.m3u8", "/api/hls/playlist.m3u8", "/api/hls/init.mp4",
     "/api/hls/segment.m4s", "/api/hls/segment.ts",
 )
 WEBRTC_PORT = 8555

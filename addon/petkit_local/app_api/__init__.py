@@ -12,17 +12,19 @@ authenticate), every request here is authenticated by petkit-local itself.
     throttle.py     failed-login lockouts, and which client address a request is charged to
     serializers.py  every JSON shape returned, explicit, so the panel can change freely
     live.py         the WebSocket feed: one EventHub subscription, diffed, fanned out
+    video.py        live video: go2rtc's fMP4 WebSocket and HLS relayed, viewer caps
     handlers/       one module per area: meta, auth, devices, controls (actions and
-                    settings), feeding (plan, one-off feeds), timeline, media, pets, live
+                    settings), feeding (plan, one-off feeds), timeline, media, pets,
+                    live (the WebSocket feed), video (live video)
     openapi.yaml    the contract the app's client is generated from (tested against ROUTES)
     notify/         push notifications through the owner's ntfy server, fed by the
                     event hub; settings in `{data_dir}/ntfy.json`, set from the panel
 
 Layering: this package reads the same stores, registries and helpers the panel
 reads (`events/`, `ai/pets.py`, `ha/categories.py`, `ha/state_doc.py`,
-`media/serving.py`), writes through the ones Home Assistant writes through
-(`ha/commands.py`, `ha/command_router.py`, `ha/schedules.py`), and imports
-nothing from `web/` or `http/`; the panel's `EventHub` is handed in, typed
+`media/serving.py`, `media/go2rtc.py`), writes through the ones Home Assistant
+writes through (`ha/commands.py`, `ha/command_router.py`, `ha/schedules.py`), and
+imports nothing from `web/` or `http/`; the panel's `EventHub` is handed in, typed
 `Any`. Only `main/` builds the app, and the panel reaches `AppAuth` only
 through the object `main/lifecycle.py` hands it.
 """

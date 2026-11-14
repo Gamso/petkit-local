@@ -16,8 +16,9 @@ Extension points for the later phases:
 
 * phase 4 (ntfy) — no route here: a publisher fed by the `EventHub`, with its
   settings in the panel;
-* phase 5 (live video) — a `GET /app/v1/devices/{id}/live` row proxying that
-  device's go2rtc stream name only.
+* phase 5 (live video) — `GET /app/v1/devices/{id}/live` (WebSocket, fMP4) and
+  `.../live/hls/{file}`, proxying that device's go2rtc stream only
+  (`app_api/video.py`).
 """
 from __future__ import annotations
 
@@ -27,15 +28,16 @@ from typing import TYPE_CHECKING, Any
 from aiohttp import web
 
 from petkit_local.app_api.appkeys import (
-    AUTH, COMMAND_SINK, DATA_DIR, EVENT_STORE, HA_PUBLISHER, HUB, LIVE, MEDIA_ROOT,
-    PET_REGISTRY, REGISTRY, THROTTLE,
+    AUTH, COMMAND_SINK, DATA_DIR, EVENT_STORE, GO2RTC, HA_PUBLISHER, HUB, LIVE, MEDIA_ROOT,
+    PET_REGISTRY, REGISTRY, THROTTLE, VIDEO_SESSIONS,
 )
 from petkit_local.app_api.handlers import (
-    auth, controls, devices, feeding, live, media, meta, pets, timeline,
+    auth, controls, devices, feeding, live, media, meta, pets, timeline, video,
 )
 from petkit_local.app_api.live import LiveFeed
 from petkit_local.app_api.middleware import app_api_middleware
 from petkit_local.app_api.throttle import LoginThrottle
+from petkit_local.app_api.video import LiveSessions
 
 if TYPE_CHECKING:
     from petkit_local.ai.pets import PetRegistry
@@ -43,6 +45,7 @@ if TYPE_CHECKING:
     from petkit_local.devices.registry import DeviceRegistry
     from petkit_local.events.store import EventStore
     from petkit_local.ha.publisher import HAPublisher
+    from petkit_local.media.go2rtc import Go2rtc
     from petkit_local.mqtt.bridge import MQTTBridge
 
 PREFIX = "/app/v1"
@@ -70,6 +73,8 @@ ROUTES: tuple[tuple[str, str, Handler], ...] = (
     ("GET", "/devices/{id}/deferred-feeds", feeding.list_deferred_feeds),
     ("POST", "/devices/{id}/deferred-feeds", feeding.add_deferred_feed),
     ("DELETE", "/devices/{id}/deferred-feeds/{feed_id}", feeding.delete_deferred_feed),
+    ("GET", "/devices/{id}/live", video.live),
+    ("GET", "/devices/{id}/live/hls/{file}", video.live_hls),
     ("GET", "/timeline", timeline.timeline),
     ("GET", "/timeline/{event_id}", timeline.timeline_event),
     ("GET", "/media/thumb/{path:.*}", media.media_thumbnail),
@@ -88,7 +93,9 @@ def create_app_api(app_auth: AppAuth, registry: DeviceRegistry, *,
                    throttle: LoginThrottle | None = None,
                    command_sink: MQTTBridge | None = None,
                    ha_publisher: HAPublisher | None = None,
-                   hub: Any = None) -> web.Application:
+                   hub: Any = None,
+                   go2rtc: Go2rtc | None = None,
+                   live_sessions: LiveSessions | None = None) -> web.Application:
     """Build the app API application.
 
     Everything after `registry` is optional so a test can build one without
@@ -111,6 +118,10 @@ def create_app_api(app_auth: AppAuth, registry: DeviceRegistry, *,
     app[LIVE] = LiveFeed(app_auth, registry, hub, event_store=event_store,
                          pet_registry=pet_registry, media_root=media_root)
     app.on_shutdown.append(_close_live_sockets)
+    app[GO2RTC] = go2rtc
+    app[VIDEO_SESSIONS] = live_sessions if live_sessions is not None else LiveSessions()
+    # Ends every live relay as shutdown begins, so none holds the bounded drain.
+    app.on_shutdown.append(app[VIDEO_SESSIONS].close_all)
     for method, path, handler in ROUTES:
         # `add_get` would also register HEAD; the OpenAPI file lists GET only.
         app.router.add_route(method, PREFIX + path, handler)

@@ -25,6 +25,10 @@ key                     what it holds                                set by
                         (`web` is off limits): writes narrate into
                         it and the WebSocket feed reads from it
 `LIVE`                  `LiveFeed`, the WebSocket fan-out            create_app_api
+`GO2RTC`                the camera sidecar (`media/go2rtc.py`), or   create_app_api
+                        None: which streams exist, whether it runs
+`VIDEO_SESSIONS`        `LiveSessions` — live viewers, their caps    create_app_api
+                        and relays (`app_api/video.py`)
 ======================  ===========================================  ==========
 
 `SESSION` is set on each request by the auth middleware once a bearer token
@@ -41,9 +45,11 @@ if TYPE_CHECKING:
     from petkit_local.app_api.auth import AppAuth, AppSession
     from petkit_local.app_api.live import LiveFeed
     from petkit_local.app_api.throttle import LoginThrottle
+    from petkit_local.app_api.video import LiveSessions
     from petkit_local.devices.registry import DeviceRegistry
     from petkit_local.events.store import EventStore
     from petkit_local.ha.publisher import HAPublisher
+    from petkit_local.media.go2rtc import Go2rtc
     from petkit_local.mqtt.bridge import MQTTBridge
 
 AUTH: web.AppKey[AppAuth] = web.AppKey("app_auth")
@@ -57,6 +63,8 @@ COMMAND_SINK: web.AppKey[MQTTBridge | None] = web.AppKey("app_command_sink")
 HA_PUBLISHER: web.AppKey[HAPublisher | None] = web.AppKey("app_ha_publisher")
 HUB: web.AppKey[Any] = web.AppKey("app_hub")
 LIVE: web.AppKey[LiveFeed] = web.AppKey("app_live")
+GO2RTC: web.AppKey[Go2rtc | None] = web.AppKey("app_go2rtc")
+VIDEO_SESSIONS: web.AppKey[LiveSessions] = web.AppKey("app_video_sessions")
 
 #: The session the bearer token belongs to.
 SESSION: web.RequestKey[AppSession] = web.RequestKey("app_session")

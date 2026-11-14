@@ -35,12 +35,12 @@ tags:
   - name: meta
   - name: auth
   - name: devices
+  - name: live
   - name: timeline
   - name: media
   - name: pets
   - name: controls
   - name: feeding
-  - name: live
 
 paths:
   /info:
@@ -377,6 +377,126 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
+  /devices/{id}/live:
+    get:
+      tags: [live]
+      operationId: openLiveVideo
+      summary: The camera's live video as fragmented MP4 over a WebSocket (go2rtc MSE).
+      description: |
+        A WebSocket upgrade, authenticated by the same `Authorization: Bearer` header as
+        every route (sent on the upgrade request). Every refusal happens before the
+        upgrade, as a normal JSON `Error`. The stream is always this device's own:
+        nothing the client sends names it.
+
+        Message flow:
+
+        1. Client -> server, text, once: `{"type":"mse","value":"<codecs>"}` — the codec
+           list the player supports, comma-separated MSE strings, e.g.
+           `avc1.640029,avc1.64002A,avc1.640033,hvc1.1.6.L153.B0,mp4a.40.2,mp4a.40.5,opus`.
+           Only `type` and `value` are used; any other message, or a second request, is
+           answered with an `error` message and not acted on. Binary messages from the
+           client are ignored.
+        2. Server -> client, text: `{"type":"mse","value":"video/mp4; codecs=\"avc1.42001F,mp4a.40.2\""}`
+           — the MIME type to create the `SourceBuffer` with.
+        3. Server -> client, binary, continuous: the first message is the init segment
+           (`ftyp`+`moov`), every following one a media fragment (`moof`+`mdat`). Append
+           them in order. A viewer joining a running stream gets the init segment at
+           once and its first fragment at the next keyframe.
+        4. Server -> client, text, at any time: `{"type":"error","value":"<text>"}` — the
+           camera stream could not be opened (a camera takes a new viewer only some
+           seconds after the last one left) or a client message was refused. The socket
+           stays open; close it and retry after a few seconds.
+
+        Close codes: `1000` closed by the client; `1001` the server is stopping;
+        `1011` the stream ended (camera or go2rtc went away) — retry after a few
+        seconds; `1013` the client did not keep up with the stream (more than 4 MiB
+        queued) — fall back to HLS; `4401` the session ended (logout, revocation,
+        password change) — sign in again; `4409` the same session opened this
+        camera again, which replaces the older view.
+
+        Viewers are capped at 2 per camera and 4 in total, WebSocket and HLS together;
+        one session holds at most one view per camera. The server pings every 20 s.
+      parameters:
+        - { $ref: "#/components/parameters/DeviceId" }
+      responses:
+        "101":
+          description: Switching protocols; the WebSocket follows the flow above.
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404":
+          description: "`device_not_found`, or `stream_not_found`: not a camera, the camera
+            patch is not applied, or the camera's stream is not reachable."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "426":
+          description: "`upgrade_required`: the request was not a WebSocket upgrade."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "429": { $ref: "#/components/responses/LiveLimitReached" }
+        "503": { $ref: "#/components/responses/LiveUnavailable" }
+
+  /devices/{id}/live/hls/{file}:
+    get:
+      tags: [live]
+      operationId: getLiveHls
+      summary: The camera's live video as HLS (fMP4 segments), the fallback to the WebSocket.
+      description: |
+        Start with `playlist.m3u8` WITHOUT `id`: it opens an HLS session (one viewer
+        slot, capped like the WebSocket) and answers a master playlist whose one
+        variant is `playlist.m3u8?id=<session>`. Every URI in every playlist is
+        RELATIVE to this route, so a player resolves them here; send the same bearer
+        header on each request (Media3: `DefaultHttpDataSource.Factory`
+        `.setDefaultRequestProperties`).
+
+        A session id works only for the session that opened it and this device. It
+        lapses after ~5 s without a request (go2rtc's own limit), which a playing
+        player never reaches; after that its files answer 404 `hls_session_expired`
+        and the player should start again from `playlist.m3u8` without `id`.
+        Segments are about 0.5 s; expect a few seconds of delay.
+      parameters:
+        - { $ref: "#/components/parameters/DeviceId" }
+        - name: file
+          in: path
+          required: true
+          schema:
+            type: string
+            enum: [playlist.m3u8, init.mp4, segment.m4s]
+        - name: id
+          in: query
+          description: The HLS session, as written in the playlists. Absent only on the
+            first `playlist.m3u8`.
+          schema: { type: string }
+        - name: "n"
+          in: query
+          description: The segment number (`segment.m4s` only), as written in the playlist.
+          schema: { type: integer, minimum: 0 }
+      responses:
+        "200":
+          description: The playlist, init segment or media segment.
+          content:
+            application/vnd.apple.mpegurl:
+              schema: { type: string }
+            video/mp4:
+              schema: { type: string, contentMediaType: video/mp4 }
+            video/iso.segment:
+              schema: { type: string, contentMediaType: video/iso.segment }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404":
+          description: "`device_not_found`, `stream_not_found`, `hls_session_not_found`
+            (an id this session did not open for this device), `hls_session_expired`, or
+            `not_found` (another file)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "429": { $ref: "#/components/responses/LiveLimitReached" }
+        "502":
+          description: "`bad_upstream`: go2rtc answered something this route will not
+            relay (refused rather than passed through)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "503": { $ref: "#/components/responses/LiveUnavailable" }
 
   /timeline:
     get:
@@ -668,6 +788,20 @@ components:
           schema: { $ref: "#/components/schemas/Error" }
     Unavailable:
       description: The store behind this route is not running.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    LiveLimitReached:
+      description: "`live_limit_reached`: this camera (2) or the server (4) already has
+        as many live viewers as it serves."
+      headers:
+        Retry-After: { schema: { type: integer } }
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    LiveUnavailable:
+      description: "`live_unavailable`: go2rtc, which serves the camera's stream, is not
+        running or did not answer. Retry shortly."
       content:
         application/json:
           schema: { $ref: "#/components/schemas/Error" }

@@ -110,6 +110,12 @@ WHICH device to re-read; what a phone is sent is the diff of the serialized devi
 last sent, at most once per second per device, plus a 30-second sweep for the changes nothing
 narrates (the offline watchdog). One `LiveFeed` serves every socket; it runs only while one is open.
 
+Live video (`app_api/video.py`) is the one place the app API talks to another process: it relays
+go2rtc's fMP4 WebSocket and HLS from loopback, for the stream of the device in the path only —
+the name is resolved server-side from `Go2rtc.desired_streams`, because go2rtc dials any `src` it
+does not know as a source URL. Viewers are capped per camera and in total, and a relay ends with
+its session.
+
 ## The two transports
 
 A device speaks **either** HTTP **or** MQTT — not both, and not one for requests and the other for
