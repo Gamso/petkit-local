@@ -221,24 +221,10 @@ async def start_background(services: Services, app_instance: web.Application) ->
     # than passed to `create_panel_app`, so every test that builds a panel
     # does not have to know about a camera sidecar it never uses — but
     # BEFORE `runner.setup()`, which freezes the Application and makes a new
-    # key a DeprecationWarning today and an error under aiohttp 4.
+    # key a DeprecationWarning today and an error under aiohttp 4. The same
+    # goes for the broker, which is why the panel is only started (below)
+    # once the broker is up.
     panel[panel_keys.GO2RTC] = go2rtc
-    # Bounded drains everywhere a runner is built: aiohttp otherwise waits
-    # up to 60 s for every open connection, and the Supervisor kills the
-    # container 10 s after SIGTERM. A browser tab left on the panel holds
-    # its live-log WebSocket open, which was enough to turn every restart
-    # into an exit 137.
-    runner = web.AppRunner(panel, shutdown_timeout=SHUTDOWN_DRAIN)
-    await runner.setup()
-    await web.TCPSite(runner, "0.0.0.0", config.web_port).start()
-    app_instance[device_keys.PANEL_RUNNER] = runner
-    # "(HA Ingress)" only when there IS a Supervisor to proxy it. Home
-    # Assistant Container and Core have no add-on system, so this also runs
-    # as a plain container beside HA, and telling those users their panel is
-    # behind Ingress sends them looking for a sidebar entry that cannot
-    # exist.
-    log.info("Web panel on port %d%s", config.web_port,
-             " (HA Ingress)" if services.ha_addon else "")
 
     # Local S3/OSS bucket — accepts uploads from the device's cloud
     # process. Raw uploads (AES-encrypted, cryptically named) land in a
@@ -339,7 +325,10 @@ async def start_background(services: Services, app_instance: web.Application) ->
         # what the broker will actually deliver (`broker.delivery_view`) —
         # the only thing that distinguishes a command with nowhere to land
         # from one the firmware ignored. Set here rather than passed to
-        # `create_panel_app`, because the broker starts after it is built.
+        # `create_panel_app`, because the broker starts after it is built —
+        # but before the panel's `runner.setup()` below, which freezes it.
+        # The broker cannot simply start first: the bucket above may re-issue
+        # the certificate it serves (`ensure_self_signed`, extra SAN).
         panel[panel_keys.MQTT_BROKER] = broker
 
         if mqtt_bridge:
@@ -354,6 +343,23 @@ async def start_background(services: Services, app_instance: web.Application) ->
             # task is created, precisely so shutdown can find it.
             _spawn(app_instance, "upstream-mqtt-supervisor",
                    upstream_mqtt.supervise())
+
+    # Bounded drains everywhere a runner is built: aiohttp otherwise waits
+    # up to 60 s for every open connection, and the Supervisor kills the
+    # container 10 s after SIGTERM. A browser tab left on the panel holds
+    # its live-log WebSocket open, which was enough to turn every restart
+    # into an exit 137.
+    runner = web.AppRunner(panel, shutdown_timeout=SHUTDOWN_DRAIN)
+    await runner.setup()
+    await web.TCPSite(runner, "0.0.0.0", config.web_port).start()
+    app_instance[device_keys.PANEL_RUNNER] = runner
+    # "(HA Ingress)" only when there IS a Supervisor to proxy it. Home
+    # Assistant Container and Core have no add-on system, so this also runs
+    # as a plain container beside HA, and telling those users their panel is
+    # behind Ingress sends them looking for a sidebar entry that cannot
+    # exist.
+    log.info("Web panel on port %d%s", config.web_port,
+             " (HA Ingress)" if services.ha_addon else "")
 
     # A device holds a fixed UTC offset and knows nothing of DST, so when its
     # zone changes offset somebody has to tell it (see ha/timezone_sync.py).
