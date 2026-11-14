@@ -29,7 +29,9 @@ from petkit_local.ai.pets import learned_weight_in_use, pet_weight_grams, refere
 from petkit_local.devices.base import Device
 from petkit_local.events import decode
 from petkit_local.events.sessions import content_of_row, session_filters
+from petkit_local.ha.commands import DESTRUCTIVE_ACTIONS, device_actions
 from petkit_local.ha.discovery import EntityDef
+from petkit_local.ha.schedules import is_dual_hopper
 from petkit_local.media.serving import has_media, session_media_slots
 from petkit_local.utils.coerce import to_float, to_int
 from petkit_local.utils.const import device_display_name
@@ -37,8 +39,8 @@ from petkit_local.utils.dicts import dig_path
 
 API_PREFIX = "/app/v1"
 
-#: Entity components the read-only API shows. Buttons are commands (phase 2's
-#: actions), and `event`/`image` entities carry no state worth a value here.
+#: Entity components that carry a value. Buttons are commands (a device's
+#: `actions`), and `event`/`image` entities carry no state worth a value here.
 VALUE_COMPONENTS = ("sensor", "binary_sensor", "switch", "number", "select", "text", "time")
 
 
@@ -141,17 +143,87 @@ def entity_value(entity: EntityDef, doc: dict[str, Any]) -> dict[str, Any]:
         "category": entity.entity_category or None,
         "options": list(entity.options) if entity.component == "select" else None,
         "settable": entity.is_settable,
+        "min": entity.min_value if entity.component == "number" else None,
+        "max": entity.max_value if entity.component == "number" else None,
+        "step": entity.step if entity.component == "number" else None,
     }
+
+
+def entity_change(value: dict[str, Any]) -> dict[str, Any]:
+    """The part of an `entity_value` that changes: what a live update carries."""
+    return {"key": value["key"], "value": value["value"], "display": value["display"]}
+
+
+def device_action(entity: EntityDef) -> dict[str, Any]:
+    """One button the app may press. `destructive` ones need `{"confirm": true}`."""
+    return {"key": entity.key, "name": entity.name,
+            "destructive": entity.key in DESTRUCTIVE_ACTIONS}
+
+
+def device_entities(entities: list[EntityDef], doc: dict[str, Any]) -> list[dict[str, Any]]:
+    """Every value-bearing entity of a device, with its value."""
+    return [entity_value(e, doc) for e in entities if e.component in VALUE_COMPONENTS]
 
 
 def device_detail(d: Device, entities: list[EntityDef], doc: dict[str, Any]) -> dict[str, Any]:
-    """A device's summary plus every value-bearing entity."""
+    """A device's summary, every value-bearing entity, and the actions it offers.
+
+    Actions are in the panel's order: destructive last, so a mis-tap lands on
+    a safe button.
+    """
     return {
         **device_summary(d),
         "serial": d.serial_number or None,
-        "entities": [entity_value(e, doc) for e in entities
-                     if e.component in VALUE_COMPONENTS],
+        "entities": device_entities(entities, doc),
+        "actions": sorted((device_action(e) for e in device_actions(entities)),
+                          key=lambda a: a["destructive"]),
     }
+
+
+# --- feeding -------------------------------------------------------------------
+
+def _meal_amounts(source: dict[str, Any], dual: bool) -> dict[str, Any]:
+    """`amount` on a single hopper, `amount1`/`amount2` on a Dual-Hopper; the
+    other side null, so the shape is the same for every feeder."""
+    if dual:
+        return {"amount": None, "amount1": to_int(source.get("a1"), None),
+                "amount2": to_int(source.get("a2"), 0)}
+    amount = to_int(source.get("a"), None)
+    if amount is None:
+        amount = to_int(source.get("a1"), None)  # a legacy single-hopper save
+    return {"amount": amount, "amount1": None, "amount2": None}
+
+
+def feeding_plan(d: Device) -> dict[str, Any]:
+    """A feeder's recurring meals, and whether they are being served.
+
+    `active` false is the pause: the meals are kept and the feeder is told it
+    has none. Days are the device's own numbers, 1-7, which the panel renders
+    as Sunday..Saturday; a meal's `time` is seconds since local midnight.
+    """
+    dual = is_dual_hopper(d)
+    stored = d.config.get("feed_schedule")
+    groups = stored.get("schedule") if isinstance(stored, dict) else None
+    return {
+        "device_id": d.petkit_id,
+        "active": d.feed_schedule_active,
+        "dual_hopper": dual,
+        "groups": [{
+            "days": sorted({n for n in (to_int(p, None) for p in str(g.get("re", "")).split(","))
+                            if n is not None}),
+            "meals": [{
+                "id": str(m.get("id") or ""),
+                "time": to_int(m.get("t"), 0),
+                **_meal_amounts(m, dual),
+            } for m in g.get("it") or [] if isinstance(m, dict)],
+        } for g in groups or [] if isinstance(g, dict)],
+    }
+
+
+def deferred_feed(d: Device, entry: dict[str, Any]) -> dict[str, Any]:
+    """One pending one-off feed."""
+    return {"id": str(entry.get("id") or ""), "fire_at": _ts(entry.get("fire_at")),
+            **_meal_amounts(entry, is_dual_hopper(d))}
 
 
 # --- timeline ------------------------------------------------------------------

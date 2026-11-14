@@ -67,7 +67,7 @@ def encode_multi_range(key: str, value: Any) -> str:
 
     `schedule` is NOT this shape, despite travelling the same way: it is a
     plain JSON string of the array, with no wrapping key. See
-    `web/api/schedules.py::api_save_schedule`.
+    `ha/schedules.py::save_schedule`.
     """
     return json.dumps({key: value}, separators=(",", ":"))
 

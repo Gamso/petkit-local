@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import time
 from typing import Any
 
@@ -534,6 +535,47 @@ FOUNTAIN_ACTIONS = {
 
 ALL_ACTIONS = {**LITTER_ACTIONS, **FEEDER_ACTIONS, **FOUNTAIN_ACTIONS, **SHARED_ACTIONS}
 
+# Actions that COST something you cannot get back — the panel colours these
+# red, confirms before sending, and sorts them last so a mis-click lands on a
+# safe button; the phone app API refuses them without an explicit confirmation.
+# The line is "spends a consumable or takes the box out of service", not
+# "moves the motor":
+#
+#   * `dump_litter` throws away the litter that is in the drum;
+#   * `maintenance_start` stops the box serving the cat until someone ends it;
+#   * the consumable resets overwrite a replacement date, and for the N50 that
+#     date exists NOWHERE else (see devices/state_parsers.py) — press it by
+#     accident and the real replacement date is gone.
+#
+# `reset` and `maintenance_stop` were in here and are not disruptive at all:
+# both are `thing.service.end`, i.e. the verbs that STOP whatever is running
+# and put the box back in service. Colouring the recovery button the same red
+# as the one you are recovering from is exactly backwards.
+#   * `fountain_drain` empties a W7H and leaves its FlowLift module raised
+#     until somebody runs Refill.
+#   * `fountain_deep_clean` started with nobody there to pour boiling water in
+#     aborts and latches a pump fault that refuses every later deep clean until
+#     it is reset by hand.
+DESTRUCTIVE_ACTIONS = frozenset({
+    "dump_litter", "maintenance_start", "reset_n50", "reset_n60", "reset_desiccant",
+    "fountain_drain", "fountain_deep_clean", "reset_bagbox",
+    # The 180-degree flip repositions the camera; the small left/right steps do
+    # not warrant a confirmation on every press.
+    "ptz_flip",
+})
+
+
+def device_actions(entities: list[EntityDef]) -> list[EntityDef]:
+    """The buttons of a device that run a real command: what may be pressed.
+
+    A button Home Assistant shows for this model AND an entry in `ALL_ACTIONS`.
+    The panel's action row and the phone app API both ask this one question, so
+    neither can offer a press the other would refuse — and neither can reach an
+    action this model does not expose (a W7H must never be sent a litter
+    `start_action`; see `codes.FOUNTAIN_W7H_START_ACTIONS_CRASH`).
+    """
+    return [e for e in entities if e.component == "button" and e.key in ALL_ACTIONS]
+
 
 def _coerce_switch(payload: str) -> int:
     """Coerce an HA switch payload ("ON"/"OFF") to the device's 0/1 form.
@@ -717,6 +759,52 @@ def _bounds_text(entity: EntityDef) -> str:
     if entity.min_value is not None:
         return f"at least {entity.min_value}"
     return f"at most {entity.max_value}"
+
+
+#: Longest text a `text` entity takes — HA's own ceiling for the platform.
+TEXT_MAX_LENGTH = 255
+
+
+def payload_for(entity: EntityDef, value: Any) -> str:
+    """A TYPED value as the payload Home Assistant would publish for `entity`.
+
+    For a caller that speaks JSON rather than HA's strings (the phone app API):
+    a switch takes a boolean, a number a finite number, a select one of its
+    labels, a time `HH:MM[:SS]`, a text a string. Anything else is refused HERE,
+    because `handle_ha_command` treats an uncoercible payload as nothing to send
+    and answers None — which a caller would report as success. The bounds of a
+    number, and the shape of a time window, are still checked by
+    `handle_ha_command` itself, so the two paths cannot validate differently.
+
+    Raises:
+        Refused: the value is of the wrong type for this entity, or the entity
+            takes no value at all.
+    """
+    comp = entity.component
+    if comp == "switch":
+        if not isinstance(value, bool):
+            raise Refused(f"{entity.name} takes true or false")
+        return "ON" if value else "OFF"
+    if comp == "number":
+        if (isinstance(value, bool) or not isinstance(value, (int, float))
+                or not math.isfinite(value)):
+            raise Refused(f"{entity.name} takes a number")
+        return str(value)
+    if comp == "select":
+        if not isinstance(value, str) or value not in entity.options:
+            raise Refused(f"{entity.name} must be one of: {', '.join(entity.options)}")
+        return value
+    if comp == "time":
+        if not isinstance(value, str) or _coerce_time(value) is None:
+            raise Refused(f"{entity.name} must be a time of day, HH:MM or HH:MM:SS")
+        return value
+    if comp == "text":
+        if not isinstance(value, str):
+            raise Refused(f"{entity.name} takes a string")
+        if len(value) > TEXT_MAX_LENGTH:
+            raise Refused(f"{entity.name} takes at most {TEXT_MAX_LENGTH} characters")
+        return value
+    raise Refused(f"{entity.name} cannot be set")
 
 
 def store_setting(device: Device, field: str, value: Any) -> None:

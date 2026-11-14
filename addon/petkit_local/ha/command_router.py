@@ -24,6 +24,7 @@ from petkit_local.utils.coerce import to_int
 from petkit_local.utils.logtext import excerpt
 
 if TYPE_CHECKING:
+    from petkit_local.devices.base import Device
     from petkit_local.devices.ble import BLERegistry
     from petkit_local.devices.registry import DeviceRegistry
     from petkit_local.ha.publisher import HAPublisher
@@ -68,6 +69,34 @@ def _ble_command_value(entity: Any, payload: str) -> int | None:
             return to_int(values[index], None)
         return None
     return to_int(text, None)
+
+
+#: What `deliver_command` did with a command.
+DELIVERED_MQTT = "mqtt"
+DELIVERED_QUEUED = "queued"
+
+
+async def deliver_command(device: Device, suffix: str, envelope: Any,
+                          sink: MQTTBridge | None) -> str:
+    """Deliver one built command: real-time over MQTT if the device has a
+    session, else queued for its next HTTP heartbeat poll.
+
+    Home Assistant's writes and the phone app's take this one path. A failed
+    publish falls back to the queue rather than failing the write — the device
+    picks the command up either way — so the answer is what actually happened:
+    `DELIVERED_MQTT` (published to the broker) or `DELIVERED_QUEUED`.
+    """
+    if sink is not None and device.mqtt_connected:
+        try:
+            await sink.publish_to_device(device, suffix, envelope)
+            return DELIVERED_MQTT
+        except Exception as e:
+            log.warning("MQTT delivery failed for device %d, queuing for heartbeat: %s",
+                        device.petkit_id, e)
+    else:
+        log.info("Device %d not on MQTT, queuing command for HTTP heartbeat", device.petkit_id)
+    device.queue_command(envelope, suffix)
+    return DELIVERED_QUEUED
 
 
 class CommandRouter:
@@ -249,20 +278,8 @@ class CommandRouter:
             log.warning("Refused HA command on %s: %s", topic, exc)
             return
 
-        # Deliver to the device: real-time over MQTT if the device has an active
-        # MQTT session, else queue for the next HTTP heartbeat poll.
         if result:
-            service_suffix, mqtt_payload = result
-            device_on_mqtt = self._command_sink is not None and device.mqtt_connected
-            if device_on_mqtt:
-                try:
-                    await self._command_sink.publish_to_device(device, service_suffix, mqtt_payload)
-                except Exception as e:
-                    log.warning("MQTT delivery failed for device %d, queuing for heartbeat: %s", device_id, e)
-                    device.queue_command(mqtt_payload, service_suffix)
-            else:
-                log.info("Device %d not on MQTT, queuing command for HTTP heartbeat", device_id)
-                device.queue_command(mqtt_payload, service_suffix)
+            await deliver_command(device, *result, self._command_sink)
 
         # Reflect optimistic state and persist.
         self._registry.mark_dirty()
