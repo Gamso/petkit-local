@@ -34,6 +34,11 @@ end -- a rejected entry produces no reply, no error and no retry:
   * An entry with `time/1000 - timestamp >= 61` is discarded as expired, on an
     unsigned compare -- so a `timestamp` ahead of `time` expires immediately.
   * `content.msgType` may be 0, 1 or 2. Nothing else is dispatched.
+
+That 60s rule is the cloud's own shelf life for a command, and we defeat it:
+`timestamp` is stamped when the entry is handed over, not when it was asked
+for, so to the device everything in the queue is new. `still_wanted` applies
+the same limit on our side, to the commands it is meant for.
 """
 from __future__ import annotations
 
@@ -44,6 +49,7 @@ from typing import TYPE_CHECKING, Any
 
 from aiohttp import web
 
+from petkit_local.devices.base import QUEUED_AT_KEY
 from petkit_local.http.handlers._common import request_device
 from petkit_local.utils.coerce import to_bool
 
@@ -79,7 +85,16 @@ MSG_TYPE_SERVICE_INVOKE = 2
 _PROPERTY_SET_SERVICE = "property/set"
 
 
-def _service_of(cmd: dict[str, Any]) -> str:
+#: How long a one-shot action (feed, clean, power, ...) waits for a device.
+#:
+#: The firmware's own limit for a heartbeat command, see this module's header.
+#: A device polls every ~10-15s, so this is four polls or more: an action
+#: asked of a device that is merely between polls always arrives, and one asked
+#: of a device that is unplugged does not run when it is plugged back in.
+ACTION_TTL_SECONDS = 60.0
+
+
+def _named_service(cmd: dict[str, Any]) -> str:
     """The service an MQTT envelope invokes, spelled as its topic suffix.
 
     From the `_service_suffix` marker the producer attached, or from `method`
@@ -89,11 +104,91 @@ def _service_of(cmd: dict[str, Any]) -> str:
     device's, not ours — a new one should travel, not fall through to a
     default.
     """
-    service = cmd.pop("_service_suffix", "")
+    service = cmd.get("_service_suffix", "")
     if service:
         return str(service)
     _, marker, tail = str(cmd.get("method", "")).partition("thing.service.")
     return tail.replace(".", "/") if marker else ""
+
+
+def _service_of(cmd: dict[str, Any]) -> str:
+    """`_named_service`, taking the private marker off the command with it."""
+    service = _named_service(cmd)
+    cmd.pop("_service_suffix", None)
+    return service
+
+
+def _is_settings_write(cmd: dict[str, Any]) -> bool:
+    """Whether a queued command sets a value rather than starting something."""
+    return (cmd.get("msgType") == MSG_TYPE_PROPERTY_SET
+            or _named_service(cmd) == _PROPERTY_SET_SERVICE)
+
+
+def still_wanted(device: Device, cmds: list[Any], hub: Any = None) -> list[Any]:
+    """What is left of a popped queue once age has been taken into account.
+
+    A queue holds whatever was asked while the device was not polling, for as
+    long as that lasted. Five presses of Feed against a feeder unplugged for a
+    day came back as five meals on its first heartbeat.
+
+    Only commands stamped by `Device.queue_command` are judged; anything else
+    (a patcher's `run_cmd` string, a firmware job's trigger) passes through.
+
+      * A one-shot ACTION — every service but `property/set` — older than
+        `ACTION_TTL_SECONDS` is dropped, and said so at WARNING and in the
+        panel's log: it was wanted then, not now.
+      * A SETTINGS write is never dropped for age: the value is still the one
+        the user chose, and HA already shows it. Earlier writes of a field a
+        later one sets again are collapsed into the later one.
+
+    Synchronous, like everything between `pop_commands` and the reply (see
+    `carries_commands`). The pop has already happened, so a command dropped
+    here is gone — which is the point — and `wait_for_heartbeat` is unaffected
+    because nothing it waits on is stamped.
+    """
+    now = time.monotonic()
+    kept = []
+    for cmd in cmds:
+        queued_at = cmd.get(QUEUED_AT_KEY) if isinstance(cmd, dict) else None
+        if queued_at is None or _is_settings_write(cmd):
+            kept.append(cmd)
+            continue
+        age = now - queued_at
+        if age <= ACTION_TTL_SECONDS:
+            kept.append(cmd)
+            continue
+        service = _named_service(cmd) or "?"
+        log.warning("Heartbeat %s (id=%d): dropping `%s` asked %ds ago and never "
+                    "collected - a one-shot action is not run late (limit %ds): %s",
+                    device.device_type, device.petkit_id, service, age,
+                    ACTION_TTL_SECONDS, json.dumps(cmd.get("params", {}))[:120])
+        if hub is not None:
+            hub.publish("cmd", device.petkit_id,
+                        f"expired, not sent: {service} (asked {int(age)}s ago)")
+
+    # Newest first, so each field is claimed by the last write that set it.
+    claimed: set[str] = set()
+    wanted = []
+    for cmd in reversed(kept):
+        params = cmd.get("params") if isinstance(cmd, dict) else None
+        if (isinstance(params, dict) and QUEUED_AT_KEY in cmd
+                and _named_service(cmd) == _PROPERTY_SET_SERVICE):
+            # A nested object may be a partial write of its block, so it is
+            # neither collapsed nor allowed to supersede anything.
+            stale = [k for k, v in params.items()
+                     if k in claimed and not isinstance(v, dict)]
+            for key in stale:
+                del params[key]
+            if stale:
+                log.info("Heartbeat %s (id=%d): %s superseded by a later write "
+                         "while queued", device.device_type, device.petkit_id,
+                         ", ".join(stale))
+            if not params:
+                continue
+            claimed.update(k for k, v in params.items() if not isinstance(v, dict))
+        wanted.append(cmd)
+    wanted.reverse()
+    return wanted
 
 
 def _to_heartbeat_content(cmd: Any) -> str:
@@ -123,6 +218,9 @@ def _to_heartbeat_content(cmd: Any) -> str:
 
     if not isinstance(cmd, dict):
         return json.dumps(cmd)
+
+    # Ours, not the device's: when the command was queued (`still_wanted`).
+    cmd.pop(QUEUED_AT_KEY, None)
 
     # Already in heartbeat format (has msgType)
     if "msgType" in cmd:
@@ -241,7 +339,8 @@ async def handle_heartbeat(request: web.Request) -> web.Response:
         device.last_heartbeat = time.time()
         note_iot_status(device, request)
 
-        cmds = device.pop_commands()
+        cmds = still_wanted(device, device.pop_commands(),
+                            request.app.get("event_hub"))
         if cmds:
             ts = int(time.time())
             result = []

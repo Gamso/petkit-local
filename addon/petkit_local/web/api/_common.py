@@ -17,7 +17,7 @@ from typing import Any
 
 from aiohttp import web
 
-from petkit_local.devices.base import Device, split_bucket_authority
+from petkit_local.devices.base import QUEUED_AT_KEY, Device, split_bucket_authority
 from petkit_local.http.proxy import resolve_upstream
 from petkit_local.utils.coerce import to_int
 
@@ -114,19 +114,16 @@ async def _deliver(hub, bridge, d, suffix: str, envelope: Any,
         except Exception as e:
             log.warning("panel: MQTT publish failed for device %d, queuing for heartbeat: %s",
                         d.petkit_id, e)
-            if isinstance(envelope, dict):
-                envelope["_service_suffix"] = suffix
-            d.command_queue.append(envelope)
+            d.queue_command(envelope, suffix)
             delivered = "heartbeat-queue"
     else:
-        if isinstance(envelope, dict):
-            envelope["_service_suffix"] = suffix
-        d.command_queue.append(envelope)
+        d.queue_command(envelope, suffix)
         delivered = "heartbeat-queue"
 
     params = envelope.get("params", envelope) if isinstance(envelope, dict) else envelope
     hub.record_command(d.petkit_id, delivered, f"{suffix} {json.dumps(params)[:80]}")
-    clean = {k: v for k, v in envelope.items() if k != "_service_suffix"} if isinstance(envelope, dict) else envelope
+    clean = ({k: v for k, v in envelope.items() if k not in ("_service_suffix", QUEUED_AT_KEY)}
+             if isinstance(envelope, dict) else envelope)
     return web.json_response({"ok": True, "delivered": delivered, "suffix": suffix, "envelope": clean})
 
 

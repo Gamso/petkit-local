@@ -9,6 +9,7 @@ and the per-category seed data those bodies fall back on in
 from __future__ import annotations
 
 import json
+import logging
 import time
 from dataclasses import dataclass, field
 from typing import Any
@@ -116,6 +117,18 @@ def aliyun_broker_name(product_key: str) -> str:
     of a T3. localkit builds the same name for the same reason.
     """
     return f"{product_key}.iot-as-mqtt.eu-central-1.aliyuncs.com"
+
+
+log = logging.getLogger(__name__)
+
+#: Private marker `Device.queue_command` puts on a queued command dict: the
+#: `time.monotonic()` at which it was asked for. Never sent to a device.
+QUEUED_AT_KEY = "_queued_at"
+
+#: The most commands one device may have waiting. Far above anything a person
+#: or a scene produces at once (a device has a few dozen settable entities),
+#: and small enough that a retrying automation cannot grow it for days.
+MAX_QUEUED_COMMANDS = 64
 
 
 @dataclass
@@ -408,6 +421,40 @@ class Device:
         when we could not determine our own address at all.
         """
         return real_host or self.aliyun_mqtt_host
+
+    def queue_command(self, cmd: Any, service_suffix: str = "") -> None:
+        """Queue a command for the next heartbeat, remembering when it was asked.
+
+        The stamp is what lets `http/handlers/heartbeat.py::still_wanted` tell
+        a command the device is collecting on its next poll from one that sat
+        here for a day while it was unplugged. Callers that append to
+        `command_queue` directly (the patchers, a firmware job's trigger) queue
+        unstamped entries, which are delivered whenever the device returns.
+
+        Args:
+            service_suffix: The `thing/service/{suffix}` the envelope was built
+                for; recorded for the heartbeat's translation.
+        """
+        if isinstance(cmd, dict):
+            if service_suffix:
+                cmd["_service_suffix"] = service_suffix
+            # Monotonic: only ever compared within this process (the queue is
+            # not persisted), and a wall clock stepped by NTP must not age a
+            # command it did not wait for.
+            cmd[QUEUED_AT_KEY] = time.monotonic()
+        self.command_queue.append(cmd)
+        # Nothing drains the queue of a device that never comes back, so an
+        # automation retrying against it would grow this without bound.
+        while len(self.command_queue) > MAX_QUEUED_COMMANDS:
+            stamped = [c for c in self.command_queue
+                       if isinstance(c, dict) and QUEUED_AT_KEY in c]
+            if not stamped:
+                break
+            oldest = stamped[0]
+            self.command_queue[:] = [c for c in self.command_queue if c is not oldest]
+            log.warning("Device %d: command queue is full (%d), dropping the oldest "
+                        "undelivered command: %s", self.petkit_id, MAX_QUEUED_COMMANDS,
+                        oldest.get("_service_suffix") or oldest.get("method") or "?")
 
     def pop_commands(self) -> list[Any]:
         """Drain the queue and return everything in it, oldest first.
