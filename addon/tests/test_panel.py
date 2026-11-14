@@ -998,8 +998,12 @@ async def test_patcher_run_is_tracked_and_drained_by_app_cleanup():
     import petkit_local.web.api.patchers as patchers_mod
     import petkit_local.web.panel as panel
 
+    from petkit_local.devices import addresses
+
     reg = DeviceRegistry()
-    reg.get_or_create(petkit_id=1, device_type="t5", serial_number="SN").state["ip"] = "192.0.2.10"
+    d = reg.get_or_create(petkit_id=1, device_type="t5", serial_number="SN")
+    d.state["ip"] = "192.0.2.10"
+    addresses.note(d, addresses.CLAIMED, "192.0.2.10")
     app, reg, hub = _panel(reg=reg)
     started = asyncio.Event()
 

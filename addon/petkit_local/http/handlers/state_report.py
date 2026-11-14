@@ -23,8 +23,9 @@ import urllib.parse
 
 from aiohttp import web
 
+from petkit_local.devices import addresses
 from petkit_local.devices.state_parsers import (
-    apply_consumable_state, normalize_property_params, parse_state_report,
+    apply_consumable_state, normalize_property_params, parse_state_report, reported_ip,
 )
 from petkit_local.http.handlers._common import device_id, request_device
 from petkit_local.utils.capture import capture_record
@@ -130,6 +131,7 @@ async def handle_state_report(request: web.Request) -> web.Response:
         # parse_state_report still handles any device that sends flat keys.
         device.state.update(parse_state_report(device.device_type, body))
         device.state.update(normalize_property_params(device.device_type, body))
+        addresses.note(device, addresses.CLAIMED, reported_ip(body))
         if not device.state.get("ip") and request.remote:
             device.state["ip"] = request.remote
         apply_consumable_state(device)

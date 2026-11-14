@@ -30,9 +30,11 @@ import logging
 import time
 from typing import TYPE_CHECKING, Any, AsyncIterable
 
-from petkit_local.devices import payloads
+from petkit_local.devices import addresses, payloads
 from petkit_local.devices.registry import DeviceRegistry
-from petkit_local.devices.state_parsers import apply_consumable_state, normalize_property_params
+from petkit_local.devices.state_parsers import (
+    apply_consumable_state, normalize_property_params, reported_ip,
+)
 from petkit_local.ha.categories import get_setting_fields
 from petkit_local.events import codes, ingest
 from petkit_local.events.ingest import (apply_derived_state, apply_state_snapshot,
@@ -484,6 +486,7 @@ class MQTTBridge:
                 # Overlay the flat keys the entities read (MQTT nests differently
                 # from the HTTP state_report).
                 device.state.update(normalize_property_params(device.device_type, params))
+                addresses.note(device, addresses.CLAIMED, reported_ip(params))
                 apply_consumable_state(device)
                 self._sync_settings_from_device(device, params)
                 self._registry.mark_dirty()
