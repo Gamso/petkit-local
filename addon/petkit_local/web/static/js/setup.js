@@ -1,3 +1,4 @@
+import { loadAppAccess } from './appaccess.js';
 import { api, esc, toast } from './core.js';
 import { onAction, onChange } from './delegate.js';
 import { help } from './help.js';
@@ -126,6 +127,7 @@ async function loadSetup() {
     ${on ? upstreamStatus(i.upstream || {}) : ''}
     ${on ? `<div id="blockedView" style="margin-top:14px"></div>` : ''}
   </div>
+  <div class="card" id="appAccessView">…</div>
   <div class="card"><h3>Connection <span class="badge">restart to change</span></h3>
     <p class="sub">Bound at startup — set these in the <b>Configuration</b> tab, then restart.</p>
     <table><tbody>
@@ -169,6 +171,7 @@ async function loadSetup() {
     <div id="importResult" style="margin-top:10px"></div>
   </div>`;
   if (on) loadBlocked(i.redactions || {});
+  loadAppAccess();
 }
 onAction('import-config', async el => {
   const file = document.getElementById('importFile').files[0];
