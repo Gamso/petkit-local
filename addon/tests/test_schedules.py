@@ -218,7 +218,7 @@ async def _client(app):
 
 async def _save(c, target, value):
     r = await c.post("/api/devices/1/schedule",
-                     data=json.dumps({"target": target, "value": value}))
+                     json={"target": target, "value": value})
     return r.status, await r.json()
 
 
@@ -590,7 +590,7 @@ async def test_a_single_hopper_deferred_feed_stores_a():
     c = await _client(app)
     try:
         r = await c.post("/api/devices/1/deferred-feed",
-                         data=json.dumps({"date": "2099-06-01", "time": "12:00", "a": 20}))
+                         json={"date": "2099-06-01", "time": "12:00", "a": 20})
         assert r.status == 200
         out = await r.json()
         assert out["feed"]["a"] == 20 and "a1" not in out["feed"]

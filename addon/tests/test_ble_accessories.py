@@ -47,7 +47,7 @@ async def _pair(c, **over):
     body = {"ble_type": "w5", "petkit_id": 700, "mac": "AA:BB:CC:DD:EE:FF",
             "secret": "s3cret", "interval": 240, "link_with": 10}
     body.update(over)
-    return await c.post("/api/ble", data=json.dumps(body))
+    return await c.post("/api/ble", json=body)
 
 
 # --- MAC handling -----------------------------------------------------------

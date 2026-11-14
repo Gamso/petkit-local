@@ -16,7 +16,8 @@ is not repeated here.
 These models describe a table set that is already deployed, so column names,
 types, nullability, defaults and index names are fixed: `create_all` only ever
 creates a table that does not exist yet, and a live database is upgraded in
-place by `events/store.py::EventStore._migrate`.
+place by `events/store.py::EventStore._migrate` — which adds the columns named
+there and any index declared here that the file does not have yet.
 """
 from __future__ import annotations
 
@@ -65,6 +66,13 @@ class Event(Base):
         Index("idx_events_device_ts", "device_id", "ts"),
         Index("idx_events_related", "related_event"),
         Index("idx_events_ts", "ts"),
+        # Every report is looked up by `event_uid` before it is stored
+        # (`record_event`, under the write lock), and every pet's sensors by
+        # `pet_id` — both a scan of the whole retained history without these.
+        # Not UNIQUE: a deployed table was never constrained, so it may hold
+        # duplicates an index creation would then fail on.
+        Index("idx_events_uid", "event_uid"),
+        Index("idx_events_pet_ts", "pet_id", "ts"),
         # AUTOINCREMENT rather than a bare rowid alias, matching the deployed
         # schema: ids of deleted rows are never handed out again, so a pruned
         # event cannot be confused with a newer one.

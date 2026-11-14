@@ -1,10 +1,11 @@
 # PetKit Local
 
 > [!NOTE]
-> **This is a fork** of [alex-so-3/petkit-local](https://github.com/alex-so-3/petkit-local), made
-> to run a Pura Max (T4) and Fresh Element Solos (D4) locally. It publishes its own image,
-> `ghcr.io/junekiwi/petkit-local`, and the add-on repository URL below points here. What it
-> changes on top of upstream 2.1.0:
+> **This is a fork** of [junekiwi/petkit-local](https://github.com/junekiwi/petkit-local), itself a
+> fork of [alex-so-3/petkit-local](https://github.com/alex-so-3/petkit-local) made to run a Pura
+> Max (T4) and Fresh Element Solos (D4) locally. It publishes its own image,
+> `ghcr.io/gamso/petkit-local`, and the add-on repository URL below points here. What junekiwi's
+> fork changes on top of upstream 2.1.0:
 >
 > - **The T3, T4 and D4 run on HTTP out of the box, and on MQTT once patched.** Their firmware
 >   builds its MQTT broker name from the product key and trusts only PetKit's own root, so no local
@@ -205,7 +206,7 @@ talk you out of it.
 **Settings → Apps → Install app → ⋮ → Repositories**, add:
 
 ```
-https://github.com/junekiwi/petkit-local
+https://github.com/Gamso/petkit-local
 ```
 
 > Recent Home Assistant releases renamed **Add-ons** to **Apps** in the interface. If your menu still
