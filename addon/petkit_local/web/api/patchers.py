@@ -18,6 +18,7 @@ from urllib.parse import urlparse
 
 from aiohttp import web
 
+from petkit_local.devices import addresses
 from petkit_local.patchers.cacert import (
     PATCHER_INFO as CACERT_PATCHER, load_our_cert, patch_ca_bundle,
 )
@@ -59,14 +60,45 @@ ALL_PATCHERS: dict[str, dict[str, Any]] = {
 }
 
 
+def _fetch_address(d: Device, body: dict[str, Any]) -> tuple[str, str]:
+    """The address a patcher run will fetch from, as `(ip, error)`.
+
+    A run downloads a binary from this address, patches it and has the device
+    install it, and the address on record is an unauthenticated claim — so it
+    is used only while nothing contradicts it (`addresses.distrust`). When
+    something does, the run is refused until the operator names the address
+    themselves as `device_ip`: that one is theirs, and is used as given.
+    """
+    named = body.get("device_ip")
+    if named:
+        ip = addresses.as_ipv4(named)
+        return (ip, "") if ip else ("", "device_ip is not an IPv4 address")
+
+    recorded = d.state.get("ip", "")
+    if not recorded:
+        return "", "device IP not known - wait for a state_report"
+    problem = addresses.distrust(d)
+    if problem:
+        return "", (
+            f"not fetching from {str(recorded)[:40]}: {problem}. Anything on the LAN can "
+            "send a report in a device's name, and a patcher installs what it downloads "
+            "from that address. Wait for it to settle, or look the device's address up "
+            "on your router and enter it to go ahead.")
+    return addresses.as_ipv4(recorded), ""
+
+
 async def api_patcher_status(request: web.Request) -> web.Response:
-    """Per-patcher status for a device: `{"patchers", "device_ip", "supported"}`.
+    """Per-patcher status: `{"patchers", "device_ip", "device_ip_problem", "supported"}`.
 
     Only Ingenic Linux devices can be patched at all; anything else answers
     `supported: False` with no patchers rather than a 400. The MQTT patcher is
     reported as active-and-`greyed` while the device holds an MQTT session,
     because a live session is proof the patch took regardless of what was
     recorded.
+
+    `device_ip` is where a run would fetch from, and `device_ip_problem` says
+    why it would be refused (empty when it would not) — shown before anyone
+    presses Apply, since the address is the one input here nobody typed.
     """
     d = _device_or_404(request)
     if not d.is_next_gen:
@@ -96,7 +128,13 @@ async def api_patcher_status(request: web.Request) -> web.Response:
             entry["needs_pubkey"] = True
             entry["ssh_pubkey"] = d.config.get("ssh_pubkey", "")
         result[pid] = entry
-    return web.json_response({"patchers": result, "device_ip": d.state.get("ip", ""), "supported": True})
+    recorded = d.state.get("ip", "")
+    return web.json_response({
+        "patchers": result,
+        "device_ip": recorded,
+        "device_ip_problem": addresses.distrust(d) if recorded else "",
+        "supported": True,
+    })
 
 
 async def api_patcher_apply(request: web.Request) -> web.Response:
@@ -134,9 +172,9 @@ async def api_patcher_apply(request: web.Request) -> web.Response:
         d.config["ssh_pubkey"] = pubkey
         reg.save()
 
-    device_ip = d.state.get("ip", "")
-    if not device_ip:
-        return web.json_response({"error": "device IP not known - wait for a state_report"}, status=400)
+    device_ip, refusal = _fetch_address(d, body)
+    if refusal:
+        return web.json_response({"error": refusal}, status=400)
 
     api_url = request.app["cfg"].get("api_url", "")
     if not api_url:
@@ -182,7 +220,7 @@ async def api_patcher_apply(request: web.Request) -> web.Response:
     from petkit_local.web.panel import _spawn_background  # noqa: PLC0415
 
     _spawn_background(request.app, _run(), name=f"patcher-{patcher_id}-{action}-{did}")
-    hub.publish("patcher", did, f"[{patcher_id}] {action} started")
+    hub.publish("patcher", did, f"[{patcher_id}] {action} started, device at {device_ip}")
     return web.json_response({"ok": True, "patcher": patcher_id, "action": action})
 
 

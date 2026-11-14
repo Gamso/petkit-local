@@ -30,13 +30,16 @@ import logging
 import time
 from typing import TYPE_CHECKING, Any, AsyncIterable
 
-from petkit_local.devices import payloads
+from petkit_local.devices import addresses, payloads
 from petkit_local.devices.registry import DeviceRegistry
-from petkit_local.devices.state_parsers import apply_consumable_state, normalize_property_params
+from petkit_local.devices.state_parsers import (
+    apply_consumable_state, normalize_property_params, reported_ip,
+)
 from petkit_local.ha.categories import get_setting_fields
 from petkit_local.events import codes, ingest
 from petkit_local.events.ingest import (apply_derived_state, apply_state_snapshot,
                                         entity_for_event, telemetry_only)
+from petkit_local.mqtt.auth import internal_credentials
 from petkit_local.mqtt.ble_relay import BLERelay
 from petkit_local.mqtt.topics import (
     parse_topic, event_reply_topic, is_server_published, service_topic, user_get_topic,
@@ -248,12 +251,18 @@ class MQTTBridge:
 
         await asyncio.sleep(STARTUP_DELAY_SECONDS)
 
+        # What tells the broker this client is the add-on itself rather than
+        # anything else on the LAN that picked a non-device client id.
+        username, password = internal_credentials()
+
         while True:
             try:
                 async with aiomqtt.Client(
                     hostname=broker_host,
                     port=broker_port,
                     identifier="petkit-local-bridge",
+                    username=username,
+                    password=password,
                 ) as client:
                     # The INNER finally is the point: `self._client` has to be
                     # cleared the moment the session ends, not once the reconnect
@@ -484,6 +493,7 @@ class MQTTBridge:
                 # Overlay the flat keys the entities read (MQTT nests differently
                 # from the HTTP state_report).
                 device.state.update(normalize_property_params(device.device_type, params))
+                addresses.note(device, addresses.CLAIMED, reported_ip(params))
                 apply_consumable_state(device)
                 self._sync_settings_from_device(device, params)
                 self._registry.mark_dirty()
@@ -555,12 +565,19 @@ class MQTTBridge:
             # meals all fall before 00:24 reads as a 2.0.x minute save and
             # `feed.migrate_minute_schedule` multiplies every time by 60.
             stored = device.config.get("feed_schedule")
-            merged = {**feed, "v": 2}
-            if isinstance(stored, dict) and "deferred" in stored:
-                merged["deferred"] = stored["deferred"]
-            device.config["feed_schedule"] = merged
-            log.info("Stored feed schedule for device %d from property post",
-                     device.petkit_id)
+            if not device.feed_schedule_active and isinstance(stored, dict):
+                # A paused device was TOLD it has no meals, so what it reports
+                # back is our own empty answer. Storing that would turn the
+                # pause into the deletion it exists to avoid.
+                log.debug("Feed schedule from device %d ignored: plan is paused",
+                          device.petkit_id)
+            else:
+                merged = {**feed, "v": 2}
+                if isinstance(stored, dict) and "deferred" in stored:
+                    merged["deferred"] = stored["deferred"]
+                device.config["feed_schedule"] = merged
+                log.info("Stored feed schedule for device %d from property post",
+                         device.petkit_id)
         sched = params.get("schedule")
         if isinstance(sched, list) and device.is_litter:
             device.config["schedule"] = sched
@@ -661,6 +678,10 @@ class MQTTBridge:
             return {"result": sched} if sched is not None else None
         if data_type == "dev_feed_get":
             feed = device.config.get("feed_schedule")
+            if isinstance(feed, dict) and not device.feed_schedule_active:
+                # Paused: the same store with its recurring meals withheld,
+                # as `http/handlers/feed.py` does for the HTTP form of this ask.
+                feed = {**feed, "schedule": []}
             return {"result": feed} if feed is not None else None
         if data_type == "dev_ble_device":
             # Deliberately identical to `http/handlers/ble_device.py` — the two

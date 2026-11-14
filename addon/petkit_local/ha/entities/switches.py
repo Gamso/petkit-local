@@ -135,6 +135,13 @@ LITTER_T6_SWITCHES = [
 ]
 
 FEEDER_SWITCHES = [
+    # Pauses the recurring meals without deleting them
+    # (`ha/commands.py::FEED_SCHEDULE_SWITCH`). `local.`, not `settings.`: the
+    # firmware has no such field, so off means the device is served a plan
+    # with no meals in it while the real one stays stored here.
+    EntityDef(component="switch", key="feeding_schedule_active",
+              name="Feeding Schedule Active",
+              value_path="local.feedScheduleActive", icon="mdi:calendar-check"),
     EntityDef(component="switch", key="child_lock", name="Child Lock",
               value_path="settings.manualLock", icon="mdi:lock"),
     EntityDef(component="switch", key="food_warn", name="Shortage Alarm",

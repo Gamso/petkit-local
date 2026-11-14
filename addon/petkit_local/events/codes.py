@@ -453,8 +453,10 @@ UNKNOWN_HTTP_CODES = frozenset({"22", "23"})
 #: are set inside a `pk_event_pack_*` body behind a dispatch that the
 #: disassembly does not resolve to a constant.
 #:
-#: Known pack functions without a recovered code: eat_start, eat_over,
-#: pet_event, err_start, err_over, relay_start, relay_over, relay_response.
+#: Known pack functions without a recovered code: err_start, err_over,
+#: relay_start, relay_over, relay_response. (eat_start, eat_over, pet_event
+#: and pet_discern are tied to 5, 6, 8 and 24 by what their owners saw on the
+#: wire, not by the binary -- hence `inferred` on all four rows below.)
 FEEDER_HTTP_CODES: dict[str, EventCode] = {
     "2": EventCode(
         kind=KIND_FEEDING, label="Feeding done", anchor=True, role=ROLE_DONE,
@@ -497,6 +499,23 @@ FEEDER_HTTP_CODES: dict[str, EventCode] = {
              "`drink_start` on a fountain and something else again on a litter "
              "box.",
     ),
+    "6": EventCode(
+        kind=KIND_FEEDING, label="Eating done", anchor=True,
+        role=ROLE_DONE, done_word="eating", grade=INFERRED,
+        firmware="pk_event_pack_eat_over_event_msg",
+        families=FEEDER_CAMERA,
+        note="Reported from a live D4SH (fw 895, HTTP, 2026-10-12) by the "
+             "owner of another fork; NO capture of it is in this repository, "
+             "so the grade is the most that report supports. As described: "
+             "its content.related_event is the id of the code 5 "
+             "(`eat_start`) that opened the episode, it arrives when the cat "
+             "leaves the bowl, and it carries the eating preview image. The "
+             "same pair (5 starts, 6 ends) is the fountain's "
+             "drink_start/drink_over, which IS captured. The firmware pack "
+             "function exists, but its HTTP event_type is not literal in the "
+             "binary. `done_word` is 'eating', so `is_feed_done` does not "
+             "date Last Feed from it.",
+    ),
     "7": EventCode(
         kind=KIND_MOTION, label="Motion detected", anchor=True,
         families=FEEDER_CAMERA,
@@ -523,6 +542,21 @@ FEEDER_HTTP_CODES: dict[str, EventCode] = {
              "in the binary, so the number-to-name link is the owner's, not "
              "the RE's. Code 8 is `err_over`-adjacent on other categories — "
              "these numbers are per-category.",
+    ),
+    "24": EventCode(
+        kind=KIND_PET, label="Detection result", detail=True,
+        role=ROLE_DETECTION, grade=INFERRED,
+        firmware="pk_event_pack_pet_discern_msg (0x18)",
+        families=FEEDER_CAMERA,
+        note="Reported from a live D4SH (fw 895, HTTP, 2026-10-12) by the "
+             "owner of another fork; NO capture of it is in this repository. "
+             "As described it is the feeder's face-recognition verdict, "
+             "content {related_event, count, area, pet_id, tracker_info, "
+             "vomit_info} -- the shape of the fountain's code 24, which IS "
+             "captured, and the same number as the litter box's. That three "
+             "category tables agree on 24 is a property of this code, not a "
+             "licence to share rows. The firmware name and its 0x18 are that "
+             "fork's reading and were not re-derived here.",
     ),
 }
 

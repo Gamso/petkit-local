@@ -22,7 +22,7 @@ from petkit_local.devices.defaults import (
     clean_weekly_list as _clean_weekly_list,
 )
 from petkit_local.ha.commands import PROPERTY_SET_SUFFIX, make_mqtt_property_set, store_multi_range
-from petkit_local.http.handlers.feed import _build_latest, _compute_next_tick
+from petkit_local.http.handlers.feed import feed_push
 from petkit_local.utils.coerce import to_int
 from petkit_local.utils.const import DEVICE_TYPES_FEEDER_DUAL
 from petkit_local.web.api._common import _deliver, _device_or_404, _json_body
@@ -215,18 +215,10 @@ async def api_save_schedule(request: web.Request) -> web.Response:
         d.config["feed_schedule"] = feed
         reg.save()
         _push_feed_get(d, hub, bridge, feed)
-        now = time.time()
-        latest = _build_latest(feed, now)
-        wire_groups = []
-        for g in feed.get("schedule", []):
-            wire_groups.append({"re": g.get("re", ""), "it": g.get("it", [])})
-        wire = {
-            "schedule": wire_groups,
-            "nextTick": _compute_next_tick(latest),
-            "latest": latest,
-        }
+        # `feed_push` and not the value just saved: while the plan is paused
+        # the meals are stored and the device is still told it has none.
         mqtt_cmd = make_mqtt_property_set(
-            {"feed": json.dumps(wire, separators=(",", ":"))})
+            {"feed": json.dumps(feed_push(d), separators=(",", ":"))})
         return await _deliver(hub, bridge, d, PROPERTY_SET_SUFFIX, mqtt_cmd)
 
     cleaner = {"ranges": _clean_range_list, "weekly": _clean_weekly_list,
