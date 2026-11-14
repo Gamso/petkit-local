@@ -563,6 +563,19 @@ def _filter_buckets(session: dict) -> set[str]:
     return buckets
 
 
+#: Every chip `_filter_buckets` can put a session in, in the panel's order.
+FILTERS = ("pet", "toileting", "drinking", "feeding", "cleaning", "health_alert", "fault")
+
+
+def session_filters(session: dict) -> set[str]:
+    """The filter chips a session belongs to (see `_filter_buckets`).
+
+    Public for the app API, which hands a card its chips rather than making
+    the app re-derive them from event kinds.
+    """
+    return _filter_buckets(session)
+
+
 def filter_counts(sessions: list[dict]) -> dict:
     """Chip badge numbers, one key per chip the panel offers.
 
