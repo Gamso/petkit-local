@@ -20,6 +20,7 @@ from aiohttp.test_utils import TestClient, TestServer
 from petkit_local.devices import payloads
 from petkit_local.devices.ble import BLERegistry, normalize_mac
 from petkit_local.devices.registry import DeviceRegistry
+from petkit_local.http import appkeys as device_keys
 from petkit_local.http.server import create_app
 from petkit_local.mqtt.bridge import MQTTBridge
 from petkit_local.web.hub import EventHub
@@ -181,7 +182,7 @@ async def test_the_device_is_told_to_scan_for_a_paired_accessory():
     ble.register(ble_type="w5", petkit_id=700, mac="AABBCCDDEEFF",
                  secret="s3cret", interval=240, link_with=10)
     app = create_app(reg, dict(DEVICE_CONFIG))
-    app["ble_registry"] = ble
+    app[device_keys.BLE_REGISTRY] = ble
     c = await _client(app)
     try:
         body = await (await c.get("/6/t5/dev_ble_device", headers=HDR)).json()
@@ -211,7 +212,7 @@ async def test_nothing_paired_omits_the_list_key_entirely():
     reg = DeviceRegistry()
     reg.get_or_create(petkit_id=10, device_type="t5", serial_number="SN10")
     app = create_app(reg, dict(DEVICE_CONFIG))
-    app["ble_registry"] = BLERegistry()
+    app[device_keys.BLE_REGISTRY] = BLERegistry()
     c = await _client(app)
     try:
         http_body = await (await c.get("/6/t5/dev_ble_device", headers=HDR)).json()
@@ -239,7 +240,7 @@ async def test_a_k3_is_never_put_in_the_relay_list():
     ble = BLERegistry()
     ble.register(ble_type="k3", petkit_id=555, mac="AABBCCDDEE01", link_with=10)
     app = create_app(reg, dict(DEVICE_CONFIG))
-    app["ble_registry"] = ble
+    app[device_keys.BLE_REGISTRY] = ble
     c = await _client(app)
     try:
         body = await (await c.get("/6/t5/dev_ble_device", headers=HDR)).json()

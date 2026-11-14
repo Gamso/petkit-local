@@ -27,6 +27,7 @@ from petkit_local.events.store import EventStore
 from petkit_local.ha.categories import get_entities_for_device
 from petkit_local.ha.commands import handle_ha_command
 from petkit_local.ha.discovery import build_discovery_payload
+from petkit_local.http import appkeys as device_keys
 from petkit_local.http.server import create_app
 from petkit_local.mqtt import topics
 
@@ -246,7 +247,7 @@ async def test_an_http_disinfect_over_populates_the_result():
         reg = DeviceRegistry()
         device = reg.get_or_create(petkit_id=1, device_type="w7h", serial_number="SN")
         app = create_app(reg, dict(CONFIG))
-        app["event_store"] = EventStore(Path(tmp) / "petkit.db")
+        app[device_keys.EVENT_STORE] = EventStore(Path(tmp) / "petkit.db")
         client = TestClient(TestServer(app))
         await client.start_server()
         try:
@@ -259,4 +260,4 @@ async def test_an_http_disinfect_over_populates_the_result():
             assert "lastClean" not in device.state
         finally:
             await client.close()
-            await app["event_store"].close()
+            await app[device_keys.EVENT_STORE].close()

@@ -9,6 +9,7 @@ import pytest
 from petkit_local.ai.pets import PetRegistry
 from petkit_local.devices.registry import DeviceRegistry
 from petkit_local.events.store import EventStore
+from petkit_local.http import appkeys as device_keys
 from petkit_local.http.server import create_app
 
 CONFIG = {
@@ -46,7 +47,7 @@ async def _client(tmp, device_type="t5"):
     config = dict(CONFIG)
     config["data_dir"] = tmp
     app = create_app(reg, config)
-    app["pet_registry"] = pet_registry
+    app[device_keys.PET_REGISTRY] = pet_registry
 
     client = TestClient(TestServer(app))
     await client.start_server()

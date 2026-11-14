@@ -23,6 +23,7 @@ from aiohttp import web
 
 from petkit_local.media.go2rtc import API_ADDR as GO2RTC_API_ADDR
 from petkit_local.media.turn import cloudflare_ice_servers
+from petkit_local.web.appkeys import CFG
 
 #: go2rtc endpoints the browser is allowed to reach through us: the signalling
 #: WebSocket (MSE + WebRTC ride the same socket) and the WHEP-style offer.
@@ -158,6 +159,6 @@ async def api_turn(request: web.Request) -> web.Response:
     proceeds LAN-direct or falls back to MSE; the API token itself never leaves
     the server — only the minted, expiring username/credential do.
     """
-    data_dir = request.app["cfg"].get("data_dir", "/data")
+    data_dir = request.app[CFG].get("data_dir", "/data")
     ice = await cloudflare_ice_servers(data_dir, ttl=3600)
     return web.json_response({"iceServers": [ice] if ice else []})

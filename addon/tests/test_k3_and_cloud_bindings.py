@@ -20,6 +20,7 @@ from petkit_local.devices.ble import (
     CLOUD_BLE_TYPES, K3_DEFAULT_CONFIG, BLERegistry, cloud_bindings,
 )
 from petkit_local.devices.registry import DeviceRegistry
+from petkit_local.http import appkeys as device_keys
 from petkit_local.http.server import create_app
 from petkit_local.web.hub import EventHub
 from petkit_local.web.panel import create_panel_app
@@ -43,7 +44,7 @@ def _registries():
 
 async def _device_app(reg, ble):
     app = create_app(reg, dict(DEVICE_CONFIG))
-    app["ble_registry"] = ble
+    app[device_keys.BLE_REGISTRY] = ble
     return await _client(app)
 
 

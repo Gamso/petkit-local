@@ -20,6 +20,7 @@ from aiohttp import web
 from petkit_local.media.stitch import QUIET_SECONDS as _STITCH_QUIET
 from petkit_local.media.transcode import THUMB_TIMEOUT, have_ffmpeg, run_ffmpeg
 from petkit_local.utils.paths import UnsafePathError, safe_join
+from petkit_local.web.appkeys import CFG
 
 log = logging.getLogger(__name__)
 
@@ -33,7 +34,7 @@ def _safe_media_path(request: web.Request, rel_path: str) -> str | None:
     the result must be an existing regular file, and a rejection is a 404 rather
     than an exception.
     """
-    media_root = request.app["cfg"].get("media_root", "")
+    media_root = request.app[CFG].get("media_root", "")
     if not media_root or not rel_path:
         return None
     try:
@@ -114,7 +115,7 @@ async def api_media_thumb(request: web.Request) -> web.StreamResponse:
     if not have_ffmpeg():
         return web.json_response({"error": "ffmpeg not available for video thumbnails"}, status=404)
 
-    data_dir = request.app["cfg"].get("data_dir", "/data")
+    data_dir = request.app[CFG].get("data_dir", "/data")
     thumbs_dir = os.path.join(data_dir, "thumbs")
     thumb_path = os.path.join(thumbs_dir, hashlib.sha1(p.encode()).hexdigest() + ".jpg")
 

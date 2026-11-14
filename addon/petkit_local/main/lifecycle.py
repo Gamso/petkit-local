@@ -23,24 +23,20 @@ from petkit_local.devices.state_parsers import reports_used_times
 from petkit_local.events.ingest import _MODULE_TYPE_TO_CATEGORY, backfill_event_rows
 from petkit_local.events.normalize import seed_feed_state, visit_day_key
 from petkit_local.ha.timezone_sync import timezone_sync_loop
+from petkit_local.http import appkeys as device_keys
 from petkit_local.http.bucket import create_bucket_app
 from petkit_local.http.handlers.upload_file_info import wait_for_pending as wait_for_media_tasks
 from petkit_local.media.retention import RetentionSweeper
 from petkit_local.media.sounds import migrate_sounds
 from petkit_local.media.stitch import EpisodeStitcher
 from petkit_local.mqtt.broker import ensure_self_signed, start_broker
+from petkit_local.web import appkeys as panel_keys
 from petkit_local.web.panel import create_panel_app
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from petkit_local.main.wiring import Services
 
 log = logging.getLogger(__name__)
-
-#: aiohttp app key holding every long-lived task started by `start_background`.
-#: The list is created before `AppRunner` freezes the app, and `_spawn` is the
-#: ONLY place a task gets created — shutdown iterates this list rather than a
-#: hand-maintained tuple of names, which had already drifted out of date.
-BACKGROUND_TASKS = "background_tasks"
 
 #: How long each aiohttp runner may wait for open connections at shutdown.
 #: The Supervisor sends SIGTERM and kills the container 10 s later, and
@@ -63,7 +59,7 @@ def _spawn(app_instance: web.Application, name: str,
         name: Task name, used in shutdown log lines.
     """
     task = asyncio.create_task(coro, name=name)
-    app_instance[BACKGROUND_TASKS].append(task)
+    app_instance[device_keys.BACKGROUND_TASKS].append(task)
     return task
 
 
@@ -146,7 +142,7 @@ async def start_background(services: Services, app_instance: web.Application) ->
     Ordering is the whole point of this function. The event store is
     opened and repaired before any reader exists, and each long-lived
     service is started through `_spawn` so shutdown can cancel it from
-    `app[BACKGROUND_TASKS]` instead of a hand-maintained list.
+    `app[BACKGROUND_TASKS]` (`http/appkeys.py`) instead of a hand-maintained list.
     """
     config = services.config
     registry = services.registry
@@ -226,7 +222,7 @@ async def start_background(services: Services, app_instance: web.Application) ->
     # does not have to know about a camera sidecar it never uses — but
     # BEFORE `runner.setup()`, which freezes the Application and makes a new
     # key a DeprecationWarning today and an error under aiohttp 4.
-    panel["go2rtc"] = go2rtc
+    panel[panel_keys.GO2RTC] = go2rtc
     # Bounded drains everywhere a runner is built: aiohttp otherwise waits
     # up to 60 s for every open connection, and the Supervisor kills the
     # container 10 s after SIGTERM. A browser tab left on the panel holds
@@ -235,7 +231,7 @@ async def start_background(services: Services, app_instance: web.Application) ->
     runner = web.AppRunner(panel, shutdown_timeout=SHUTDOWN_DRAIN)
     await runner.setup()
     await web.TCPSite(runner, "0.0.0.0", config.web_port).start()
-    app_instance["panel_runner"] = runner
+    app_instance[device_keys.PANEL_RUNNER] = runner
     # "(HA Ingress)" only when there IS a Supervisor to proxy it. Home
     # Assistant Container and Core have no add-on system, so this also runs
     # as a plain container beside HA, and telling those users their panel is
@@ -300,7 +296,7 @@ async def start_background(services: Services, app_instance: web.Application) ->
         # means media uploads will not work at all.
         log.warning("Local bucket on port %d (plain HTTP - cloud may reject)",
                     config.bucket_port)
-    app_instance["bucket_runner"] = bucket_runner
+    app_instance[device_keys.BUCKET_RUNNER] = bucket_runner
 
     if ha_publisher:
         _spawn(app_instance, "ha-publisher", ha_publisher.start())
@@ -338,13 +334,13 @@ async def start_background(services: Services, app_instance: web.Application) ->
             keyfile=config.mqtt_key or f"{config.data_dir}/certs/broker.key",
             strict_auth=config.mqtt_strict_auth, hub=hub, data_dir=config.data_dir,
         )
-        app_instance["mqtt_broker"] = broker
+        app_instance[device_keys.MQTT_BROKER] = broker
         # The panel is a separate application, and its device view reports
         # what the broker will actually deliver (`broker.delivery_view`) —
         # the only thing that distinguishes a command with nowhere to land
         # from one the firmware ignored. Set here rather than passed to
         # `create_panel_app`, because the broker starts after it is built.
-        panel["mqtt_broker"] = broker
+        panel[panel_keys.MQTT_BROKER] = broker
 
         if mqtt_bridge:
             _spawn(app_instance, "mqtt-bridge",
@@ -409,8 +405,8 @@ async def cleanup_background(services: Services, app_instance: web.Application) 
     if services.ha_publisher:
         await services.ha_publisher.stop()
 
-    await _stop_tasks(app_instance[BACKGROUND_TASKS])
-    app_instance[BACKGROUND_TASKS].clear()
+    await _stop_tasks(app_instance[device_keys.BACKGROUND_TASKS])
+    app_instance[device_keys.BACKGROUND_TASKS].clear()
 
     # The supervisor spawned these, so cancelling it does not close them —
     # they are per-device tasks of their own, holding live TLS connections
@@ -424,14 +420,14 @@ async def cleanup_background(services: Services, app_instance: web.Application) 
     # connection past our exit.
     await go2rtc.stop()
 
-    if "mqtt_broker" in app_instance:
-        await app_instance["mqtt_broker"].shutdown()
+    if device_keys.MQTT_BROKER in app_instance:
+        await app_instance[device_keys.MQTT_BROKER].shutdown()
 
-    if "bucket_runner" in app_instance:
-        await app_instance["bucket_runner"].cleanup()
+    if device_keys.BUCKET_RUNNER in app_instance:
+        await app_instance[device_keys.BUCKET_RUNNER].cleanup()
 
-    if "panel_runner" in app_instance:
-        await app_instance["panel_runner"].cleanup()
+    if device_keys.PANEL_RUNNER in app_instance:
+        await app_instance[device_keys.PANEL_RUNNER].cleanup()
 
     # Stops the debounced writer and synchronously writes anything still
     # pending — without it the debounce would trade crash-safety for lost

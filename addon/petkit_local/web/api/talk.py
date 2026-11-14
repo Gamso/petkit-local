@@ -16,6 +16,7 @@ import aiohttp
 from aiohttp import web
 
 from petkit_local.patchers.common import TALK_TCP_PORT
+from petkit_local.web.appkeys import REGISTRY
 
 log = logging.getLogger(__name__)
 
@@ -42,7 +43,7 @@ async def api_talk(request: web.Request) -> web.WebSocketResponse:
     dropped silently (ffmpeg's stderr is suppressed and its early exit is not
     surfaced to the client yet).
     """
-    reg = request.app["registry"]
+    reg = request.app[REGISTRY]
     ws = web.WebSocketResponse(max_msg_size=4 * 1024 * 1024, heartbeat=25)
     await ws.prepare(request)
 

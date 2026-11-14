@@ -12,6 +12,7 @@ from aiohttp import web
 
 from petkit_local.devices import payloads
 from petkit_local.devices.base import Device
+from petkit_local.http.appkeys import CONFIG, DEVICE_TYPE
 from petkit_local.http.handlers._common import request_device
 
 
@@ -27,12 +28,12 @@ async def handle_serverinfo(request: web.Request) -> web.Response:
     """
     device = request_device(request)
 
-    api_url = request.app["config"]["api_url"]
+    api_url = request.app[CONFIG]["api_url"]
 
     if device:
         return web.json_response(payloads.to_serverinfo(device, api_url))
 
     return web.json_response(
         payloads.to_serverinfo(
-            Device(device_type=request.get("device_type", "unknown"), petkit_id=0),
+            Device(device_type=request.get(DEVICE_TYPE, "unknown"), petkit_id=0),
             api_url))

@@ -38,6 +38,7 @@ from typing import Any
 from aiohttp import web
 
 from petkit_local.devices.ble import K3_SETTING_KEYS
+from petkit_local.http.appkeys import BLE_REGISTRY
 from petkit_local.http.handlers._common import no_device_response, request_device
 
 #: Which of the K3's reported values map to which key of this reply.
@@ -71,7 +72,7 @@ async def handle_k3_device_info(request: web.Request) -> web.Response:
     if not device:
         return no_device_response()
 
-    ble_registry = request.app.get("ble_registry")
+    ble_registry = request.app.get(BLE_REGISTRY)
     k3 = ble_registry.get_linked_k3(device.petkit_id) if ble_registry else None
     if k3 is None:
         return no_device_response()

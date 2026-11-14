@@ -28,6 +28,7 @@ import time
 
 from aiohttp import web
 
+from petkit_local.http.appkeys import REGISTRY
 from petkit_local.http.handlers._common import request_device
 
 #: What the cloud returns for ``nextTick`` when ``latest`` is empty — the
@@ -221,7 +222,7 @@ async def handle_feed_get(request: web.Request) -> web.Response:
         return web.json_response({"result": feed})
 
     if migrate_minute_schedule(feed):
-        request.app["registry"].save()
+        request.app[REGISTRY].save()
 
     # A paused plan is served as no plan: the device is told it has no meals,
     # exactly as if the owner had deleted them -- except that nothing is

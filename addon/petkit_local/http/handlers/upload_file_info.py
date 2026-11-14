@@ -23,6 +23,7 @@ from typing import TYPE_CHECKING, Any
 from aiohttp import web
 
 from petkit_local.events import ingest
+from petkit_local.http.appkeys import CONFIG, EVENT_HUB, EVENT_STORE, HA_PUBLISHER, PET_REGISTRY
 from petkit_local.http.handlers._common import request_device
 from petkit_local.media import pipeline
 from petkit_local.utils.capture import capture_record
@@ -112,7 +113,7 @@ async def handle_upload_file_info(request: web.Request) -> web.Response:
     """
     device = request_device(request)
 
-    store = request.app.get("event_store")
+    store = request.app.get(EVENT_STORE)
     if not device or store is None:
         return web.json_response({"result": "success"})
     petkit_id = device.petkit_id
@@ -120,14 +121,14 @@ async def handle_upload_file_info(request: web.Request) -> web.Response:
     raw = await request.read()
     infos = parse_file_infos(raw.decode("utf-8", "replace"))
 
-    config = request.app["config"]
+    config = request.app[CONFIG]
     if config.get("capture"):
         capture_record(config.get("capture_dir", "/data/capture"), "upload_file_info",
                         {"id": petkit_id, "infos": infos})
 
-    hub = request.app.get("event_hub")
-    ha_publisher = request.app.get("ha_publisher")
-    pet_registry = request.app.get("pet_registry")
+    hub = request.app.get(EVENT_HUB)
+    ha_publisher = request.app.get(HA_PUBLISHER)
+    pet_registry = request.app.get(PET_REGISTRY)
 
     for info in infos:
         if not isinstance(info, dict):

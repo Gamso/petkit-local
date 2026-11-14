@@ -21,6 +21,7 @@ from typing import TYPE_CHECKING
 
 from aiohttp import web
 
+from petkit_local.http.appkeys import DATA_DIR, EVENT_HUB, LOG_ROOT, MEDIA_ROOT, REGISTRY
 from petkit_local.utils.const import DEVICE_LOG_KEY_PREFIX
 from petkit_local.utils.jsonio import atomic_write_bytes
 from petkit_local.utils.paths import UnsafePathError, safe_join
@@ -60,11 +61,11 @@ def create_bucket_app(media_root: str, hub: "EventHub | None" = None,
         can allocate.
     """
     app = web.Application(client_max_size=50 * 1024 * 1024)  # 50MB
-    app["media_root"] = media_root
-    app["log_root"] = log_root
-    app["registry"] = registry
-    app["hub"] = hub
-    app["data_dir"] = data_dir
+    app[MEDIA_ROOT] = media_root
+    app[LOG_ROOT] = log_root
+    app[REGISTRY] = registry
+    app[EVENT_HUB] = hub
+    app[DATA_DIR] = data_dir
 
     app.router.add_route("GET", "/sounds/{device_id}/{filename}", handle_sound_file)
     app.router.add_route("PUT", "/{path:.*}", handle_put)
@@ -105,9 +106,9 @@ def _route(app: web.Application, path: str) -> tuple[str, str, list[str]] | None
     """
     parts = _key_parts(path)
     if not parts or parts[0] != DEVICE_LOG_KEY_PREFIX:
-        return "media", app["media_root"], parts
+        return "media", app[MEDIA_ROOT], parts
 
-    log_root = app.get("log_root")
+    log_root = app.get(LOG_ROOT)
     if not log_root or len(parts) < 2:
         return None
 
@@ -115,7 +116,7 @@ def _route(app: web.Application, path: str) -> tuple[str, str, list[str]] | None
     # in the key rather than a global flag. Without this the token is the only
     # gate, and a device switched off after being handed one would keep landing
     # logs here until its token expired.
-    registry = app.get("registry")
+    registry = app.get(REGISTRY)
     if registry is not None:
         try:
             device = registry.get(int(parts[1]))
@@ -139,7 +140,7 @@ def _notify(request: web.Request, path: str, size: int) -> None:
     published with no device — the upload is still worth showing, and this is a
     log line, not a data path.
     """
-    hub = request.app.get("hub")
+    hub = request.app.get(EVENT_HUB)
     if hub is None:
         return
     route = _route(request.app, path)
@@ -371,7 +372,7 @@ async def handle_sound_file(request: web.Request) -> web.Response:
     """Serve an uploaded custom sound file for device download."""
     device_id = request.match_info["device_id"]
     filename = request.match_info["filename"]
-    data_dir = request.app.get("data_dir", "/data")
+    data_dir = request.app.get(DATA_DIR, "/data")
     try:
         path = safe_join(
             safe_join(os.path.join(data_dir, "sounds"), device_id),

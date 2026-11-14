@@ -19,6 +19,7 @@ from aiohttp import web
 
 from petkit_local.devices import payloads
 from petkit_local.devices.base import TIMEZONE_PUSHED_KEY
+from petkit_local.http.appkeys import DEVICE_TYPE, ON_SIGNUP, REGISTRY
 from petkit_local.http.handlers._common import device_field, device_id, device_serial
 from petkit_local.utils.coerce import to_float
 
@@ -119,8 +120,8 @@ async def handle_signup(request: web.Request) -> web.Response:
     Fires the app's ``on_signup`` callback (HA discovery) before replying, so a
     device is published to Home Assistant before it starts reporting state.
     """
-    registry = request.app["registry"]
-    device_type = request.get("device_type", "t5")
+    registry = request.app[REGISTRY]
+    device_type = request.get(DEVICE_TYPE, "t5")
 
     petkit_id = device_id(request)
     sn = device_serial(request)
@@ -169,7 +170,7 @@ async def handle_signup(request: web.Request) -> web.Response:
     _remember_where_it_thinks_it_is(request, device, registry)
     log.info("Signup: %s id=%d sn=%s fw=%s", device_type, petkit_id, sn, firmware)
 
-    on_signup = request.app.get("on_signup")
+    on_signup = request.app.get(ON_SIGNUP)
     if on_signup:
         await on_signup(device)
 

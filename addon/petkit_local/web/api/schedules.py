@@ -26,6 +26,7 @@ from petkit_local.http.handlers.feed import feed_push
 from petkit_local.utils.coerce import to_int
 from petkit_local.utils.const import DEVICE_TYPES_FEEDER_DUAL
 from petkit_local.web.api._common import _deliver, _device_or_404, _json_body
+from petkit_local.web.appkeys import BRIDGE, HUB, REGISTRY
 
 
 #: Seconds in a day — the unit of a feeder meal's `t`, alone among the
@@ -193,9 +194,9 @@ async def api_save_schedule(request: web.Request) -> web.Response:
     shape PetKit's own cloud pushes a D4H (upstream issue #36), without the
     `itemJsonString` that `dev_feed_get` carries.
     """
-    reg = request.app["registry"]
-    hub = request.app["hub"]
-    bridge = request.app["bridge"]
+    reg = request.app[REGISTRY]
+    hub = request.app[HUB]
+    bridge = request.app[BRIDGE]
     d = _device_or_404(request)
 
     body = await _json_body(request)
@@ -252,9 +253,9 @@ async def api_deferred_feed(request: web.Request) -> web.Response:
     The device picks this up on its next ``dev_feed_get`` poll, which the
     heartbeat ``feed_get:1`` command triggers immediately.
     """
-    reg = request.app["registry"]
-    hub = request.app["hub"]
-    bridge = request.app["bridge"]
+    reg = request.app[REGISTRY]
+    hub = request.app[HUB]
+    bridge = request.app[BRIDGE]
     d = _device_or_404(request)
 
     feed = d.config.setdefault("feed_schedule", {

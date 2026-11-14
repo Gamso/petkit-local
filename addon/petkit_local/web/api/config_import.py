@@ -39,6 +39,7 @@ from petkit_local.utils.const import (
 from petkit_local.web.api._common import _json_body
 from petkit_local.web.api.ble import _announce_pairing, _ble_view
 from petkit_local.web.api.schedules import _clean_feed_schedule
+from petkit_local.web.appkeys import BLE_REGISTRY, HA_PUBLISHER, REGISTRY
 
 log = logging.getLogger(__name__)
 
@@ -210,8 +211,8 @@ async def api_import_config(request: web.Request) -> web.Response:
     Body: `{"devices": [...]}`, or a single device entry. Answers
     `{"devices": [summary, ...]}` with one summary per entry, refusals included.
     """
-    registry = request.app["registry"]
-    ble = request.app["ble_registry"]
+    registry = request.app[REGISTRY]
+    ble = request.app[BLE_REGISTRY]
     body = await _json_body(request)
     entries = body.get("devices") if "devices" in body else [body]
     if not isinstance(entries, list) or not entries:
@@ -232,7 +233,7 @@ async def api_import_config(request: web.Request) -> web.Response:
                  ", ".join(summary["imported"]) or "nothing")
 
     registry.save()
-    publisher = request.app.get("ha_publisher")
+    publisher = request.app.get(HA_PUBLISHER)
     for device, created, accessories in imported:
         if publisher is not None:
             if created:

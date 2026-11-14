@@ -31,6 +31,7 @@ from petkit_local.mqtt.broker import drop_device_session
 from petkit_local.patchers import esp32_ota
 from petkit_local.patchers.firmware import FirmwareImageError
 from petkit_local.web.api._common import _device_or_404, _json_body
+from petkit_local.web.appkeys import CFG, HUB, LIVE_CONFIG, MQTT_BROKER, REGISTRY
 
 log = logging.getLogger(__name__)
 
@@ -42,7 +43,7 @@ _ACTIONS = ("fetch", "flash", "rollback", "cancel")
 
 
 def _data_dir(request: web.Request) -> str:
-    return request.app["cfg"].get("data_dir", "/data")
+    return request.app[CFG].get("data_dir", "/data")
 
 
 async def api_firmware_status(request: web.Request) -> web.Response:
@@ -84,7 +85,7 @@ async def _broker_status(request: web.Request, d: Any) -> dict[str, Any]:
     name = esp32_ota.PATCHED_BROKER_NAME
     return {
         "name": name,
-        "host": self_mqtt_host(request.app["cfg"]),
+        "host": self_mqtt_host(request.app[CFG]),
         "resolves_to": await resolve(name),
         "in_use": esp32_ota.uses_local_broker(d),
     }
@@ -119,7 +120,7 @@ async def _refuse_if_upstream_is_self(app: web.Application, upstream: str, dns: 
     host = urlparse(upstream).hostname
     if not host:
         return
-    self_host = self_mqtt_host(app["cfg"])
+    self_host = self_mqtt_host(app[CFG])
     ours = set(await resolve(self_host))
     if self_host:
         ours.add(self_host)
@@ -148,8 +149,8 @@ async def api_firmware_action(request: web.Request) -> web.Response:
     if action not in _ACTIONS:
         return web.json_response({"error": f"unknown action {action!r}"}, status=400)
 
-    reg = request.app["registry"]
-    hub = request.app["hub"]
+    reg = request.app[REGISTRY]
+    hub = request.app[HUB]
     did = d.petkit_id
 
     def say(line: str) -> None:
@@ -181,7 +182,7 @@ async def api_firmware_action(request: web.Request) -> web.Response:
     # A device on MQTT has stopped polling the heartbeat the nudge is queued
     # on. Closed here and refused until the job ends (`held_on_http`), it
     # falls back to it.
-    broker = request.app.get("mqtt_broker")
+    broker = request.app.get(MQTT_BROKER)
     if d.mqtt_connected and broker is not None and await drop_device_session(
             broker, d.mqtt_product_key, d.mqtt_device_name):
         where = ("its MQTT session was closed, so it returns to the heartbeat and is "
@@ -221,7 +222,7 @@ async def _fetch(app: web.Application, device: Any, say) -> None:
             say(f"fetch FAILED: {e}")
             return
         esp32_ota.set_release(device, release)
-        app["registry"].save()
+        app[REGISTRY].save()
         patched = next(m for m in release.summary()["modules"]
                        if m["module"] == esp32_ota.CA_MODULE)
         say(f"done: {release.version} stored, stock and patched "
@@ -234,7 +235,7 @@ async def _download_and_store(app: web.Application, device: Any, say) -> esp32_o
     Upstream and resolver are proxy mode's (`live_config`), as for every cloud
     fetch: a LAN that points PetKit's names here needs the same DNS override.
     """
-    live = app.get("live_config") or {}
+    live = app.get(LIVE_CONFIG) or {}
     dns = live.get("proxy_dns", "")
     upstream = resolve_upstream(live.get("proxy_upstream", ""))
     await _refuse_if_upstream_is_self(app, upstream, dns)
@@ -254,6 +255,6 @@ async def _download_and_store(app: web.Application, device: Any, say) -> esp32_o
                 session, file["url"], size=file["size"], digest=file["digest"])
     say("verifying and patching...")
     return await asyncio.to_thread(
-        esp32_ota.save_release, app["cfg"].get("data_dir", "/data"),
+        esp32_ota.save_release, app[CFG].get("data_dir", "/data"),
         device.device_type, manifest, modules)
 

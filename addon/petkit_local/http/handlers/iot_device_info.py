@@ -14,6 +14,7 @@ from aiohttp import web
 
 from petkit_local.devices import payloads
 from petkit_local.devices.base import Device
+from petkit_local.http.appkeys import CONFIG, DEVICE_TYPE, REGISTRY, X_DEVICE
 from petkit_local.http.handlers._common import (
     device_id, device_serial, no_device_response, request_device,
 )
@@ -75,13 +76,13 @@ def _resolve_or_create_device(request: web.Request) -> Device | None:
     sn = device_serial(request)
     if petkit_id is None:
         log.warning("iot_device_info: no device for id=%s sn=%s (X-Device=%s)",
-                    petkit_id, sn, request.get("x_device", {}))
+                    petkit_id, sn, request.get(X_DEVICE, {}))
         return None
 
-    registry = request.app["registry"]
+    registry = request.app[REGISTRY]
     return registry.get_or_create(
         petkit_id=petkit_id,
-        device_type=request.get("device_type", "t5"),
+        device_type=request.get(DEVICE_TYPE, "t5"),
         serial_number=sn,
     )
 
@@ -107,7 +108,7 @@ async def handle_iot_device_info(request: web.Request) -> web.Response:
     device = _resolve_or_create_device(request)
     if not device:
         return no_device_response()
-    config = request.app["config"]
+    config = request.app[CONFIG]
     handed = esp32_ota.handed_broker(device, config.get("esp32_http_only", True))
     if handed:
         product_key, mqtt_host = handed
@@ -135,7 +136,7 @@ async def handle_iot_device_info_flat(request: web.Request) -> web.Response:
     device = _resolve_or_create_device(request)
     if not device:
         return no_device_response()
-    mqtt_host = device.resolve_mqtt_host(self_mqtt_host(request.app["config"]))
+    mqtt_host = device.resolve_mqtt_host(self_mqtt_host(request.app[CONFIG]))
     log.info("IoT device info (flat): id=%d -> pk=%s dn=%s mqttHost=%s",
              device.petkit_id, device.mqtt_product_key, device.mqtt_device_name, mqtt_host)
     return web.json_response(payloads.to_iot_device_info_flat(device, mqtt_host))

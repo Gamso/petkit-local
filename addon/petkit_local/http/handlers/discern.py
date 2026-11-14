@@ -22,6 +22,7 @@ from urllib.parse import urlparse
 
 from aiohttp import web
 
+from petkit_local.http.appkeys import CONFIG, PET_REGISTRY, REGISTRY
 from petkit_local.http.handlers._common import no_device_response, request_device
 from petkit_local.utils.coerce import to_bool, to_float, to_int
 from petkit_local.utils.paths import UnsafePathError, safe_join
@@ -68,7 +69,7 @@ def _note_ai_capable(request: web.Request, device) -> None:
     if device is None or not device.is_camera or device.config.get("ai_observed"):
         return
     device.config["ai_observed"] = True
-    registry = request.app.get("registry")
+    registry = request.app.get(REGISTRY)
     if registry is not None:
         registry.mark_dirty()
     log.info("Device %s (%s) asked for facial-recognition data — marking it AI-capable",
@@ -93,7 +94,7 @@ async def handle_discern_pic(request: web.Request) -> web.Response:
         off, or a build with no pet registry.
     """
     device = request_device(request)
-    pet_registry = request.app.get("pet_registry")
+    pet_registry = request.app.get(PET_REGISTRY)
     # Before the gate, on purpose: the whole point is to learn about a device
     # the seed list does not name, and that device fails the gate today.
     _note_ai_capable(request, device)
@@ -101,7 +102,7 @@ async def handle_discern_pic(request: web.Request) -> web.Response:
     if pet_registry is None or not _ai_on(device):
         return web.json_response({"result": {"list": []}})
 
-    config = request.app["config"]
+    config = request.app[CONFIG]
     api_host = urlparse(config.get("api_url", "")).netloc or request.host
     return web.json_response(await pet_registry.discern_pic_payload(device.petkit_id, api_host))
 
@@ -160,7 +161,7 @@ async def handle_faces(request: web.Request) -> web.Response:
     this handler is reachable by anything that can open a socket to us and must
     not depend on the write path having been careful.
     """
-    data_dir = request.app["config"].get("data_dir", "/data")
+    data_dir = request.app[CONFIG].get("data_dir", "/data")
     # The faces dir — not data_dir — is the root, so neither a traversal nor a
     # symlink planted inside it can reach the rest of /data (devices.json, the
     # bucket AES key, the event store).

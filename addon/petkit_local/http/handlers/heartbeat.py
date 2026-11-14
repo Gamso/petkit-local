@@ -50,6 +50,7 @@ from typing import TYPE_CHECKING, Any
 from aiohttp import web
 
 from petkit_local.devices.base import QUEUED_AT_KEY
+from petkit_local.http.appkeys import EVENT_HUB
 from petkit_local.http.handlers._common import request_device
 from petkit_local.utils.coerce import to_bool
 
@@ -304,7 +305,7 @@ def note_iot_status(device: Device, request: web.Request) -> None:
     log.info("Heartbeat %s (id=%d): device reports iotStatus=%s - clearing "
              "mqtt_connected, commands go back to the heartbeat queue",
              device.device_type, device.petkit_id, raw)
-    hub = request.app.get("event_hub")
+    hub = request.app.get(EVENT_HUB)
     if hub is not None:
         hub.publish("connect", device.petkit_id,
                     f"no MQTT session (device reports iotStatus={raw})")
@@ -340,7 +341,7 @@ async def handle_heartbeat(request: web.Request) -> web.Response:
         note_iot_status(device, request)
 
         cmds = still_wanted(device, device.pop_commands(),
-                            request.app.get("event_hub"))
+                            request.app.get(EVENT_HUB))
         if cmds:
             ts = int(time.time())
             result = []

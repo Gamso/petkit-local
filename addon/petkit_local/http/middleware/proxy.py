@@ -14,6 +14,9 @@ import logging
 from aiohttp import web
 
 from petkit_local.ha.learn import learn_settings
+from petkit_local.http.appkeys import (
+    CONFIG, EVENT_HUB, EVENT_STORE, HA_PUBLISHER, PROXY_UPSTREAM_CREDS, REGISTRY,
+)
 from petkit_local.http.dns import loops_back
 from petkit_local.http.handlers._common import request_device
 from petkit_local.http.handlers.heartbeat import carries_commands
@@ -130,7 +133,7 @@ def _endpoint_selected(request: web.Request, config: dict) -> bool:
 
 def _build_policy(request: web.Request, device):
     """The redaction policy for one request, from the live config and device."""
-    config = request.app["config"]
+    config = request.app[CONFIG]
     return RedactionPolicy(
         device=device,
         api_url=config.get("api_url", ""),
@@ -193,7 +196,7 @@ async def proxy_middleware(request: web.Request, handler: Handler) -> web.Stream
     redaction or recording answers with the local response rather than letting a
     500 reach a device that is waiting for one.
     """
-    config = request.app["config"]
+    config = request.app[CONFIG]
     if not config.get("proxy_mode") or not request.path.startswith(API_PREFIX):
         return await handler(request)
 
@@ -261,7 +264,7 @@ async def proxy_middleware(request: web.Request, handler: Handler) -> web.Stream
                 "PROXY: not forwarding %s — %s resolves to %s, which is this add-on. "
                 "Your DNS redirects it here. Set an upstream DNS server in Setup to "
                 "reach the real server.", request.path, upstream, looped)
-            hub = request.app.get("event_hub")
+            hub = request.app.get(EVENT_HUB)
             if hub is not None:
                 hub.record_upstream("dns_loop")
             return local
@@ -335,7 +338,7 @@ def _note_outcome(request: web.Request, exchange) -> None:
         "upstream_body": _short(_text_or_none(exchange.upstream_body)),
     }
 
-    hub = request.app.get("event_hub")
+    hub = request.app.get(EVENT_HUB)
     if hub is not None:
         hub.record_upstream(outcome)
 
@@ -349,8 +352,8 @@ async def _record_exchange(request: web.Request, device, exchange, *,
     log line, not the answer the device is waiting for.
     """
     try:
-        hub = request.app.get("event_hub")
-        store = request.app.get("event_store")
+        hub = request.app.get(EVENT_HUB)
+        store = request.app.get(EVENT_STORE)
 
         if hub is not None:
             for record in exchange.records:
@@ -390,7 +393,7 @@ def _capture_exchange(request: web.Request, exchange, *,
     ordinary `requests.jsonl`, and unlike that one it carries full bodies —
     which is the entire reason to turn it on.
     """
-    config = request.app["config"]
+    config = request.app[CONFIG]
     if not config.get("capture"):
         return
 
@@ -440,14 +443,14 @@ def _remember_upstream_credentials(request: web.Request, device, exchange) -> No
     api_secret = exchange.captured.get("api_secret")
     if api_secret and api_secret != device.api_secret:
         device.api_secret = api_secret
-        registry = request.app.get("registry")
+        registry = request.app.get(REGISTRY)
         if registry is not None:
             registry.mark_dirty()
         log.info("Adopted the real PetKit API secret for device %d — its requests "
                  "will now verify upstream", device.petkit_id)
 
     creds = exchange.captured.get("mqtt")
-    store = request.app.get("proxy_upstream_creds")
+    store = request.app.get(PROXY_UPSTREAM_CREDS)
     if not creds or store is None:
         return
     # All four or none. A partial capture would have `UpstreamMQTT` dialling an
@@ -487,10 +490,10 @@ async def _learn_from_device_info(request: web.Request, device, exchange) -> Non
                                  only_missing=True)
         if not learned:
             return
-        registry = request.app.get("registry")
+        registry = request.app.get(REGISTRY)
         if registry is not None:
             registry.mark_dirty()
-        ha_publisher = request.app.get("ha_publisher")
+        ha_publisher = request.app.get(HA_PUBLISHER)
         if ha_publisher is not None:
             await asyncio.wait_for(ha_publisher.publish_state(device),
                                    _LEARN_PUBLISH_TIMEOUT)

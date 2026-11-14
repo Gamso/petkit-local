@@ -28,6 +28,7 @@ from typing import TYPE_CHECKING
 
 from aiohttp import web
 
+from petkit_local.http.appkeys import CONFIG, REGISTRY
 from petkit_local.http.middleware import (
     device_middleware, logging_middleware, never_fail_middleware, proxy_middleware,
 )
@@ -76,8 +77,8 @@ def create_app(registry: DeviceRegistry, config: dict) -> web.Application:
 
     Args:
         registry: Device registry the handlers resolve requests against, stored
-            as ``app["registry"]``.
-        config: Runtime config, stored as ``app["config"]``. Handlers read
+            as ``app[REGISTRY]``.
+        config: Runtime config, stored as ``app[CONFIG]``. Handlers read
             ``api_url``, ``bucket_endpoint``, ``data_dir``, ``capture`` /
             ``capture_dir`` and the ``proxy_*`` keys from it.
 
@@ -96,8 +97,8 @@ def create_app(registry: DeviceRegistry, config: dict) -> web.Application:
     # the panel log shows what the device actually received.
     app = web.Application(middlewares=[
         never_fail_middleware, logging_middleware, device_middleware, proxy_middleware])
-    app["registry"] = registry
-    app["config"] = config
+    app[REGISTRY] = registry
+    app[CONFIG] = config
 
     for ver in ("6",):
         p = f"/{ver}/{{device_type}}"
@@ -192,7 +193,7 @@ async def handle_index(request: web.Request) -> web.Response:
         Not part of the PetKit protocol; the web panel is served by
         `web/panel.py` on its own port.
     """
-    registry = request.app["registry"]
+    registry = request.app[REGISTRY]
     devices = [
         {"type": d.device_type, "id": d.petkit_id, "sn": d.serial_number, "online": d.online}
         for d in registry.all()

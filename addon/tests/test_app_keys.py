@@ -21,6 +21,7 @@ from aiohttp.test_utils import TestClient, TestServer
 from petkit_local.config import Config
 from petkit_local.devices.ble import BLERegistry
 from petkit_local.devices.registry import DeviceRegistry
+from petkit_local.http import appkeys as device_keys
 from petkit_local.http.server import create_app
 from petkit_local.media.transcode import have_ffmpeg
 from petkit_local.web.hub import EventHub
@@ -73,7 +74,7 @@ async def apps(tmp_path):
 
     # main/wiring.py
     device_app = create_app(registry, app_config)
-    device_app["event_hub"] = hub
+    device_app[device_keys.EVENT_HUB] = hub
     # main/lifecycle.py
     panel_app = create_panel_app(
         registry, BLERegistry(), hub,

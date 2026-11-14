@@ -27,6 +27,7 @@ from petkit_local.devices import addresses
 from petkit_local.devices.state_parsers import (
     apply_consumable_state, normalize_property_params, parse_state_report, reported_ip,
 )
+from petkit_local.http.appkeys import CONFIG, DEVICE_TYPE, EVENT_HUB, ON_STATE_REPORT, REGISTRY
 from petkit_local.http.handlers._common import device_id, request_device
 from petkit_local.utils.capture import capture_record
 from petkit_local.utils.timeutil import cloud_timestamp
@@ -113,7 +114,7 @@ async def handle_state_report(request: web.Request) -> web.Response:
         `interval` is how many seconds the device waits before reporting again,
         so it is the knob that sets state freshness for every HA sensor.
     """
-    registry = request.app["registry"]
+    registry = request.app[REGISTRY]
     device = request_device(request, registry)
     petkit_id = device.petkit_id if device else (device_id(request) or 0)
 
@@ -125,12 +126,12 @@ async def handle_state_report(request: web.Request) -> web.Response:
         # read anyway.
         raw = b""
 
-    config = request.app["config"]
+    config = request.app[CONFIG]
     capture_dir = config.get("capture_dir", "/data/capture")
     if config.get("capture"):
         capture_record(capture_dir, "state_report_raw", {
             "id": petkit_id,
-            "type": request.get("device_type", ""),
+            "type": request.get(DEVICE_TYPE, ""),
             "content_type": request.content_type,
             "content_encoding": request.headers.get("Content-Encoding", ""),
             "len": len(raw),
@@ -150,7 +151,7 @@ async def handle_state_report(request: web.Request) -> web.Response:
     if config.get("capture") and body:
         capture_record(capture_dir, "state_report", {"id": petkit_id, "body": body})
 
-    hub = request.app.get("event_hub")
+    hub = request.app.get(EVENT_HUB)
     if hub is not None and body:
         hub.set_state_report(petkit_id, body)
 
@@ -169,7 +170,7 @@ async def handle_state_report(request: web.Request) -> web.Response:
         log.info("State report from %s (id=%d): %d state keys", device.device_type, device.petkit_id, len(device.state))
         registry.mark_dirty()
 
-        on_state = request.app.get("on_state_report")
+        on_state = request.app.get(ON_STATE_REPORT)
         if on_state:
             await on_state(device, body)
 

@@ -12,6 +12,7 @@ import logging
 from aiohttp.test_utils import TestClient, TestServer
 
 from petkit_local.devices.registry import DeviceRegistry
+from petkit_local.http import appkeys as device_keys
 from petkit_local.http.server import create_app
 from petkit_local.main import configure_logging
 from petkit_local.utils.logredact import (
@@ -104,7 +105,7 @@ async def test_the_access_log_of_a_real_request_carries_no_secret(caplog):
 async def test_the_panel_live_log_shows_the_query_without_the_secret():
     app = create_app(DeviceRegistry(), {"capture": False})
     hub = EventHub()
-    app["event_hub"] = hub
+    app[device_keys.EVENT_HUB] = hub
     client = TestClient(TestServer(app))
     await client.start_server()
     try:

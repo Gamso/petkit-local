@@ -27,6 +27,7 @@ from petkit_local.events.store import (
 )
 from petkit_local.ha.entities.pet import PET_SENSORS
 from petkit_local.ha.publisher import HAPublisher
+from petkit_local.http import appkeys as device_keys
 from petkit_local.mqtt.bridge import MQTTBridge
 from petkit_local.web.hub import EventHub
 from petkit_local.web.panel import create_panel_app
@@ -213,8 +214,8 @@ async def test_a_visit_reported_over_http_is_learned_from(event_store, tmp_path)
     cat = await pets.create("Lilith", device_ids=[100], weight=3.7)
     app = create_app(reg, {"api_url": "http://server/6/", "mqtt_port": 1883,
                            "proxy_mode": False, "capture": False})
-    app["event_store"] = event_store
-    app["pet_registry"] = pets
+    app[device_keys.EVENT_STORE] = event_store
+    app[device_keys.PET_REGISTRY] = pets
     client = TestClient(TestServer(app))
     await client.start_server()
     try:

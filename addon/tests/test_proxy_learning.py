@@ -15,6 +15,7 @@ from petkit_local.devices import defaults
 from petkit_local.devices.base import Device, encode_multi_range
 from petkit_local.devices.registry import DeviceRegistry
 from petkit_local.ha.learn import learn_settings, learnable_scalar_fields
+from petkit_local.http import appkeys as device_keys
 from petkit_local.http.proxy import close_proxy_session
 from petkit_local.http.redact import RedactionPolicy
 from petkit_local.http.server import create_app
@@ -196,9 +197,9 @@ async def _http(cloud_settings, *, proxy):
     }
     registry = DeviceRegistry()
     app = create_app(registry, config)
-    app["event_hub"] = EventHub()
+    app[device_keys.EVENT_HUB] = EventHub()
     publisher = _FakePublisher()
-    app["ha_publisher"] = publisher
+    app[device_keys.HA_PUBLISHER] = publisher
     client = TestClient(TestServer(app))
     await client.start_server()
     r = await client.post("/6/w7h/dev_signup", headers=W7H_HDR)
@@ -206,7 +207,7 @@ async def _http(cloud_settings, *, proxy):
     # A device nothing has set yet: a snapshot only fills gaps, and signup
     # seeds the fountain family's defaults.
     registry.get(100).config["settings"] = {}
-    client.app["config"]["proxy_mode"] = proxy
+    client.app[device_keys.CONFIG]["proxy_mode"] = proxy
     return up, client, registry, publisher
 
 
@@ -281,7 +282,7 @@ async def test_a_failing_learner_or_publisher_still_answers_the_same(monkeypatch
         async def raising(_device):
             raise RuntimeError("HA gone")
         publisher.publish_state = raising
-        client.app["registry"].get(100).config["settings"].pop("fountainMode")
+        client.app[device_keys.REGISTRY].get(100).config["settings"].pop("fountainMode")
         r = await client.post("/6/w7h/dev_device_info", headers=W7H_HDR)
         assert r.status == 200 and await r.read() == normal
     finally:
@@ -305,7 +306,7 @@ async def test_a_refused_device_info_teaches_nothing():
         return web.json_response({"error": {"code": 704, "msg": "nope"}})
 
     up, client, registry, publisher = await _http({}, proxy=True)
-    client.app["config"]["proxy_upstream"] = await _base_of(cloud)
+    client.app[device_keys.CONFIG]["proxy_upstream"] = await _base_of(cloud)
     try:
         await client.post("/6/w7h/dev_device_info", headers=W7H_HDR)
         assert "fountainMode" not in registry.get(100).config.get("settings", {})

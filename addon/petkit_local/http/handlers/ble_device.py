@@ -12,6 +12,7 @@ from __future__ import annotations
 
 from aiohttp import web
 
+from petkit_local.http.appkeys import BLE_REGISTRY
 from petkit_local.http.handlers._common import no_device_response, request_device
 
 
@@ -56,7 +57,7 @@ async def handle_ble_device(request: web.Request) -> web.Response:
     if not device:
         return no_device_response()
 
-    ble_registry = request.app.get("ble_registry")
+    ble_registry = request.app.get(BLE_REGISTRY)
     ble_list = []
 
     if ble_registry:

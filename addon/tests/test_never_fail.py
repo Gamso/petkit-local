@@ -19,6 +19,7 @@ from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
 from petkit_local.devices.registry import DeviceRegistry
+from petkit_local.http import appkeys as device_keys
 from petkit_local.http.middleware import never_fail_middleware
 from petkit_local.http.server import create_app
 
@@ -48,7 +49,7 @@ async def _client(store_exc=None):
     reg.get_or_create(petkit_id=100, device_type="t5", serial_number="SN100")
     app = create_app(reg, dict(CONFIG))
     if store_exc is not None:
-        app["event_store"] = _BrokenStore(store_exc)
+        app[device_keys.EVENT_STORE] = _BrokenStore(store_exc)
     c = TestClient(TestServer(app))
     await c.start_server()
     return c
