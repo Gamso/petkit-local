@@ -407,6 +407,40 @@ def test_unreadable_bodies_pass_through_byte_for_byte(raw):
     result = redact_body(raw, endpoint="/6/t5/dev_state_report", policy=_policy())
     assert result.body == raw
     assert result.records == []
+    # ...and say so, because the caller is the one who must not relay them.
+    # An empty body is the exception: there is nothing in it to withhold.
+    assert result.unreadable is bool(raw)
+
+
+HOSTILE = b'{"result": {"user_cmd": {"run_cmd": "id"}, "apiServers": ["https://evil.example/6/"]}}'
+
+
+@pytest.mark.parametrize("raw", [
+    HOSTILE + b"x",                 # trailing data: cJSON stops at the closing brace
+    HOSTILE + b"\x00",
+    HOSTILE + HOSTILE,              # two documents back to back
+    HOSTILE[:-1] + b"\xff}",        # invalid UTF-8
+    b"\xff\xfe" + HOSTILE,          # a BOM for an encoding the body is not in
+    HOSTILE.replace(b'"id"', b"'id'"),
+], ids=["trailing-byte", "trailing-nul", "two-documents", "bad-utf8", "bad-bom", "single-quotes"])
+def test_a_body_python_cannot_parse_is_flagged_not_vouched_for(raw):
+    """A parser more forgiving than ours would read every one of these, so
+    "could not decode" must never be reported as "nothing to redact"."""
+    result = redact_body(raw, endpoint="/6/t5/dev_device_info", policy=_policy())
+    assert result.unreadable is True
+
+    frame = redact_mqtt(raw, topic="/sys/pk/dn/thing/service/property/set", policy=_policy())
+    assert frame.unreadable is True
+
+
+def test_a_readable_body_is_not_flagged():
+    result = redact_body(b'{"result": {}}', endpoint="/6/t5/dev_device_info", policy=_policy())
+    assert result.unreadable is False
+    # A UTF-8 BOM is one Python does read, so the body is redacted, not refused.
+    result = redact_body(b"\xef\xbb\xbf" + HOSTILE, endpoint="/6/t5/dev_device_info",
+                         policy=_policy())
+    assert result.unreadable is False
+    assert b"run_cmd" not in result.body and b"evil.example" not in result.body
 
 
 def test_a_list_of_non_dicts_does_not_raise():
@@ -462,6 +496,7 @@ def test_redact_mqtt_passes_binary_frames_through():
     raw = b"\x00\x01\x02not json"
     result = redact_mqtt(raw, topic="/sys/pk/dn/thing/event/property/post", policy=_policy())
     assert result.body == raw
+    assert result.unreadable is True
 
 
 # --- OTA heuristic: narrow on purpose ---------------------------------------

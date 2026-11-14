@@ -15,6 +15,7 @@ from urllib.parse import urlparse
 
 from aiohttp import web
 
+from petkit_local import ptz
 from petkit_local.ai.pets import PetRegistry
 from petkit_local.config import Config
 from petkit_local.devices.ble import BLERegistry
@@ -196,12 +197,15 @@ def build_services(config: Config, args: argparse.Namespace) -> Services:
     # usable: opening it is async and happens in `start_background`.
     event_store = EventStore(f"{config.data_dir}/petkit.db")
     retention_config = RetentionConfig.load(config.data_dir)
-    pet_registry = PetRegistry(event_store, f"{config.data_dir}/faces")
 
     # The one config dict the device-facing handlers, the panel and the MQTT
     # bridge all read, so a live setting change reaches every one of them
     # without a restart. Built BEFORE the bridge because the bridge holds it.
     app_config = config.to_app_config()
+    ptz.configure(config.api_url)
+
+    # Holds the same dict for the weight-matching thresholds the panel sets.
+    pet_registry = PetRegistry(event_store, f"{config.data_dir}/faces", settings=app_config)
 
     # The camera sidecar. Constructed here so the panel and the HA publisher can
     # ask it for an RTSP URL; it starts nothing until `start_background` and
@@ -216,6 +220,7 @@ def build_services(config: Config, args: argparse.Namespace) -> Services:
     # this — the local cloud and the panel work with no Home Assistant at all.
     if ha_publisher is not None:
         ha_publisher.go2rtc = go2rtc
+        ha_publisher.set_pet_source(pet_registry, event_store)
 
     # Proxy mode's MQTT half. The credential store is loaded unconditionally
     # (it is a small JSON file and holds what previous proxied sessions

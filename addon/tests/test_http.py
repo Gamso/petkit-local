@@ -295,6 +295,10 @@ def test_a_command_is_labelled_with_a_msg_type_the_device_dispatches():
 
     device = Device(device_type="d4sh", petkit_id=1, serial_number="F")
     for key, build in ALL_ACTIONS.items():
+        if key.startswith("ptz_"):
+            # T6-only, and its envelope is an already-encoded run_cmd string
+            # rather than a service envelope; covered by the PTZ tests.
+            continue
         target = device
         if key == "finish_litter_calibration":
             target = Device(device_type="t4", petkit_id=2, online=True)

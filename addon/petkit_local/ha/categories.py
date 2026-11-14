@@ -42,7 +42,8 @@ from petkit_local.ha.entities.selects import (
     FEEDER_SELECTS, FOUNTAIN_SELECTS, FOUNTAIN_W7H_SELECTS, LITTER_SELECTS,
 )
 from petkit_local.ha.entities.sensors import (
-    FEEDER_BINARY_SENSORS, FEEDER_D4_SENSORS, FEEDER_DUAL_HOPPER_SENSORS, FEEDER_DUAL_IR_SENSORS,
+    FEEDER_BINARY_SENSORS, FEEDER_D4_SENSORS, FEEDER_DUAL_FEED_SENSORS,
+    FEEDER_DUAL_HOPPER_SENSORS, FEEDER_DUAL_IR_SENSORS,
     FEEDER_NEXT_GEN_HALL_SENSORS, FEEDER_NEXT_GEN_SENSORS, FEEDER_SINGLE_HOPPER_SENSORS, FEEDER_SENSORS,
     FOUNTAIN_BINARY_SENSORS, FOUNTAIN_SENSORS,
     FOUNTAIN_W7H_BINARY_SENSORS, FOUNTAIN_W7H_HALL_SENSORS, FOUNTAIN_W7H_SENSORS,
@@ -263,7 +264,10 @@ CATEGORY_SPECS: dict[str, CategorySpec] = {
         model_entities=(
             # D4S accepts amount1/amount2 for a manual feed. Portion controls
             # stay local rather than seeding unverified ESP32 settings.
-            ("d4s", (*FEEDER_DUAL_BUTTONS, *FEEDER_DUAL_NUMBERS)),
+            # FEEDER_DUAL_FEED_SENSORS goes LAST in both hopper-pair rows:
+            # appended, it moves no entity that was already published.
+            ("d4s", (*FEEDER_DUAL_BUTTONS, *FEEDER_DUAL_NUMBERS,
+                     *FEEDER_DUAL_FEED_SENSORS)),
             ("d4", (*FEEDER_D4_SENSORS,)),
             # The embedded-Linux feeders report a dozen fields the ESP32 ones
             # do not; `state_parsers.FEEDER_NEXT_GEN_FIELDS` is what fills them.
@@ -277,7 +281,8 @@ CATEGORY_SPECS: dict[str, CategorySpec] = {
                      *FEEDER_NEXT_GEN_HALL_SENSORS)),
             ("d4sh", (*FEEDER_NEXT_GEN_SENSORS, *FEEDER_DUAL_IR_SENSORS,
                       *FEEDER_DUAL_HOPPER_SENSORS, *FEEDER_NEXT_GEN_HALL_SENSORS,
-                      *FEEDER_DUAL_BUTTONS, *FEEDER_DUAL_NUMBERS)),
+                      *FEEDER_DUAL_BUTTONS, *FEEDER_DUAL_NUMBERS,
+                      *FEEDER_DUAL_FEED_SENSORS)),
         ),
         # Four controls a D4SH cannot fill, and the reason is the same for each:
         # the field behind it is not in either of the two real reports in issue

@@ -119,6 +119,24 @@ async def test_a_command_is_published_as_compact_json():
                        '"params":{"start_action":0},"version":"1.0.0"}')
 
 
+async def test_a_run_cmd_command_goes_out_on_user_get_not_thing_service():
+    """The T6 camera buttons return a `msgType` envelope under the `user/get`
+    suffix. Published as `thing/service/user/get` it would reach the data-model
+    parser, which cannot read it, and the camera would silently not move."""
+    reg, dev, ble, pub, bridge = _setup()
+    bridge._client = FakeMqttClient()
+    frame = json.dumps({"msgType": 0, "user_cmd": {"run_cmd": "true"}})
+    await bridge.publish_to_device(dev, "user/get", frame)
+    topic, payload, _kw = bridge._client.published[-1]
+    assert topic.endswith("/user/get") and "/thing/service/" not in topic
+    assert json.loads(payload) == {"msgType": 0, "user_cmd": {"run_cmd": "true"}}
+
+    # No broker connection is still a visible failure, so the caller queues it.
+    bridge._client = None
+    with pytest.raises(ConnectionError):
+        await bridge.publish_to_device(dev, "user/get", frame)
+
+
 async def test_user_get_and_post_reply_are_also_compact():
     """Every broker->device topic goes through the same strict parser."""
     reg, dev, ble, pub, bridge = _setup()

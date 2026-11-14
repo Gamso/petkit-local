@@ -18,6 +18,10 @@ from urllib.parse import urlparse
 
 from aiohttp import web
 
+from petkit_local.ai.pets import (
+    LEARNED_WEIGHT_MIN_SAMPLES, WEIGHT_MATCH_SETTINGS, clamp_weight_setting,
+)
+from petkit_local.events.store import WEIGHT_MEDIAN_SAMPLES
 from petkit_local.http.proxy import DEFAULT_UPSTREAM, UPSTREAM_PRESETS
 from petkit_local.utils.coerce import to_int
 from petkit_local.utils.const import (
@@ -36,6 +40,11 @@ log = logging.getLogger(__name__)
 # These are the ONLY control surface for proxy mode and capture: neither has an
 # add-on option or a CLI flag any more. Every key here must also appear in
 # `config.PANEL_LIVE_KEYS`, or it is written now and dropped at the next start.
+#
+# The two `int` keys are the weight-matching thresholds the Pets tab edits.
+# An int here is always one of `ai/pets.py::WEIGHT_MATCH_SETTINGS`, which holds
+# its range: a number outside it is CLAMPED, not refused, so a slider dragged
+# to the end or a typo with a digit too many still saves something sane.
 LIVE_SETTINGS = {
     "proxy_mode": bool,
     "proxy_upstream": str,
@@ -48,6 +57,7 @@ LIVE_SETTINGS = {
     "proxy_mqtt_bridge": bool,
     "proxy_only": str,
     "capture": bool,
+    **dict.fromkeys(WEIGHT_MATCH_SETTINGS, int),
 }
 
 #: Defaults for `LIVE_SETTINGS`, used when the shared config has no value yet.
@@ -65,6 +75,7 @@ LIVE_SETTING_DEFAULTS = {
     "proxy_mqtt_bridge": True,
     "proxy_only": "",
     "capture": False,
+    **{key: default for key, (_low, _high, default) in WEIGHT_MATCH_SETTINGS.items()},
 }
 
 
@@ -83,8 +94,20 @@ def _current_settings(request: web.Request) -> dict[str, Any]:
     settings = {}
     for key, typ in LIVE_SETTINGS.items():
         value = live.get(key, fallbacks[key])
-        settings[key] = bool(value) if typ is bool else (value or "")
+        if typ is int:
+            # Re-clamped on the way out: the overrides file can be hand-edited,
+            # and what is shown must be what `match_by_weight` actually uses.
+            clamped = clamp_weight_setting(key, value)
+            settings[key] = fallbacks[key] if clamped is None else clamped
+        else:
+            settings[key] = bool(value) if typ is bool else (value or "")
     return settings
+
+
+def _weight_match_limits() -> dict[str, dict[str, int]]:
+    """`{key: {min, max, default}}` for the two weight-matching thresholds."""
+    return {key: {"min": low, "max": high, "default": default}
+            for key, (low, high, default) in WEIGHT_MATCH_SETTINGS.items()}
 
 
 def _valid_upstream(value: str) -> bool:
@@ -132,7 +155,9 @@ async def api_settings(request: web.Request) -> web.Response:
     the keys in `LIVE_SETTINGS` — anything else in the body is ignored), 400s
     if nothing in the request was applicable, and 400s on a value that fails
     `LIVE_SETTING_VALIDATORS` **without applying any of the batch**, so a
-    rejected request cannot leave half its settings written.
+    rejected request cannot leave half its settings written. A weight-matching
+    threshold that is a number is clamped to its range instead; one that is not
+    a number at all is a 400 like the rest.
     """
     if request.method == "GET":
         return web.json_response({"settings": _current_settings(request), "writable": bool(request.app.get("live_config"))})
@@ -149,7 +174,12 @@ async def api_settings(request: web.Request) -> web.Response:
         typ = LIVE_SETTINGS.get(key)
         if typ is None:
             continue
-        val = bool(val) if typ is bool else str(val)
+        if typ is int:
+            val = clamp_weight_setting(key, val)
+            if val is None:
+                return web.json_response({"error": f"bad value for {key}"}, status=400)
+        else:
+            val = bool(val) if typ is bool else str(val)
         validator = LIVE_SETTING_VALIDATORS.get(key)
         if validator is not None and not validator(val):
             return web.json_response({"error": f"bad value for {key}"}, status=400)
@@ -278,6 +308,13 @@ async def api_info(request: web.Request) -> web.Response:
         "settings": _current_settings(request),
         "settings_writable": bool(request.app.get("live_config")),
         "capture": _current_settings(request)["capture"],
+        # The ranges of the two weight-matching thresholds, so the Pets tab
+        # bounds its fields with the numbers the server clamps to.
+        "weight_match_limits": _weight_match_limits(),
+        # How the learned weight is built, so the Pets tab can say "2 of 3
+        # visits" from the numbers the matcher really uses.
+        "weight_learning": {"min_samples": LEARNED_WEIGHT_MIN_SAMPLES,
+                            "median_of": WEIGHT_MEDIAN_SAMPLES},
         # The products that do on-device recognition, so the AI/Pets tab can
         # name them instead of carrying its own copy of the list. Sorted for a
         # stable UI; a codename with no marketing name is skipped rather than

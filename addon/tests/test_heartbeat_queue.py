@@ -35,8 +35,8 @@ def _queue_feed(device: Device) -> dict:
 
 
 def _built_or_none(build, device: Device):
-    """An action's command, or None for one this device refuses (Finish
-    Litter Calibration refuses every model but a T4 before building one)."""
+    """An action's command, or None for one this device refuses (the T6
+    camera moves refuse every other model before building anything)."""
     try:
         return build(device)
     except Refused:

@@ -20,6 +20,7 @@ from petkit_local.devices.registry import DeviceRegistry
 from petkit_local.http.redact import RedactionPolicy
 from petkit_local.mqtt.auth import compute_aliyun_sign, parse_client_id
 from petkit_local.mqtt.topics import parse_topic, rewrite_topic
+from petkit_local.web.hub import EventHub
 from petkit_local.mqtt.upstream import (
     UpstreamCredentials,
     UpstreamMQTT,
@@ -209,6 +210,21 @@ async def test_a_device_direction_frame_from_upstream_is_not_relayed(tmp_path, t
 
     await up._on_upstream(device, REAL, _FakeMessage(topic, {"id": "495", "params": {}}))
     assert local == []
+
+
+async def test_a_frame_redaction_cannot_read_is_not_relayed(tmp_path):
+    """The device's parser stops at the end of the first JSON value; ours
+    refuses the frame. Republished untouched, that is an unredacted command."""
+    hub = EventHub()
+    up, device, _, local = _bridge(tmp_path, hub=hub)
+    raw = json.dumps({"params": {"content": json.dumps(
+        {"user_cmd": {"run_cmd": "id"}})}}).encode() + b"x"
+
+    await up._on_upstream(device, REAL, _FakeMessage(
+        "/sys/realpk/realdn/thing/service/property/set", raw))
+
+    assert local == []
+    assert hub.redaction_counts() == {"unreadable": 1}
 
 
 # --- the one thing that is never relayed ------------------------------------

@@ -14,7 +14,7 @@ async def test_stats_empty_for_pet_with_no_visits(event_store):
     assert stats == {
         "last_visit_ts": None, "visits_today": 0,
         "last_visit_weight": None, "last_visit_duration": None,
-        "last_device_id": None,
+        "last_device_id": None, "weight": None,
     }
 
 

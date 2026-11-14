@@ -349,6 +349,32 @@ add-on's data directory with a Cloudflare TURN key (`{"key_id": "...",
 from it for a player to use. The token itself is never sent to a browser; the
 credentials are, to anyone who can open the panel.
 
+## Telling two cats apart by weight
+
+A litter box that cannot say who visited — one with no camera, or a visit the
+camera did not recognise — has its visits matched to a pet by weight. On the
+**Pets** tab, click a pet's weight and enter it once, in kilograms.
+
+- **The weight is then learned.** Each pet's reference weight follows the
+  median of the last 7 visits credited to it, so a cat that gains or loses
+  weight keeps being recognised without anyone re-entering anything. The
+  learned value is used once 3 visits stand behind it. The weight you entered
+  is kept beside it, and the card shows both and which one is in use. **Reset
+  learned** goes back to the entered weight; so does typing a new one.
+- **Only a visit that was credited teaches anything** — one the box itself
+  named, or one that matched a single pet clearly. A visit that could be either
+  cat's stays unnamed, and no pet's weight moves because of it. Two cats that
+  end up weighing the same therefore stop being told apart; they do not start
+  trading visits.
+- **Two thresholds** on the same tab adjust the match. *Tolerance* (15% of the
+  pet's weight, never less than 500 g) is how far a visit may be from a pet;
+  raise it if a cat's visits often stay unnamed. *Ambiguity margin* (300 g) is
+  how much nearer the best pet must be than the next; raise it if two cats of
+  similar weight get each other's visits.
+
+Each pet also has a **Weight** sensor in Home Assistant: the same median of its
+last 7 weighed visits, in grams, suitable for a long-term graph.
+
 ## Provisioning over Bluetooth
 
 The **Provision** tab hands a device its Wi-Fi credentials, a custom `apiServers`
