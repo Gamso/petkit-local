@@ -92,6 +92,12 @@ services:
       # add-on or container, give this a different host port — 8554 is theirs.
       - "8554:8554"
 
+      # WebRTC out of the bundled go2rtc: sub-second live view, and talk for a
+      # device with the Two-Way Talk patcher. OFF unless you uncomment both
+      # lines here AND the --webrtc-candidate line below, with the same port.
+      # - "8555:8555/tcp"
+      # - "8555:8555/udp"
+
       # 1883 (plain MQTT) is deliberately NOT published. It is the internal
       # listener the bridge uses, and publishing it would clash with a broker
       # you already run.
@@ -125,6 +131,9 @@ services:
       - --port=8080
       - --mqtt-tls
       - --mqtt-tls-port=443
+      # WebRTC (see the 8555 mapping above): the address a browser reaches this
+      # host on, and the host side of that mapping.
+      # - --webrtc-candidate=CHANGE-ME:8555
       # Your Home Assistant MQTT broker, so entities appear via MQTT discovery.
       # Drop these two lines (or pass --no-ha) to run with no Home Assistant at
       # all: the web panel and the local cloud work regardless.

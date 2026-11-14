@@ -288,13 +288,14 @@ class Config:
     #: Supervisor's bridge NAT that is the HA host's IP and the host port
     #: 8555 is published on (config.yaml maps TCP and UDP); empty leaves
     #: WebRTC off unless the container has a LAN address of its own (macvlan,
-    #: see `media/go2rtc.py::lan_ip`).
+    #: see `media/go2rtc.py::lan_ip`), and then only when this says `auto`
+    #: (`--webrtc-candidate`): nothing here turns WebRTC on by itself.
     webrtc_candidate: str = ""
     #: Basic-auth password for go2rtc's HTTP API when it is published on the
     #: host (1984/tcp mapped), so an external consumer -- the WebRTC Camera
     #: integration in Home Assistant -- can use the streams and the talk
-    #: backchannel. Empty keeps the API on loopback whatever is mapped: that
-    #: API can register `exec:` sources, which is a shell on the host.
+    #: backchannel. Empty keeps the API on loopback whatever is mapped: an
+    #: unauthenticated API hands every camera, and its microphone, to the LAN.
     go2rtc_api_password: str = ""
     go2rtc_api_published: bool = False
     #: Further WebRTC candidates go2rtc announces AFTER the host one, verbatim
@@ -549,8 +550,8 @@ class Config:
         api_mapped = _published_port(ports, GO2RTC_API_PORT) is not None
         if api_mapped and not c.go2rtc_api_password:
             log.warning("Container port %d/tcp is published but go2rtc_api_password is "
-                        "empty, so go2rtc's API stays on loopback: it can register "
-                        "exec: sources and is never exposed without a password",
+                        "empty, so go2rtc's API stays on loopback: it hands out every "
+                        "camera and is never exposed without a password",
                         GO2RTC_API_PORT)
         c.go2rtc_api_published = api_mapped and bool(c.go2rtc_api_password)
         c.go2rtc_webrtc_candidates = parse_str_list(opts.get("go2rtc_webrtc_candidates"),

@@ -203,3 +203,40 @@ def test_a_malformed_or_missing_key_file_reads_as_unconfigured(tmp_path):
     (tmp_path / "turn.json").write_text(
         json.dumps({"key_id": "k", "api_token": "t"}))
     assert turn.turn_configured(str(tmp_path)) is True
+
+
+# --- what `src` may name ------------------------------------------------------
+
+@pytest.mark.parametrize("query", [
+    "src=rtsp://192.0.2.9/x",            # go2rtc would dial it on the spot
+    "src=http%3A%2F%2F192.0.2.9%2Fx",
+    "src=ffmpeg:1%23audio=opus",
+    "src=exec:id",
+    "src=1&src=rtsp://192.0.2.9/x",      # every value, not just the first
+    "dst=rtsp://192.0.2.9/x",
+    "src=",
+])
+async def test_src_and_dst_must_be_stream_names(tmp_path, monkeypatch, query):
+    """go2rtc reads anything that is not a known name as a SOURCE and connects
+    to it, so the query is not passed through as written."""
+    upstream = await _fake_go2rtc(monkeypatch)
+    c = await _client(_panel_app(tmp_path))
+    try:
+        r = await c.get(f"/api/stream/api/frame.jpeg?{query}")
+        assert r.status == 403
+        r = await c.get(f"/api/stream/api/ws?{query}")
+        assert r.status == 403
+    finally:
+        await c.close()
+        await upstream.close()
+
+
+async def test_a_plain_stream_name_still_passes(tmp_path, monkeypatch):
+    upstream = await _fake_go2rtc(monkeypatch)
+    c = await _client(_panel_app(tmp_path))
+    try:
+        r = await c.get("/api/stream/api/frame.jpeg?src=300039037")
+        assert r.status == 200
+    finally:
+        await c.close()
+        await upstream.close()

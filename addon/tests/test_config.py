@@ -356,3 +356,12 @@ def test_webrtc_candidates_default_to_nothing_and_never_raise():
     assert _from_ha_addon_with({"go2rtc_webrtc_candidates": []}).go2rtc_webrtc_candidates == []
     assert _from_ha_addon_with({"go2rtc_webrtc_candidates": {"a": 1}}).go2rtc_webrtc_candidates == []
     assert _from_ha_addon_with({"go2rtc_webrtc_candidates": "stun:8565"}).go2rtc_webrtc_candidates == ["stun:8565"]
+
+
+def test_the_webrtc_candidate_flag_is_the_only_way_to_turn_it_on_outside_the_addon(tmp_path):
+    from petkit_local.main.cli import build_config, parse_args
+    base = ["--config", str(tmp_path / "absent.json"), "--data-dir", str(tmp_path)]
+    assert build_config(parse_args(base)).webrtc_candidate == ""
+    c = build_config(parse_args([*base, "--webrtc-candidate", " 192.168.1.5:8555 "]))
+    assert c.webrtc_candidate == "192.168.1.5:8555"
+    assert build_config(parse_args([*base, "--webrtc-candidate", "auto"])).webrtc_candidate == "auto"

@@ -47,7 +47,7 @@ PetKit device ──HTTP───► petkit-local ──MQTT discovery──► 
 | `mqtt_tls_port` | `443` | Port for that listener. Change this and the matching port mapping together if your device dials a different one. |
 | `mqtt_strict_auth` | `false` | Enforce the Aliyun HMAC signature. Off by default so a signature nuance cannot lock a device out. |
 | `esp32_http_only` | `true` | Keep the T3, T4 and D4 on the HTTP heartbeat. They cannot use this broker unless reflashed, and need one DNS record for this — see *Networking*. Turn it off only for a reflashed device whose own broker name is pointed here. |
-| `go2rtc_api_password` | *(empty)* | Publishes the bundled go2rtc's HTTP API on `1984/tcp` (map that port too) behind basic auth, user `petkit`, for the **WebRTC Camera** integration (HACS). Empty keeps the API inside the container. |
+| `go2rtc_api_password` | *(empty)* | Publishes the bundled go2rtc's HTTP API on `1984/tcp` (map that port too) behind basic auth, user `petkit`, for the **WebRTC Camera** integration (HACS). Empty keeps the API inside the container — see [Live view and talk over WebRTC](#live-view-and-talk-over-webrtc) for what it opens. |
 | `go2rtc_webrtc_candidates` | `[]` | WebRTC addresses announced after the LAN one, for viewers outside your LAN — see [WebRTC from outside the LAN](#webrtc-from-outside-the-lan). |
 
 Fresh Element Gemini D4S firmware 1.198 was tested with the default
@@ -71,6 +71,8 @@ effect immediately, and persist to `/data/settings_overrides.json`.
 | `9000` | `9000` | Media upload bucket the device PUTs photos and videos to. |
 | `8099` | *(unmapped)* | The web panel over plain HTTP, **no authentication**. Ingress proxies this internally. |
 | `8554` | *(unmapped)* | Camera RTSP from the bundled go2rtc. Home Assistant reaches it over the internal network, so map it only to watch the stream from elsewhere on the LAN — and note 8554 clashes with the go2rtc app. |
+| `8555` tcp + udp | *(unmapped)* | WebRTC media from the bundled go2rtc. Unmapped, WebRTC is off and go2rtc does not listen on it. Map both to any free host port to turn it on (8555 itself is taken on a host that runs Frigate). No authentication of its own: a viewer needs the signalling first, which only the panel and the go2rtc API hand out. |
+| `1984` | *(unmapped)* | go2rtc's HTTP API. Served on this port only when it is mapped **and** `go2rtc_api_password` is set; otherwise it stays on loopback inside the container whatever is mapped. Basic auth over plain HTTP. |
 
 Remapping a port is honoured where it can be: the host port `80/tcp` is
 published on goes into the address devices are handed, and the same for the
@@ -270,6 +272,50 @@ There is no snapshot URL: the device answers every path with the same video
 stream, so the MQTT camera entity stays empty and the sensor carries the URL
 instead.
 
+### Live view and talk over WebRTC
+
+RTSP is what Home Assistant's Generic Camera reads, and it is a couple of
+seconds behind. The bundled go2rtc can also serve WebRTC — sub-second, with
+sound — and carry the viewer's microphone back to the device's speaker.
+**All of it is off until you turn it on**, and each step opens something:
+
+1. **Map `8555/tcp` and `8555/udp`** (*Network*, any free host port) and
+   restart. go2rtc then listens for WebRTC media and announces the Home
+   Assistant host and that port to browsers. From then on it also asks a
+   public STUN server (`stun.cloudflare.com`) for its public address — the one
+   thing in this feature that leaves your network.
+2. **Apply Two-Way Talk** on the *Patchers* tab for a device you want to talk
+   through. Its stream then gets a microphone track: go2rtc hands the audio to
+   an `ffmpeg` in this container, which sends it to the device.
+3. **A player.** The panel's own **Talk** button on a camera's page needs
+   neither of the steps above (only the patcher): it sends the browser's
+   microphone through the panel, about a second behind, and needs a desktop
+   browser on an HTTPS page. For WebRTC there is no player in the panel yet.
+   Home Assistant's camera card has no microphone button either, so the
+   consumer is the **WebRTC Camera** integration (HACS), and it needs go2rtc's
+   API: set `go2rtc_api_password`, map `1984/tcp`, restart, add the
+   integration with `http://petkit:<password>@<HA host>:1984`, and use a card
+   with `url: "<the device's PetKit id>"` and `media: video,audio,microphone`.
+
+**What the published API is.** Anyone who can reach port 1984 and knows the
+password can list the streams (the list shows each camera's LAN address),
+watch and listen to every camera, speak through every patched one, and add
+streams of their own for go2rtc to connect to. It is basic auth over plain
+HTTP, so the password crosses your LAN in the clear: use one you use nowhere
+else. What it cannot do is reconfigure or restart go2rtc or run a command:
+only the endpoints needed to list and play a stream are served on a published
+API, and go2rtc refuses a command (`exec:`) source that arrives over it.
+Without the option, or without the mapping, the API stays on loopback.
+
+The panel also proxies the play-only part of that API under `/api/stream/`,
+for a player on the panel's own origin. It is behind Ingress like the rest of
+the panel — and, like the rest of the panel, open to your LAN if you map
+port 8099.
+
+Outside the add-on (docker compose, a bare process) there is no port mapping
+to read, so WebRTC is turned on with `--webrtc-candidate <host>:<port>`, or
+`--webrtc-candidate auto` when the container has a LAN address of its own.
+
 ### WebRTC from outside the LAN
 
 On the LAN a browser reaches go2rtc's WebRTC port directly. From outside —
@@ -277,9 +323,9 @@ a phone on mobile data, Home Assistant behind your reverse proxy — it cannot:
 go2rtc announces the LAN address, plus whatever public address and *random
 port* your router mapped for its STUN lookup, and that mapping is good for the
 STUN server only. WebRTC then fails, the card falls back to a mode without
-WebRTC, and anything that needs it is gone: the doorbell's G.711 audio (which
-only WebRTC can play), two-way talk, sub-second latency. Video alone still
-works, which is what makes this look like "sound is broken off Wi-Fi".
+WebRTC, and anything that needs it is gone: two-way talk and sub-second
+latency. Video alone still works, which is what makes this look like "sound is
+broken off Wi-Fi".
 
 Two steps fix it. Forward the host port you mapped for `8555/udp` and
 `8555/tcp` on your router to the Home Assistant host (say 8565 → 8565). Then
@@ -292,7 +338,16 @@ go2rtc_webrtc_candidates:
 ```
 
 The LAN address stays first in the list, so viewers at home keep the direct
-route. The option takes go2rtc's own candidate syntax verbatim.
+route. The option takes go2rtc's own candidate syntax verbatim. Forwarding
+that port puts go2rtc's WebRTC listener on the internet: it serves nobody
+without the signalling, which stays behind Home Assistant or the API password,
+but it is a listener you did not have before.
+
+A relay is the alternative to forwarding a port. If `turn.json` exists in the
+add-on's data directory with a Cloudflare TURN key (`{"key_id": "...",
+"api_token": "..."}`), the panel's `/api/turn` mints one-hour relay credentials
+from it for a player to use. The token itself is never sent to a browser; the
+credentials are, to anyone who can open the panel.
 
 ## Provisioning over Bluetooth
 

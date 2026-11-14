@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+from typing import Any
 
 import aiohttp
 from aiohttp import web
@@ -34,6 +35,16 @@ STREAM_PROXY_EXACT = ("api/ws", "api/webrtc")
 #: the port is that the config surface stays unreachable.
 STREAM_PROXY_PREFIXES = ("api/frame.", "api/stream.")
 
+#: The query parameters that name a go2rtc stream: `src` to watch one, `dst` to
+#: send into one (the microphone side of `api/webrtc`).
+_STREAM_PARAMS = ("src", "dst")
+#: What a stream name may look like. go2rtc treats anything else in `src` as a
+#: SOURCE and dials it on the spot — `src=rtsp://10.0.0.1/` creates a stream
+#: and connects there — so passing the query through as written would make
+#: this proxy a way to have the add-on open connections of the caller's
+#: choosing. A device stream is its petkit id, which this covers.
+_STREAM_NAME_CHARS = frozenset("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-")
+
 #: One streamed chunk. Small enough to keep latency low on a live stream, big
 #: enough that a 1080p MSE segment does not cost hundreds of syscalls.
 _CHUNK = 64 * 1024
@@ -42,6 +53,15 @@ _CHUNK = 64 * 1024
 def _allowed(tail: str) -> bool:
     """Whether `tail` names a whitelisted go2rtc streaming endpoint."""
     return tail in STREAM_PROXY_EXACT or tail.startswith(STREAM_PROXY_PREFIXES)
+
+
+def _names_only(query: Any) -> bool:
+    """Whether every `src`/`dst` in `query` is a plain stream name."""
+    for param in _STREAM_PARAMS:
+        for value in query.getall(param, []):
+            if not value or not _STREAM_NAME_CHARS.issuperset(value):
+                return False
+    return True
 
 
 async def _pump_ws(src: web.WebSocketResponse | aiohttp.ClientWebSocketResponse,
@@ -68,6 +88,8 @@ async def api_stream_proxy(request: web.Request) -> web.StreamResponse:
     tail = request.match_info["path"]
     if not _allowed(tail):
         return web.json_response({"error": "not a permitted stream path"}, status=403)
+    if not _names_only(request.query):
+        return web.json_response({"error": "src and dst must be stream names"}, status=403)
     qs = request.query_string
     base = f"{GO2RTC_API_ADDR}/{tail}" + (f"?{qs}" if qs else "")
 
