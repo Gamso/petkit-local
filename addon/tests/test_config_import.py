@@ -80,7 +80,7 @@ async def _apps():
 
 
 async def _import(panel, *entries):
-    r = await panel.post("/api/import", data=json.dumps({"devices": list(entries)}))
+    r = await panel.post("/api/import", json={"devices": list(entries)})
     assert r.status == 200
     return await r.json()
 
@@ -183,9 +183,10 @@ async def test_a_bad_entry_is_reported_and_the_rest_still_imported():
 async def test_a_body_that_is_not_an_import_document_is_refused():
     panel, device, reg, ble = await _apps()
     try:
-        r = await panel.post("/api/import", data=json.dumps({"devices": []}))
+        r = await panel.post("/api/import", json={"devices": []})
         assert r.status == 400
-        r = await panel.post("/api/import", data="[1, 2]")
+        r = await panel.post("/api/import", data="[1, 2]",
+                             headers={"Content-Type": "application/json"})
         assert r.status == 400
     finally:
         await panel.close()

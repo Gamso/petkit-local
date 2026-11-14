@@ -20,6 +20,14 @@ enough to be worth stating plainly.
 | Media bucket (host `9000`) | It stands in for Aliyun OSS, whose credentials this app issues to the device. Object keys are containment-checked, so an upload cannot escape the media root — but anyone on the LAN can upload. |
 | Web panel (container `8099`) | Unmapped by default and reached through Home Assistant Ingress, which authenticates. **Map it to a host port and the whole API — device settings, commands, pet records, the patchers — is available with no login.** |
 
+The panel does refuse one thing: a write, or a WebSocket, that a page from
+another site made your browser send (`web/origin.py` compares `Origin` with the
+host the request was addressed to, and JSON bodies must be sent as
+`application/json`). That stops a web page you happen to visit from driving a
+panel only you can reach. It is not a login: anything that can reach the port
+directly — `curl`, a script, another machine on the LAN — is still unrestricted,
+and it does not stop DNS rebinding.
+
 Web Bluetooth provisioning needs a secure context. Serving the panel a second
 time over HTTPS with a self-signed certificate would have given it one, and was
 rejected: it means a second unauthenticated surface, on a port nobody expects,

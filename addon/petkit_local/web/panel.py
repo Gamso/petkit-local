@@ -77,6 +77,7 @@ from petkit_local.web.api.sounds import (
 )
 from petkit_local.web.api.talk import api_talk
 from petkit_local.web.api.timeline import api_event_detail, api_timeline
+from petkit_local.web.origin import same_origin_writes
 from petkit_local.web.appkeys import (
     BACKGROUND_TASKS, BLE_REGISTRY, BRIDGE, CFG, EVENT_STORE, HA_PUBLISHER, HUB,
     LIVE_CONFIG, PET_REGISTRY, REGISTRY, RETENTION_CONFIG,
@@ -161,7 +162,11 @@ def create_panel_app(registry: DeviceRegistry, ble_registry: BLERegistry | None,
     # failed to parse as JSON — so the button appeared to do nothing at all.
     # Same reasoning as http/bucket.py's cap, one size down: nothing the panel
     # accepts is media-sized.
-    app = web.Application(client_max_size=16 * 1024 * 1024)  # 16MB
+    #
+    # The one middleware: no login (SECURITY.md), but a write or a WebSocket
+    # that another site's page made the browser send is refused (web/origin.py).
+    app = web.Application(client_max_size=16 * 1024 * 1024,  # 16MB
+                          middlewares=[same_origin_writes])
     app[REGISTRY] = registry
     app[BLE_REGISTRY] = ble_registry
     app[HUB] = hub
