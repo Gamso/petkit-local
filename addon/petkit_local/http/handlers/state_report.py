@@ -15,11 +15,11 @@ because a device whose state report 500s just retries the same body forever.
 """
 from __future__ import annotations
 
-import gzip
 import json
 import logging
 import time
 import urllib.parse
+import zlib
 
 from aiohttp import web
 
@@ -31,6 +31,38 @@ from petkit_local.utils.capture import capture_record
 from petkit_local.utils.timeutil import cloud_timestamp
 
 log = logging.getLogger(__name__)
+
+#: The most a gzip-framed report may inflate to. A real report is a fixed
+#: 29-key dump of a kilobyte or two, so this is three orders of magnitude of
+#: headroom — and it is the ceiling an UNCOMPRESSED body already has, aiohttp's
+#: default `client_max_size`, which `http/server.py` leaves in place. Without
+#: it, a megabyte of zeros gzipped by anyone on the LAN (this endpoint takes no
+#: credential) inflates to a gigabyte on the event loop every device shares.
+MAX_INFLATED_STATE = 1024 * 1024
+
+
+def _inflate(raw: bytes) -> bytes:
+    """Gunzip a report body, to at most `MAX_INFLATED_STATE` bytes.
+
+    Returns:
+        The inflated bytes; `raw` itself when it is not a complete gzip stream,
+        which is the normal case for a `Content-Encoding: gzip` request (aiohttp
+        has inflated that one already, under its own size limit); and ``b""``
+        when the stream is larger than the cap — "no state this round", the
+        same as any other body nothing can be read from. Never raises.
+    """
+    try:
+        inflater = zlib.decompressobj(wbits=31)
+        data = inflater.decompress(raw, MAX_INFLATED_STATE)
+    except zlib.error:
+        return raw
+    if inflater.eof:
+        return data
+    if inflater.unconsumed_tail:
+        log.warning("Ignoring a gzip state report that inflates past %d bytes "
+                    "(%d compressed)", MAX_INFLATED_STATE, len(raw))
+        return b""
+    return raw
 
 
 def _extract_state(text: str) -> dict:
@@ -110,11 +142,8 @@ async def handle_state_report(request: web.Request) -> web.Response:
     # body), so extract the `state` field and parse it.
     data = raw
     if raw[:2] == b"\x1f\x8b" or request.headers.get("Content-Encoding", "").lower() == "gzip":
-        try:
-            data = gzip.decompress(raw)
-        except Exception:
-            data = raw
-    text = data.decode("utf-8", "replace") if isinstance(data, (bytes, bytearray)) else str(data)
+        data = _inflate(raw)
+    text = data.decode("utf-8", "replace")
     body = _extract_state(text)
 
     if config.get("capture") and body:
