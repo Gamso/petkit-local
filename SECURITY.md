@@ -59,6 +59,25 @@ What it does not do, so you can judge it:
   that can reach the panel can reset the app password. That is why the panel
   must never be exposed the way the app API is.
 
+### What it calls out to
+
+Nothing in petkit-local reaches the internet on a schedule of its own. Beyond
+Home Assistant's broker, the outbound calls — all off until you configure or
+press something — are:
+
+| Call | When | What it carries |
+|---|---|---|
+| PetKit's cloud (`http/cloud_fetch.py`, the firmware fetch) | only when a panel button asks it to (an accessory secret, a pet's photos, an ESP32 firmware image) | a request signed as the device |
+| Proxy mode's upstream (`http/proxy.py`, `mqtt/upstream.py`) | while proxy mode is on, relaying the device's own traffic | the device's traffic, redacted on the way back |
+| Cloudflare's TURN API (`media/turn.py`) | when a live view is opened and a TURN key is configured | a request for short-lived relay credentials |
+| Your ntfy server (`app_api/notify/`) | while phone notifications are on, once per notification (bounded per device and kind) | `POST {server}/{topic}` with `Authorization: Bearer <token>`, a title, a priority, tags and one sentence: a device's product name, a pet's name, what happened. No device id, no media, no link, no credential of anything else. TLS is verified and redirects are not followed, so the token goes to the configured host or nowhere. |
+
+The ntfy access token and the topic are secrets — on ntfy the topic name is the
+subscription. Both live in `/data/ntfy.json` (0600), never in the add-on
+options; neither is written to the log, and the panel shows the token only by
+its last four characters. Give the token a user that may only **write** that one
+topic, and the phone a separate user that may only read it.
+
 ### Things that are deliberately permissive
 
 - **`mqtt_strict_auth` defaults to `false`**, so the device-facing MQTT broker

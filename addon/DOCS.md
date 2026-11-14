@@ -471,6 +471,87 @@ same `Authorization: Bearer` header as everything else — there are no signed
 URLs to leak into logs. Adding a field is a compatible change; anything else
 moves to `/app/v2`.
 
+### Notifications (ntfy)
+
+petkit-local can push notifications to your phone through **your own
+[ntfy](https://ntfy.sh) server** — nothing goes through Google or PetKit. Set it
+up in the panel, **Setup → Phone notifications**, next to Phone app access.
+
+What can be sent, each with its own switch:
+
+| Kind | Sent when |
+|---|---|
+| Toilet visit | a litter box reports a finished visit (with the pet's name when it was recognised or matched by weight) |
+| Meal served | a feeder finishes a meal, or skips one because the bowl was not empty |
+| Meal failed | a meal ends in an error, or nothing came out (hoppers empty, blocked outlet) |
+| Device error | a device reports a fault, as an event or in its state |
+| Food low | a feeder's hopper reads empty and still does ten minutes later |
+| Filter, litter or consumable to replace | waste bin or tray full, litter below 20 %, fountain filter or water, N50/N60/desiccant spent, deodorizer liquid low |
+| Device offline | the offline watchdog decides a device is gone (after `offline_timeout`, not on a missed poll) |
+
+A condition is announced when it **starts**, once — a full bin is not repeated
+on every report, and whatever was already true when the add-on started is not
+announced at all. Each event is announced once, however often the device
+retries it. Each device may send only a few notifications of one kind per
+period (one error per five minutes, one food-low per hour, …), so a device that
+flaps cannot flood the phone. Device offline needs the watchdog, which runs with
+Home Assistant publishing on; with `--no-ha` nothing is ever marked offline.
+
+#### On the ntfy server
+
+Run ntfy with access control on, and nothing readable or writable by default
+(`auth-file` set, `auth-default-access: deny-all` in `server.yml`). Then:
+
+1. In the panel, enter the server URL (`https://ntfy.example.org`) and click
+   **Save and enable**. A random topic is generated — something like
+   `petkit-Aj4LZxpuM68UPghQY5MeN6bs…`. On ntfy a topic name is the
+   subscription itself, so treat it as a secret; **Regenerate** replaces it.
+2. Create a user for petkit-local that may only **write** to that topic, and a
+   token for it:
+
+   ```sh
+   ntfy user add petkit-local
+   ntfy access petkit-local 'petkit-Aj4LZx…' write-only
+   ntfy token add petkit-local
+   ```
+
+   Paste the token (`tk_…`) into **Access token** and save. It is stored in
+   `/data/ntfy.json`, never written to the log, and the panel only ever shows
+   its last four characters.
+3. Create a user for the phone that may only **read** it:
+
+   ```sh
+   ntfy user add phone
+   ntfy access phone 'petkit-Aj4LZx…' read-only
+   ```
+
+4. Click **Send test notification**. The panel says whether ntfy accepted it,
+   and why not if it did not (`401` is a wrong token, `403` a missing write
+   permission on the topic).
+
+Serve ntfy over HTTPS: the token travels in every publish, and petkit-local
+verifies the server's certificate and follows no redirect.
+
+#### On the phone
+
+- **With the ntfy Android app**: add your server under *Settings → Manage
+  users* with the `phone` user, then subscribe to the topic on that server.
+  Notifications appear as ntfy notifications, with their title, priority and
+  icon.
+- **Through UnifiedPush**, with the ntfy app as the distributor: an app using
+  UnifiedPush is given an endpoint by the distributor, on your server, of the
+  form `https://ntfy.example.org/upAbC123…?up=1`. Its topic is the `upAbC123…`
+  part — paste that into **Topic** instead of the generated one, and give
+  petkit-local's user write access to it (`ntfy access petkit-local 'up*'
+  write-only` covers every UnifiedPush topic). In this mode only the message
+  body reaches the app — title, priority and tags are the ntfy app's own — so
+  every message is written to make sense on its own ("Mochi used the Purobot
+  Ultra (waste 32 g).").
+
+What a notification carries: a title, one sentence naming the device by its
+product name and the pet by its name, a priority, and two tags (an emoji and
+the kind, e.g. `cat,toilet`). No device id, no token, no link.
+
 ## T4 litter-level calibration
 
 On the Pura Max (T4), leveling the litter and confirming that it is full are

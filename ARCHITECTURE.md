@@ -60,6 +60,7 @@ petkit_local/
 │                  auth.py password (scrypt), hashed session tokens, trusted proxies
 │                  throttle.py failed-login lockout, client address · serializers.py every shape
 │                  handlers/ · openapi.yaml the contract, tested against ROUTES
+│                  notify/ ntfy push: hub subscriber -> rules -> bounded publish queue
 ├── patchers/      on-device patches: cacert · mqtt · cloud · camera · ssh
 │                  firmware (ESP32: a whole image rebuilt, not a file on a device)
 │                  esp32_ota (that image stored, offered over OTA, rolled back)
