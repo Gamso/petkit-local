@@ -1,5 +1,136 @@
 # Changelog
 
+## 2.3.0 — 2026-11-14
+
+The first release published from this fork's own image, `ghcr.io/gamso/petkit-local`.
+
+### Before you update
+
+- **The add-on now comes from this repository.** `config.yaml` points at
+  `ghcr.io/gamso/petkit-local`, and the add-on store entry is this repository.
+  An install added from another repository keeps pulling that repository's
+  image: remove it from the store and add this one. With both added, the store
+  shows the add-on twice under the same slug; the slug is unchanged, so data
+  carries over.
+- **Python 3.14.** The image moves from Python 3.12 to 3.14 on every
+  architecture, and `pyproject.toml` now requires `>=3.14`: a source install on
+  an older Python is refused by pip. aiohttp's floor rises to 3.14.
+- **The first start after updating takes longer on a large history.** The
+  events table gains two indexes and the start-up backfill runs one full, paged
+  pass before stamping itself done; later starts skip it.
+- **A device whose clock disagrees with its locale is corrected about five
+  minutes after start**, once (see the timezone entry below).
+- **Scripts that post to the panel's API must send
+  `Content-Type: application/json`.** A JSON body without it is now refused
+  with 415. The panel itself already sends it everywhere.
+
+### Security
+
+- **The device-facing MQTT broker no longer treats any unknown client as its
+  own bridge.** Any client id not shaped like a PetKit device was let in on
+  every listener, even with `mqtt_strict_auth` on, and could read every frame
+  and publish commands to devices. The internal bridge now authenticates with a
+  per-process secret; with strict auth on, everything else must be a device.
+  With strict auth off the broker stays permissive, as documented, but logs
+  such a client as a warning. Signatures are compared in constant time.
+- **The panel refuses writes a foreign web page makes the browser send.** A
+  state-changing request or WebSocket upgrade marked cross-site by the browser
+  is answered 403, and JSON bodies must carry their content type. A page you
+  visit can no longer turn proxy mode on or send a device command through a
+  reachable panel.
+- **Device-supplied markup can no longer run in the panel.** A feeder's
+  reported schedule could carry a "deferred feed" whose amounts were rendered
+  unescaped. They are escaped now, and a device-reported `feed` is reduced to a
+  validated `schedule`.
+- **Proxy mode fails closed.** An upstream reply that cannot be parsed for
+  redaction is never relayed: the device gets the local answer over HTTP, and a
+  non-JSON MQTT frame is dropped. The upstream's TLS certificate is now
+  verified when a request is forwarded; only an `https://` upstream written as
+  an IP address stays unverified, with a warning.
+- **A patcher refuses to run while the device's address is in dispute.** The
+  address a patcher downloads from came from an unauthenticated report. Two
+  different addresses claimed for the same device within ten minutes, or none
+  recently confirmed, now stop the run until the operator names the address.
+- **A gzip state report is inflated to 1 MiB at most**, so a small upload can
+  no longer stall or exhaust the add-on.
+- **Secret query values are masked in the process and panel logs** (naigai).
+  The live log still shows request headers.
+
+### New
+
+- **Live view and two-way talk in the browser for the camera models**
+  (shinn-y, upstream PR #24; dernassesmart). WebRTC out of the bundled go2rtc,
+  a push-to-talk button, and talk-sink fixes for the Axera feeders. Everything
+  is closed by default: port 8555 is not mapped, and go2rtc's API (1984) is
+  published only with the port mapped **and** `go2rtc_api_password` set, then
+  limited to listing and playing streams. New options:
+  `go2rtc_api_password`, `go2rtc_webrtc_candidates`.
+- **Custom feeding sounds reach a feeder and play** (dernassesmart). Uploads
+  are transcoded to the AAC format the firmware plays and served over plain
+  HTTP, which the feeder's downloader needs. A device is offered five sounds
+  at most; uploads are capped at 2 MB.
+- **Per-pet Weight sensor, and a reference weight that follows the cat.** The
+  median of the last seven weighed visits; once three unambiguous visits back
+  it, it replaces the hand-entered weight for matching (the entered one is kept
+  and can be restored). The matching tolerance and ambiguity margin are
+  adjustable in the Pets tab. Pets can be created on a box with no camera, and
+  a pet's weight can be entered in the panel.
+- **T6: Reset Bag Counter, privacy-mode switches and camera pan/flip buttons**
+  (naigai). Pan and flip run three small helpers on the device; their source is
+  included and a test rebuilds them byte for byte. Confirmed by their author on
+  firmware 929/951 only.
+- **T4: Finish Litter Calibration** (yukiinagato, upstream PR #48).
+- **W7H: Deep Clean and circulation-pump reset**, with stage and result sensors
+  (AlexMorbo, upstream PR #54). Deep Clean asks for confirmation in the panel.
+- **The device's timezone follows DST** (lucamzanon, upstream PR #47). A device
+  whose offset comes from its locale is pushed the new offset when the clock
+  changes; a manual override is left alone. The check runs every five minutes
+  and talks only to the device.
+- **Pause a feeder's plan without deleting its meals** (dernassesmart): a
+  Feeding Schedule Active switch, also in the schedule editor. One-off feeds
+  still fire while paused.
+- **Per-hopper planned and manual dispense sensors** on the dual-hopper feeders
+  (PineappleEmperor). Planned reads 0 while the plan is paused.
+- **Feeder HTTP event codes 6 (eat over) and 24 (pet recognised)** are named,
+  graded `inferred` (dernassesmart).
+- **A refill ring is vouched for on `dev_package_auth`** instead of answered
+  with an empty object (AlexMorbo).
+- **The live traffic log can be filtered by device** (strxno).
+
+### Fixed
+
+- **The stitcher no longer deletes its sources before the joined clip is in
+  place and recorded.** It now verifies, moves, records, then deletes; a
+  failure keeps the chunks. Late chunks for an already-stitched episode make a
+  second clip instead of an orphan file, and a kept outlier is never
+  overwritten.
+- **Commands queued for a device that is away expire.** An action (feed,
+  clean...) older than 60 s is dropped when the device returns, with a log
+  line, instead of all running at once; settings writes are kept and collapsed
+  to the latest per field. The queue holds 64 entries at most.
+- **Home Assistant marks every entity unavailable when the add-on stops or
+  crashes**, through a shared status topic with a last will.
+- **The sound and device-deletion handlers read the right app keys**: custom
+  sounds no longer raise on every poll, and deleting a device removes its
+  entities from Home Assistant.
+- **A pet's last visit duration is filled for HTTP devices** (Chris), and **a
+  pet's visits are counted from the visit summaries** only (strxno).
+- **Stopping the add-on fits the Supervisor's ten seconds**: every runner's
+  shutdown drain is bounded (dernassesmart).
+- **The MQTT broker is attached to the panel before the panel starts**; it was
+  changing a started app, which aiohttp 4 will refuse.
+- **Every event lookup is indexed**, and the start-up backfill pages through
+  the table instead of loading up to 100,000 rows each start.
+
+### Project
+
+- **Images are published only from a `v*` tag**, after the tests pass on that
+  commit, and no longer on every push to `main`.
+- **Pull requests build the image only when they change what it is built
+  from** (`Dockerfile`, `requirements.txt`, `pyproject.toml`).
+- **The test suite is warning-free and fails on any new warning**; two flaky
+  tests were made deterministic.
+
 ## 2.2.2 — 2026-10-25
 
 - **Rolling back (or re-flashing) a patched T3/T4/D4 no longer waits forever on
