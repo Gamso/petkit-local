@@ -282,3 +282,13 @@ async def test_a_slow_socket_is_closed_with_too_slow(feed_env: FeedEnv):
         for i in range(5):
             sub.push(f'{{"type":"filler","n":{i}}}')
     assert await _closed(ws) == CLOSE_TOO_SLOW
+
+
+def test_both_app_websockets_close_with_the_same_codes():
+    """An app handles the live-updates and the live-video socket with one
+    close handler, so the shared situations must carry the same code."""
+    from petkit_local.app_api import updates, video
+
+    assert updates.CLOSE_SESSION_ENDED == video.CLOSE_SESSION_ENDED == 4401
+    assert updates.CLOSE_TOO_SLOW == video.CLOSE_TOO_SLOW == 1013
+    assert updates.CLOSE_GOING_AWAY == video.CLOSE_SHUTDOWN == 1001

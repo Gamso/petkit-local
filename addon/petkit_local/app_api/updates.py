@@ -75,10 +75,13 @@ TIMELINE_ROW_LIMIT = 500
 #: Hub event kinds that can mean a timeline card appeared or changed.
 TIMELINE_KINDS = frozenset({"event", "media"})
 
-#: WebSocket close codes (4000-4999 are the application's own).
+#: WebSocket close codes, the same as the live-video socket's (`video.py`) so an
+#: app handles both one way: 1001 server stopping, 1013 the app fell behind
+#: (the standard "try again later"), 4401 the session ended (the HTTP 401 of
+#: the app's own 4000-4999 range).
 CLOSE_GOING_AWAY = 1001
-CLOSE_SESSION_ENDED = 4001
-CLOSE_TOO_SLOW = 4008
+CLOSE_SESSION_ENDED = 4401
+CLOSE_TOO_SLOW = 1013
 
 _CLOSE = object()
 

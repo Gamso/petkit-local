@@ -691,10 +691,10 @@ paths:
         `{"type": "ping"}` for an application-level `{"type": "pong"}`; anything else
         it sends is ignored.
 
-        Close codes: `1001` server shutting down; `4001` the session ended (logout,
-        revoked in the panel, password changed or removed) — sign in again; `4008`
-        the app read too slowly and its queue filled — reconnect, which starts from a
-        fresh `hello`.
+        Close codes (the same as the live-video socket's): `1001` server shutting
+        down; `4401` the session ended (logout, revoked in the panel, password
+        changed or removed) — sign in again; `1013` the app read too slowly and its
+        queue filled — reconnect, which starts from a fresh `hello`.
       responses:
         "101":
           description: Switching to the WebSocket protocol; each message is an `UpdateMessage`.

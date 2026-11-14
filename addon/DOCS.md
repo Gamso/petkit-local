@@ -510,8 +510,9 @@ live video, below). Its messages are in the same file (`UpdateMessage` and the
 (only the entities that changed), `device` (a summary, when it went online or offline),
 `device_removed` and `timeline` (a card to insert or replace by `id`, with the
 ids it `replaces`). Open the socket before fetching the timeline and merge by
-`id`. It closes with `4001` when the session ends (sign in again), `4008` when
-the app read too slowly (reconnect) and `1001` on shutdown. Writes answer
+`id`. It closes with `4401` when the session ends (sign in again), `1013` when
+the app read too slowly (reconnect) and `1001` on shutdown — the same codes as
+the live-video socket, so one handler covers both. Writes answer
 `delivered`: `mqtt`, `queued` or `local`.
 
 ### Live video
