@@ -659,6 +659,9 @@ def event_label(event_type: str | None,
                 err_code = to_int((content or {}).get("err_code"), None)
                 outcome, _ = _enum(_FEED_RESULT, codes.feed_result(result, err_code),
                                    "result {n}")
+            elif code.done_word == codes.DEEP_CLEAN_DONE_WORD:
+                outcome, _ = _enum(codes.FOUNTAIN_W7H_DISINFECT_RESULTS,
+                                   result, "result {n}")
             else:
                 outcome, _ = _event_result(result, raw_type, device_type)
                 if result == 3 and (content or {}).get("kitten"):

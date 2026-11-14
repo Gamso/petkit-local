@@ -168,6 +168,11 @@ ROLE_ERROR_START = "error_start"
 ROLE_ERROR_OVER = "error_over"
 ROLE_DETECTION = "detection"
 
+#: `done_word` of the W7H's deep-clean (disinfect) completion. Read by
+#: `normalize.apply_derived_state` and `decode.event_label`, which must not
+#: treat it as a litter clean or read its `result` from the litter table.
+DEEP_CLEAN_DONE_WORD = "deep cleaning"
+
 
 @dataclass(frozen=True)
 class EventCode:
@@ -577,6 +582,34 @@ FEEDER_HTTP_CODES: dict[str, EventCode] = {
 #: is the only embedded-Linux fountain, and a Bluetooth EverSweet has no HTTP
 #: path at all, so the codes are keyed on `FOUNTAIN_NEXT_GEN`.
 FOUNTAIN_HTTP_CODES: dict[str, EventCode] = {
+    # 1, 2 and 3 share their NUMBERS with litter 1/2/3 and, as far as the shape
+    # goes, their meanings — but this is a separate per-category table, and a
+    # fountain row is evidence only for the fountain. All three arrived on a W7H
+    # (capture 2026-11, fw 456, the official app in proxy mode) in the same
+    # session as code 12, before the device was up on MQTT.
+    "1": EventCode(
+        kind=KIND_ERROR, label="Error", grade=INFERRED, anchor=True,
+        role=ROLE_ERROR_START, families=FOUNTAIN_NEXT_GEN,
+        note="Seen on a W7H (capture 2026-11, fw 456) around a failed deep "
+             "clean. Read as an error start from its pairing with code 2 and "
+             "the litter table's code 1; no firmware name and its content "
+             "was not captured.",
+    ),
+    "2": EventCode(
+        kind=KIND_ERROR, label="Error cleared", role=ROLE_ERROR_OVER,
+        families=FOUNTAIN_NEXT_GEN,
+        note="W7H (capture 2026-11, fw 456): arrived ~10 s after the app's "
+             "thing.service.reset_cycle_pump, carrying err \"cycM\", after "
+             "which err{} was empty and pumpState back to 0. Confirmed for "
+             "that shape; other faults clearing are assumed to look the same.",
+    ),
+    "3": EventCode(
+        kind=KIND_CLEANING, label="Work started", grade=INFERRED, detail=True,
+        role=ROLE_START, mode_from="action", families=FOUNTAIN_NEXT_GEN,
+        note="W7H (capture 2026-11, fw 456), before MQTT was up. Taken as the "
+             "HTTP twin of MQTT work_start, so `action` decodes against "
+             "FOUNTAIN_W7H_WORK_MODES; the content itself was not captured.",
+    ),
     "5": EventCode(
         kind=KIND_DRINKING, label="Drinking started", detail=True,
         role=ROLE_START, families=FOUNTAIN_NEXT_GEN,
@@ -590,6 +623,17 @@ FOUNTAIN_HTTP_CODES: dict[str, EventCode] = {
              "{img, aesKey, mark, start_time, event_start, event_end, "
              "drink_time, media, upload, drinkDetection, pet_id, "
              "tracker_info, vomit_info} matches MQTT drink_over/post.",
+    ),
+    "12": EventCode(
+        kind=KIND_CLEANING, label="Deep clean done", anchor=True,
+        role=ROLE_DONE, done_word=DEEP_CLEAN_DONE_WORD,
+        families=FOUNTAIN_NEXT_GEN,
+        note="Confirmed on a W7H (capture 2026-11, fw 456, the official app "
+             "in proxy mode): sent over HTTP while the device was not yet on "
+             "MQTT, where its twin is disinfect_over/post. Content "
+             "{start_time, event_start, event_end, start_reason, result, "
+             "err}. `result` is FOUNTAIN_W7H_DISINFECT_RESULTS, NOT the litter "
+             "RESULT table, where 2 means something else.",
     ),
     "20": EventCode(
         kind=KIND_PET, label="Appeared", anchor=True,
@@ -829,6 +873,16 @@ MQTT_EVENT_TOPICS: dict[str, EventCode] = {
         kind=KIND_CLEANING, label="Water change done", anchor=True,
         role=ROLE_DONE, done_word="changing the water",
         families=FOUNTAIN_NEXT_GEN),
+    "disinfect_over": EventCode(
+        kind=KIND_CLEANING, label="Deep clean done", anchor=True,
+        role=ROLE_DONE, done_word=DEEP_CLEAN_DONE_WORD,
+        families=FOUNTAIN_NEXT_GEN,
+        note="Captured on a W7H (2026-11, fw 456) as "
+             "thing/event/disinfect_over/post; the MQTT twin of fountain "
+             "HTTP code 12, same content. Ends the start_action 4 cycle, "
+             "and on success the device then starts a refill by itself "
+             "(work_start action 2). `result` is "
+             "FOUNTAIN_W7H_DISINFECT_RESULTS, not the litter RESULT table."),
     # -- shared detection
     "move_detect": EventCode(
         kind=KIND_MOTION, label="Motion detected", anchor=True,
@@ -996,6 +1050,58 @@ LITTER_START_ACTIONS: dict[int, tuple[str, str]] = {
     11: ("open sealed door", CONFIRMED),
 }
 
+#: The Purobot Ultra's privacy ("home") mode, as `property.set` fields.
+#:
+#: The SET side of the protocol, like `FOUNTAIN_W7H_SET_FIELDS`, and graded per
+#: field because nothing here has been written to a box yet. Names come from two
+#: sources that agree: pypetkitapi's settings table (`homeMode`, `cameraInward`
+#: marked T6, `cameraOff`, `noSound`, each 0/1), and T6 firmware 951's
+#: `parse_recv_property_set_normal`, which looks all four up with
+#: `cJSON_GetObjectItem` in that order and logs `set user_home_mode homeMode`,
+#: `... camera_sta` (cameraOff), `... ptz_in_sta` (cameraInward) and `...
+#: noSound`.
+#:
+#: **The value must be a JSON NUMBER.** Every one is read as cJSON `valueint`
+#: (`lw v0,20(v0)`) — the opposite of `timezone` on the same parser, which reads
+#: `valuestring` and makes a number a silent no-op. Here a string would be the
+#: no-op.
+#:
+#: What the firmware does with them, as far as that one function shows:
+#:
+#:   * `cameraOff`, `cameraInward`, `noSound` are each stored into their own
+#:     `g_config` slot when they differ from it, and nothing else happens in
+#:     this function — no motor, no camera call. They read as OPTIONS of privacy
+#:     mode, not as actions, which is also why they are not the `camera` and
+#:     `microphone` settings under other names.
+#:   * `homeMode` is gated. Unless a `g_config` flag is set or
+#:     `pk_get_user_home_mode_err_code` returns -1, it logs `userHomeInfo_first_over
+#:     (%d), not set homeMode` and RETURNS from the whole parser — so any field
+#:     sent in the same write after it is dropped too. `ha/commands.py` sends one
+#:     field per write, which keeps that from mattering. Past the gate it calls
+#:     `pk_user_home_mode_set_mode_on` or `pk_WAN_send_ctrl_action_2_HMI(1, 12,
+#:     0)`, depending on that error code again.
+#:
+#: Unverified on hardware: whether `cameraInward` alone turns the camera or
+#: only takes effect with `homeMode` on, and what firmware 929 does at all (not
+#: read). Hence `unverified` — named by firmware RE, never seen on our wire.
+LITTER_T6_HOME_MODE_SET_FIELDS: dict[str, tuple[str, str]] = {
+    "homeMode": ("privacy mode on/off", UNVERIFIED),
+    "cameraInward": ("turn the camera inward in privacy mode", UNVERIFIED),
+    "cameraOff": ("turn the camera off in privacy mode", UNVERIFIED),
+    "noSound": ("turn the microphone off in privacy mode", UNVERIFIED),
+}
+
+#: Purobot Ultra state-report fields whose meaning is not settled.
+#:
+#: `cameraPosition` is on the wire: in the 2026-08-11 four-family capture's
+#: `property/post`, and 2 in a T6 (fw 929) report. Probably the result of
+#: `cameraInward`, but no value has ever been watched changing, so it is
+#: published as the raw integer and nothing may label its values. Graded
+#: `unverified` for its MEANING; its presence is not in doubt.
+LITTER_T6_STATE_FIELDS: dict[str, tuple[str, str]] = {
+    "cameraPosition": ("camera position, raw integer; values not decoded", UNVERIFIED),
+}
+
 #: The litter a box is told it is filled with (`settings.sandType`).
 #:
 #: The whole enum, from a controlled 1 -> 2 -> 3 -> 1 run through the app's own
@@ -1126,10 +1232,17 @@ WEEKDAY_NAMES: dict[int, str] = {
 #: (`FOUNTAIN_W7H_APP_ACTIONS`), which sends 2 for Refill and 3 for Drain — so
 #: a `work_start` echoing either is that job. That the echo carries the value
 #: the app sent is inferred from 2, which arrives after a refill.
+#:
+#: 4 is not named by the firmware either (it too reaches the default branch of
+#: `work_start_event_detect`), but the app names it: a second capture of the
+#: official app (`FOUNTAIN_W7H_DEEP_CLEAN_CAPTURE`) has "Deep clean" sending
+#: `start_action` 4, the device echoing `work_start {"action":4,"reason":2}`,
+#: and `workState.workMode` 4 for the whole cycle.
 FOUNTAIN_W7H_WORK_MODES: dict[int, str] = {
     1: "flush",            # confirmed: firmware branch `fPro_flushStart`
     2: "refill",           # inferred: app sends 2 for Refill, echo seen after one
     3: "drain",            # inferred: app sends 3 for Drain, echo assumed like 2
+    4: "deep clean",       # confirmed: app sends 4 for Deep clean, echo captured
     5: "water change",     # confirmed: firmware branch `fPro_changeStart`
 }
 
@@ -1142,11 +1255,17 @@ FOUNTAIN_W7H_WORK_MODES: dict[int, str] = {
 #: water change.
 FOUNTAIN_W7H_APP_CAPTURE = "capture of the official app, 2026-10-04, fw 456"
 
+#: A second capture of the same app and firmware, by another owner (2026-11,
+#: proxy mode), which walked the one screen the first did not: Deep clean, and
+#: the "I've cleaned it. Start circulating" prompt that follows a failed one.
+#: Everything about the deep clean in this file rests on it.
+FOUNTAIN_W7H_DEEP_CLEAN_CAPTURE = "capture of the official app, 2026-11, fw 456"
+
 #: The `start_action` values the official app sends a W7H, graded.
 #:
 #: Unlike `FOUNTAIN_W7H_START_ACTIONS` this is not what the firmware accepts but
-#: what the app USES — the only three jobs it offers. Each is confirmed by
-#: `FOUNTAIN_W7H_APP_CAPTURE`:
+#: what the app USES — the only four jobs it offers. 1-3 are confirmed by
+#: `FOUNTAIN_W7H_APP_CAPTURE`, 4 by `FOUNTAIN_W7H_DEEP_CLEAN_CAPTURE`:
 #:
 #:   * 1 is "Drain & flush" (the firmware's own `fPro_flushStart` branch);
 #:   * 2 is "Refill" — confirmed, where the firmware alone could only say the
@@ -1154,6 +1273,9 @@ FOUNTAIN_W7H_APP_CAPTURE = "capture of the official app, 2026-10-04, fw 456"
 #:   * 3 is "Drain". After it the app says the FlowLift module stays raised
 #:     until a Refill is run, so a Drain on its own leaves the fountain empty
 #:     and lifted.
+#:   * 4 is "Deep clean". It needs boiling water poured in by hand; without it
+#:     the device aborts and latches `err.cycM`
+#:     (`FOUNTAIN_W7H_DISINFECT_RESULTS`).
 #:
 #: Nothing may build a `start` for a W7H outside this table: see
 #: `FOUNTAIN_W7H_START_ACTIONS_CRASH` for what happens when something did.
@@ -1161,6 +1283,7 @@ FOUNTAIN_W7H_APP_ACTIONS: dict[int, tuple[str, str]] = {
     1: ("drain & flush", CONFIRMED),
     2: ("refill", CONFIRMED),
     3: ("drain", CONFIRMED),
+    4: ("deep clean", CONFIRMED),
 }
 
 #: Every `start_action` a W7H accepts, and nothing else.
@@ -1300,6 +1423,35 @@ def work_modes_for(device_type: str | None = None) -> dict[int, str]:
         return {**WORK_MODES, T4_LITTER_CALIBRATION_MODE: "litter calibration"}
     return WORK_MODES
 
+
+#: `state.disinfectState` during a W7H deep clean (capture 2026-11, fw 456):
+#: 1 (+0 s) -> 2 (+6 s) -> 3 (+24 s, `disinfectTime` becomes the epoch of that
+#: moment) -> 0 when the soak ends. The soak lasted exactly 300 s in the one
+#: cycle seen. 0 and 3 are confirmed; 1 and 2 are both "preparing" because
+#: nothing tells them apart (inferred). heat* stayed 0 throughout on a unit
+#: with `heatInstall: 0`. The device sends no countdown.
+FOUNTAIN_W7H_DISINFECT_STATES: dict[int, str] = {
+    0: "idle",
+    1: "preparing",
+    2: "preparing",
+    3: "soaking",
+}
+
+#: `content.result` of `disinfect_over` / fountain HTTP 12. Its own vocabulary,
+#: like the feeder's: NOT the litter RESULT table (where 2 is "failed").
+#:    0  confirmed: full cycle watched end to end, err "".
+#:    2  inferred: start, work_start and this event in the same second while
+#:       err.cycM was latched; err "cycM".
+#:   16  inferred: ~28 s in, err "cycM". The label is the APP's wording
+#:       (boiling water is poured in by hand); the firmware never measured a
+#:       temperature (`heatInstall` 0), so how it decides is unknown. This
+#:       abort LATCHES cycM.
+FOUNTAIN_W7H_DISINFECT_RESULTS: dict[int, str] = {
+    0: "completed",
+    2: "refused (pump fault active)",
+    16: "aborted (water not hot enough)",
+}
+
 #: workProcess is two digits: the tens digit is the phase, the units digit a
 #: detail (22 means paused with a safeWarn reason).
 WORK_PROCESS_PHASE: dict[int, str] = {
@@ -1422,6 +1574,9 @@ FOUNTAIN_W7H_ERROR_FLAGS: dict[str, str] = {
     "valveE": "Valve error",
     "valveN": "Valve timeout",
     "cycL": "Circulation pump stalled",
+    # Latches after a failed deep clean (capture 2026-11, fw 456) and survives
+    # a reboot; only `thing.service.reset_cycle_pump` clears it (ha/commands.py),
+    # after which pumpState goes 2 -> 0 and an error-over (HTTP 2) arrives.
     "cycM": "Circulation pump fault",
     "repL": "Refill pump stalled",
     "repM": "Refill pump fault",

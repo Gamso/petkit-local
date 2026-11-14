@@ -109,11 +109,11 @@ FOUNTAIN_BUTTONS = [
 
 #: The W7H's water-treatment jobs, as `thing.service.start` actions.
 #:
-#: Exactly the three the official app offers, with the values it sends
-#: (`codes.FOUNTAIN_W7H_APP_ACTIONS`, from a capture of the app on 2026-10-04):
-#: Drain & flush is 1, Refill is 2, Drain is 3. After a Drain the FlowLift
-#: module stays raised until a Refill lowers it again — the app says so in as
-#: many words, so a Drain is half of a job, not a whole one.
+#: Exactly the four the official app offers, with the values it sends
+#: (`codes.FOUNTAIN_W7H_APP_ACTIONS`, from two captures of the app):
+#: Drain & flush is 1, Refill is 2, Drain is 3, Deep clean is 4. After a Drain
+#: the FlowLift module stays raised until a Refill lowers it again — the app
+#: says so in as many words, so a Drain is half of a job, not a whole one.
 #:
 #: Three buttons this list used to carry are gone, and their keys must not come
 #: back (`ha/categories.py` retires their discovery topics):
@@ -124,10 +124,14 @@ FOUNTAIN_BUTTONS = [
 #:   * `power_off`/`power_on`. `power` is a service the firmware accepts, but no
 #:     screen of the app offers it, and a power-off is not a command to guess at.
 #:
-#: Deep clean is deliberately absent too. The cycle exists (`ster_mode_*.aac`,
-#: the `disinfectState` field, "Boil ster over result" in the log) but no
-#: accepted action value can be tied to it, and it is the one job that needs a
-#: person standing there with a kettle.
+#: Deep clean was absent for as long as no accepted action value could be tied
+#: to it; `codes.FOUNTAIN_W7H_DEEP_CLEAN_CAPTURE` ties it to 4. It is still the
+#: one job that needs a person standing there with a kettle: without boiling
+#: water the device aborts after ~28 s with result 16 — harmless in itself, but
+#: it latches `err.cycM`, and while cycM is latched every further deep clean is
+#: refused in the same second (result 2). Hence the fifth button, the app's own
+#: `reset_cycle_pump` service. It is always available rather than shown only
+#: while cycM is set, because a press with no fault latched does nothing.
 FOUNTAIN_W7H_BUTTONS = [
     EntityDef(component="button", key="fountain_flush", name="Drain & Flush",
               icon="mdi:water-sync"),
@@ -135,4 +139,8 @@ FOUNTAIN_W7H_BUTTONS = [
               icon="mdi:water-plus"),
     EntityDef(component="button", key="fountain_drain", name="Drain",
               icon="mdi:water-minus"),
+    EntityDef(component="button", key="fountain_deep_clean", name="Deep Clean",
+              icon="mdi:pot-steam"),
+    EntityDef(component="button", key="fountain_reset_circulation_pump",
+              name="Reset Circulation Pump", icon="mdi:pump"),
 ]
