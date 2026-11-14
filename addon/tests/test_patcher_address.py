@@ -202,7 +202,7 @@ async def _patcher_panel(monkeypatch, device):
 
 
 async def _post(client, **body):
-    r = await client.post("/api/devices/100/patcher", data=json.dumps(body))
+    r = await client.post("/api/devices/100/patcher", json=body)
     return r.status, await r.json()
 
 

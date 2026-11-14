@@ -484,7 +484,7 @@ async def test_t6_bag_reset_is_destructive_and_queues_native_service():
 
         response = await c.post(
             "/api/devices/1/command",
-            data=json.dumps({"action": "reset_bagbox"}),
+            json={"action": "reset_bagbox"},
         )
         payload = await response.json()
         assert response.status == 200
