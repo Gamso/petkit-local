@@ -116,3 +116,16 @@ async def test_the_panel_live_log_shows_the_query_without_the_secret():
     assert http
     query = http[-1]["detail"]["query"]
     assert query == {"sn": "SN1", "secret": REDACTED}
+
+
+def test_tokens_and_passwords_are_masked_in_logs():
+    """The app API's secrets: a bearer token in a printed header, a JSON password."""
+    token = "x" * 43
+    for line in (f"Authorization: Bearer {token}", f"{{'Authorization': 'Bearer {token}'}}",
+                 f"headers=<CIMultiDict('Authorization': 'Bearer {token}')>"):
+        out = redact_text(line)
+        assert token not in out and REDACTED in out, line
+    body = '{"password": "hunter2!", "device_name": "Pixel", "new_password": "x y z"}'
+    out = redact_text(body)
+    assert "hunter2!" not in out and "x y z" not in out and "Pixel" in out
+    assert "current_password=" + REDACTED in redact_text("/x?current_password=abc")
