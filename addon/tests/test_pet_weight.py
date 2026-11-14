@@ -488,6 +488,30 @@ async def test_typing_a_new_weight_restarts_the_learning(panel, event_store):
         assert (await pets.get(cat["id"]))["weight"] is None
 
 
+async def test_a_camera_less_litter_box_is_enough_to_manage_pets(event_store, tmp_path):
+    """Weight matching exists for the box that cannot recognise anything, and
+    the Pets tab used to show its pets only beside a recognising device."""
+    reg = DeviceRegistry()
+    reg.get_or_create(petkit_id=1, device_type="t4", serial_number="A")
+    reg.get_or_create(petkit_id=2, device_type="t5", serial_number="B")
+    reg.get_or_create(petkit_id=3, device_type="d4", serial_number="C")
+    app = create_panel_app(reg, BLERegistry(), EventHub(), {"api_url": "http://x/6/"}, None,
+                           event_store=event_store)
+    client = TestClient(TestServer(app))
+    await client.start_server()
+    try:
+        devices = {d["id"]: d for d in await (await client.get("/api/devices")).json()}
+    finally:
+        await client.close()
+    assert (devices[1]["is_litter"], devices[1]["supports_ai"]) == (True, False)
+    assert (devices[2]["is_litter"], devices[2]["supports_ai"]) == (True, True)
+    assert devices[3]["is_litter"] is False
+
+    js = (JS / "pets.js").read_text(encoding="utf-8")
+    assert "ds.filter(d => d.is_litter && !d.supports_ai)" in js
+    assert "recognising || scaleOnly.length > 0" in js
+
+
 def test_the_pets_tab_carries_the_weight_controls():
     js = (JS / "pets.js").read_text(encoding="utf-8")
     for key in WEIGHT_MATCH_SETTINGS:

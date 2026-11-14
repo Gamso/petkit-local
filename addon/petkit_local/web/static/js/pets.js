@@ -55,12 +55,17 @@ async function loadPets() {
     .filter(d => !d.aiInfo || d.aiInfo.ai_enabled !== false)
     .map(d => d.id);
   const recognising = recognisingIds.length > 0;
+  // A litter box with no camera still tells cats apart, by weight alone, and
+  // the pets it is matched against are entered here like any others. Without
+  // this a household with only such a box had no way to create a pet at all.
+  const scaleOnly = ds.filter(d => d.is_litter && !d.supports_ai);
+  const showPets = recognising || scaleOnly.length > 0;
 
   v.innerHTML = `
     ${aiDetails.map(d => deviceAiCard(d, ourFaceIds)).join('')}
     ${aiDevices.length ? '' : noAiDeviceCard(info.ai_device_names || [])}
     ${aiDevices.length && !recognising ? recognitionOffCard() : ''}
-    ${recognising ? petsSection(pets, ds, aiDevices, recognisingIds, info) : ''}
+    ${showPets ? petsSection(pets, ds, [...aiDevices, ...scaleOnly], recognisingIds, info) : ''}
     ${aiDevices.length ? importPetsCard(aiDevices) : ''}
     ${recognising && unbound.length ? unboundCard(unbound, pets) : ''}`;
 }
@@ -88,7 +93,7 @@ function importPetsCard(aiDevices) {
   </div>`;
 }
 
-function petsSection(pets, ds, aiDevices, recognisingIds, info) {
+function petsSection(pets, ds, petDevices, recognisingIds, info) {
   const learning = info.weight_learning || {};
   return `
     <div class="card">
@@ -98,11 +103,12 @@ function petsSection(pets, ds, aiDevices, recognisingIds, info) {
       </div>
       <p class="sub" style="margin-top:8px">
         Give each cat up to ${MAX_FACES} mugshots. The device downloads them and matches
-        against them itself — more angles, better recognition.
+        against them itself — more angles, better recognition. A litter box with no camera
+        goes by weight instead: enter each cat's weight on its card.
       </p>
       <div class="newpet">
         <input id="newPetName" placeholder="Name" aria-label="Pet name">
-        <select id="newPetDevice" aria-label="Assign to device">${aiDevices
+        <select id="newPetDevice" aria-label="Assign to device">${petDevices
           .map(d => `<option value="${esc(d.id)}">${esc(d.name)}</option>`)
           .join('')}</select>
         <button class="act" data-action="add-pet">Add pet</button>
@@ -246,12 +252,15 @@ function petCard(p, ds, recognisingIds, learning) {
   // is not recognising — the assignment is still real, it is just not doing
   // anything there. Without this a pet on two devices looks equally active on
   // both when only one is matching.
-  const off = id => Array.isArray(recognisingIds) && !recognisingIds.includes(id);
+  // Only a device that CAN recognise is ever "off": a box with no camera
+  // matches by weight and has no such switch.
+  const off = d =>
+    Array.isArray(recognisingIds) && (!d || d.supports_ai) && !recognisingIds.includes(d && d.id);
   const chips = devIds
     .map(id => {
       const d = ds.find(x => x.id === id);
       const name = esc(d ? d.name : '#' + id);
-      return off(id)
+      return off(d)
         ? `<span class="badge off" title="Recognition is off on this device">${name} · off</span>`
         : `<span class="badge">${name}</span>`;
     })
