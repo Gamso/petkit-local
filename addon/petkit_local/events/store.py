@@ -23,7 +23,7 @@ from contextvars import ContextVar
 from pathlib import Path
 from typing import Any
 
-from sqlalchemy import URL, delete, event as sa_event, func, insert, select, update
+from sqlalchemy import URL, delete, event as sa_event, func, insert, select, text, update
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import (
     AsyncConnection,
@@ -72,6 +72,11 @@ _EVENT_COLUMNS = _writable(Event)
 _MEDIA_COLUMNS = _writable(Media)
 _PET_COLUMNS = _writable(Pet)
 _BLOCKED_COLUMNS = _writable(BlockedAttempt)
+
+#: What `events/migrations.py::backfill_event_rows` recomputes, and from what.
+_BACKFILL_COLUMNS = (Event.id, Event.event_uid, Event.related_event, Event.parent_event,
+                     Event.device_type, Event.event_type, Event.event_kind, Event.pet_ref,
+                     Event.content_json)
 
 #: What a device will accept before its own "Too many face picture" guard
 #: trips. The firmware has the guard but its limit was not recoverable from the
@@ -187,11 +192,13 @@ class EventStore:
         await self._engine.dispose()
 
     async def _migrate(self, conn: AsyncConnection) -> None:
-        """Add columns introduced after a database was first created.
+        """Add columns and indexes introduced after a database was first created.
 
         `create_all` only creates missing TABLES, so an add-on that has been
         running since an earlier version keeps its old column set and every
-        query naming a new column fails against it.
+        query naming a new column fails against it. The same goes for an index
+        declared on a model later: it exists on a fresh install and never on an
+        upgraded one, where the table is also the largest.
         """
         for table, columns in _ADDED_COLUMNS.items():
             info = await conn.exec_driver_sql(f"PRAGMA table_info({table})")
@@ -201,6 +208,20 @@ class EventStore:
                     await conn.exec_driver_sql(
                         f"ALTER TABLE {table} ADD COLUMN {name} {coltype}")
                     log.info("Migrated %s: added column %s", table, name)
+
+        # After the columns: an index may name one that was only just added.
+        # Read from the models rather than listed a second time here, so an
+        # index cannot be declared and then forgotten for existing databases.
+        for table in Base.metadata.sorted_tables:
+            info = await conn.exec_driver_sql(f"PRAGMA index_list({table.name})")
+            existing = {row[1] for row in info.fetchall()}
+            for index in sorted(table.indexes, key=lambda i: i.name):
+                if index.name not in existing:
+                    columns_sql = ", ".join(c.name for c in index.columns)
+                    await conn.exec_driver_sql(
+                        f"CREATE INDEX IF NOT EXISTS {index.name} "
+                        f"ON {table.name} ({columns_sql})")
+                    log.info("Migrated %s: added index %s", table.name, index.name)
 
     async def _migrate_legacy_faces(self) -> None:
         """Carry a pre-`pet_faces` single photo into the new table.
@@ -339,6 +360,39 @@ class EventStore:
         async with self._read() as session:
             rows = await session.scalars(select(Event).order_by(Event.id).limit(limit))
             return [r.as_dict() for r in rows]
+
+    async def events_for_backfill(self, after_id: int, limit: int) -> list[dict[str, Any]]:
+        """One page of events, by id, carrying only what a backfill reads.
+
+        Paged on the primary key so a pass holds one page in memory whatever
+        the table's size, and reaches every row instead of stopping at a cap.
+        `state_json` — the bulk of a row — is deliberately not selected: no
+        derived column is computed from it.
+        """
+        async with self._read() as session:
+            rows = await session.execute(
+                select(*_BACKFILL_COLUMNS)
+                .where(Event.id > after_id)
+                .order_by(Event.id)
+                .limit(limit))
+            return [dict(r) for r in rows.mappings()]
+
+    async def backfill_stamp(self) -> int:
+        """What the last completed backfill left behind; 0 if none ever ran.
+
+        Kept in SQLite's own `user_version` header field, which travels with
+        the file — a database restored from an older backup brings its older
+        stamp back with it.
+        """
+        async with self._read() as session:
+            return int(await session.scalar(text("PRAGMA user_version")) or 0)
+
+    async def set_backfill_stamp(self, stamp: int) -> None:
+        """Record a completed backfill. Joins an open `transaction()`, so the
+        stamp commits with the repairs it vouches for or not at all."""
+        async with self._write() as session:
+            # A PRAGMA takes no bound parameter; `int()` is what keeps this literal.
+            await session.execute(text(f"PRAGMA user_version = {int(stamp)}"))
 
     async def update_event_fields(self, event_id: int, **fields: Any) -> bool:
         """Overwrite named columns on one event.
