@@ -33,6 +33,7 @@ from petkit_local.utils.dicts import dig_path
 from petkit_local.web.api._common import (
     _deliver, _device_log_reason, _device_or_404, _json_body,
 )
+from petkit_local.web.appkeys import HA_PUBLISHER, HUB
 
 log = logging.getLogger(__name__)
 
@@ -512,7 +513,7 @@ async def api_device_delete(request: web.Request) -> web.Response:
     d = _device_or_404(request)
     did = d.petkit_id
 
-    publisher = request.app.get("publisher")
+    publisher = request.app.get(HA_PUBLISHER)
     if publisher:
         await publisher.unpublish_discovery(d)
 
@@ -524,7 +525,7 @@ async def api_device_delete(request: web.Request) -> web.Response:
 
     reg.remove(did)
 
-    hub = request.app.get("event_hub")
+    hub = request.app.get(HUB)
     if hub:
         hub.forget_device(did)
 

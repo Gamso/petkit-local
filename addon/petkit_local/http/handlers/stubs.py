@@ -249,7 +249,8 @@ async def handle_sound_get(request: web.Request) -> web.Response:
     bucket_endpoint = config.get("bucket_endpoint", "")
     device = request_device(request)
     if device and bucket_endpoint:
-        sounds = sound_list_for_device(request, device.petkit_id, bucket_endpoint)
+        sounds = sound_list_for_device(config.get("data_dir", "/data"),
+                                       device.petkit_id, bucket_endpoint)
         if sounds:
             return web.json_response({"result": sounds})
     return web.json_response({"result": []})
