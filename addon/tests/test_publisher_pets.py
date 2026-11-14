@@ -25,7 +25,7 @@ async def test_publish_pet_discovery_uses_distinct_identifiers_and_topics():
     for cfg in configs:
         assert cfg["device"]["identifiers"] == ["petkit_pet_1"]
         assert cfg["state_topic"] == "petkit-local/pet/1/state"
-        assert cfg["availability"]["topic"] == "petkit-local/pet/1/availability"
+        assert cfg["availability"][0]["topic"] == "petkit-local/pet/1/availability"
         assert cfg["unique_id"].startswith("petkit_pet_1_")
 
     avail = [p for t, p, kw in pub._client.published if t == "petkit-local/pet/1/availability"]

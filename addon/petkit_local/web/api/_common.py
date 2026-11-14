@@ -20,7 +20,7 @@ from aiohttp import web
 from petkit_local.ai.pets import (
     learned_weight_in_use, pet_weight_grams, reference_weight_grams,
 )
-from petkit_local.devices.base import Device, split_bucket_authority
+from petkit_local.devices.base import QUEUED_AT_KEY, Device, split_bucket_authority
 from petkit_local.http.proxy import resolve_upstream
 from petkit_local.utils.coerce import to_int
 
@@ -47,7 +47,7 @@ def _refuse(status: type[web.HTTPException], error: str) -> web.HTTPException:
     """A JSON `{"error": ...}` refusal, shaped exactly like a returned one.
 
     Raised rather than returned so the checks below read as one line at the top
-    of a handler. There is no middleware on this app to swallow it.
+    of a handler. The app's one middleware (`web/origin.py`) lets it through.
     """
     return status(text=json.dumps({"error": error}),
                   content_type="application/json")
@@ -85,9 +85,19 @@ async def _json_body(request: web.Request) -> dict[str, Any]:
     reads it with `.get`, so a list would reach that call as an AttributeError
     and answer 500 to what is a malformed request.
 
+    The content type is part of the check, and not for tidiness: a page on
+    another site can make a browser POST `text/plain` or a form encoding to us
+    with no questions asked, but `application/json` costs it a CORS preflight
+    this app never grants. `web/origin.py` already refuses such a request by
+    its `Origin`; this holds if that header is ever missing.
+
     Raises:
+        web.HTTPUnsupportedMediaType: the body is not declared as JSON.
         web.HTTPBadRequest: the body is not a JSON object.
     """
+    if request.content_type != "application/json":
+        raise _refuse(web.HTTPUnsupportedMediaType,
+                      "send JSON with Content-Type: application/json")
     try:
         body = await request.json()
     except Exception:
@@ -117,19 +127,16 @@ async def _deliver(hub, bridge, d, suffix: str, envelope: Any,
         except Exception as e:
             log.warning("panel: MQTT publish failed for device %d, queuing for heartbeat: %s",
                         d.petkit_id, e)
-            if isinstance(envelope, dict):
-                envelope["_service_suffix"] = suffix
-            d.command_queue.append(envelope)
+            d.queue_command(envelope, suffix)
             delivered = "heartbeat-queue"
     else:
-        if isinstance(envelope, dict):
-            envelope["_service_suffix"] = suffix
-        d.command_queue.append(envelope)
+        d.queue_command(envelope, suffix)
         delivered = "heartbeat-queue"
 
     params = envelope.get("params", envelope) if isinstance(envelope, dict) else envelope
     hub.record_command(d.petkit_id, delivered, f"{suffix} {json.dumps(params)[:80]}")
-    clean = {k: v for k, v in envelope.items() if k != "_service_suffix"} if isinstance(envelope, dict) else envelope
+    clean = ({k: v for k, v in envelope.items() if k not in ("_service_suffix", QUEUED_AT_KEY)}
+             if isinstance(envelope, dict) else envelope)
     return web.json_response({"ok": True, "delivered": delivered, "suffix": suffix, "envelope": clean})
 
 
