@@ -12,6 +12,7 @@ import hashlib
 import json
 import os
 import socket
+from pathlib import Path
 
 import aiomqtt
 import pytest
@@ -79,8 +80,8 @@ def test_a_release_keeps_stock_verbatim_and_patches_userbin_to_our_ca(tmp_path, 
 
     stock_path = esp32_ota.module_path(str(tmp_path), "d4", "1.267", "stock", "userbin")
     patched_path = esp32_ota.module_path(str(tmp_path), "d4", "1.267", "patched", "userbin")
-    assert open(stock_path, "rb").read() == stock_image
-    patched = open(patched_path, "rb").read()
+    assert Path(stock_path).read_bytes() == stock_image
+    patched = Path(patched_path).read_bytes()
     verify_esp_image(patched)
     s, e = find_cert_slot(patched)
     _key, ca = esp32_ota.load_ca(str(tmp_path))

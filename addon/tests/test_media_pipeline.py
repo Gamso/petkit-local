@@ -14,6 +14,10 @@ JPEG_BYTES = b"\xff\xd8\xff\xe0" + b"A" * 60  # 64 bytes, block-aligned
 #: Every store `_env` handed out this test, drained by the autouse fixture
 #: below. A store holds an aiosqlite pool bound to the test's own event loop.
 _OPEN_STORES: list[EventStore] = []
+#: And the directory each one lives in, removed once its store is closed. Left
+#: to the garbage collector, each is a ResourceWarning ("Implicitly cleaning
+#: up") raised in whichever later test happens to trigger the collection.
+_OPEN_DIRS: list[tempfile.TemporaryDirectory] = []
 
 
 @pytest.fixture(autouse=True)
@@ -21,15 +25,18 @@ async def _close_stores():
     yield
     while _OPEN_STORES:
         await _OPEN_STORES.pop().close()
+    while _OPEN_DIRS:
+        _OPEN_DIRS.pop().cleanup()
 
 
 def _env():
     """A temp raw/media tree, a store inside it, and a device to attribute to.
 
-    The `TemporaryDirectory` is returned so the caller can keep it alive: the
-    tree is deleted when it is collected, and these tests read files back.
+    The `TemporaryDirectory` is returned for its `.name`; the autouse fixture
+    above removes it after the test, once the store inside it is closed.
     """
     tmp = tempfile.TemporaryDirectory()
+    _OPEN_DIRS.append(tmp)
     raw_root = os.path.join(tmp.name, "raw")
     media_root = os.path.join(tmp.name, "media")
     os.makedirs(raw_root, exist_ok=True)

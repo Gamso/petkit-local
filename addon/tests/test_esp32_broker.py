@@ -11,6 +11,7 @@ from __future__ import annotations
 import socket
 import ssl
 import threading
+from pathlib import Path
 
 import pytest
 from cryptography import x509
@@ -48,25 +49,25 @@ def test_no_leaf_until_there_is_a_ca(tmp_path):
 def test_minting_the_ca_issues_a_wildcard_leaf_it_signed(tmp_path, stock_image):
     _store(tmp_path, stock_image)
     cert_path, _key = esp32_ota.broker_leaf_paths(str(tmp_path))
-    leaf = x509.load_pem_x509_certificate(open(cert_path, "rb").read())
+    leaf = x509.load_pem_x509_certificate(Path(cert_path).read_bytes())
     san = leaf.extensions.get_extension_for_class(x509.SubjectAlternativeName).value
     assert san.get_values_for_type(x509.DNSName) == ["*.iot-as-mqtt.eu-central-1.aliyuncs.com"]
     _, ca_pem = esp32_ota.load_ca(str(tmp_path))
     assert leaf.issuer == x509.load_pem_x509_certificate(ca_pem).subject
 
-    before = open(cert_path, "rb").read()
+    before = Path(cert_path).read_bytes()
     assert esp32_ota.ensure_broker_leaf(str(tmp_path))
-    assert open(cert_path, "rb").read() == before  # reused, not re-issued
+    assert Path(cert_path).read_bytes() == before  # reused, not re-issued
 
 
 def test_a_leaf_from_a_different_ca_is_re_issued(tmp_path, stock_image):
     _store(tmp_path, stock_image)
     cert_path, _ = esp32_ota.broker_leaf_paths(str(tmp_path))
-    old_leaf = open(cert_path, "rb").read()
+    old_leaf = Path(cert_path).read_bytes()
     for path in esp32_ota.ca_paths(str(tmp_path)):
         (tmp_path / "certs" / path.rsplit("/", 1)[1]).unlink()
     esp32_ota.ensure_ca(str(tmp_path), _crlf_slot())  # a new CA, with a new key
-    assert open(cert_path, "rb").read() != old_leaf
+    assert Path(cert_path).read_bytes() != old_leaf
 
 
 @pytest.mark.parametrize("name, matches", [
