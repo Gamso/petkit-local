@@ -62,6 +62,17 @@ asyncio_mode = "auto"
 # Explicit, because pytest-asyncio warns while it is unset. Function scope is
 # what it already defaulted to: every async test and fixture gets its own loop.
 asyncio_default_fixture_loop_scope = "function"
+# Any warning fails the suite. They used to pile up unread — 3750 per run —
+# so a new one, which can be a real defect, went unnoticed among them.
+# This also covers what the garbage collector reports late (an unclosed file,
+# a TemporaryDirectory nobody cleaned up): with "error" the warning raises
+# inside the finalizer, pytest reports that as PytestUnraisableExceptionWarning,
+# and "error" turns that into a failure too.
+# Fix the cause rather than adding an ignore here; an entry belongs below only
+# for a third-party warning this repository cannot fix, with the reason.
+filterwarnings = [
+    "error",
+]
 markers = [
     "firmware: tests against real device firmware (skipped without --firmware)",
 ]
