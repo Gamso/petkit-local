@@ -35,9 +35,15 @@
 # prevent. Verified by experiment, not assumed.
 ARG TARGETARCH
 
-FROM python:3.14-alpine AS base-amd64
-FROM python:3.14-alpine AS base-arm64
-FROM python:3.14-slim AS base-arm
+# Pinned by the digest of the multi-arch INDEX, not of one platform's image, so
+# each arch still resolves to its own manifest from the one line. The tag stays
+# for the reader and for Dependabot, which bumps tag and digest together; the
+# digest is what is pulled. Without it `python:3.14-alpine` is whatever Docker
+# Hub serves on the day of the build, and two builds of one commit can differ.
+# Re-read with `docker buildx imagetools inspect python:3.14-alpine`.
+FROM python:3.14-alpine@sha256:5862d971d1f0ae26b258cefa4e893556b1d3aba81bd2ff30888704ad378bab67 AS base-amd64
+FROM python:3.14-alpine@sha256:5862d971d1f0ae26b258cefa4e893556b1d3aba81bd2ff30888704ad378bab67 AS base-arm64
+FROM python:3.14-slim@sha256:9aaa474097d094040649f2162a627c0049b408f52138d980916788d80f04802f AS base-arm
 
 FROM base-${TARGETARCH}
 
