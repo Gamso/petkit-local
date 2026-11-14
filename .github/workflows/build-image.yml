@@ -15,7 +15,7 @@ permissions:
 # compiles its dependencies from source.
 #
 # It runs only for a pull request that changes what the image is built from.
-# The Dockerfile installs ffmpeg and `requirements.txt`, fetches go2rtc, and
+# The Dockerfile installs ffmpeg and `requirements.lock`, fetches go2rtc, and
 # copies `pyproject.toml` and the package; it runs none of the code. A change
 # to Python or the panel alone produces the same layers with different files
 # copied in at the end, so it cannot fail here, and paying three QEMU builds
@@ -33,6 +33,7 @@ on:
     paths:
       - addon/Dockerfile
       - addon/requirements.txt
+      - addon/requirements.lock
       - addon/pyproject.toml
       - .github/workflows/build-image.yml
   workflow_dispatch:

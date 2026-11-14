@@ -51,7 +51,7 @@ deliberately unfiltered.
 
 ```sh
 cd addon
-pip install -e ".[dev]"
+pip install --require-hashes --no-deps -r requirements-dev.lock   # exactly what CI uses
 pytest                              # the whole suite
 pytest -k stitch                    # by name
 pytest --firmware                   # also the patcher tests, if you have images
@@ -63,9 +63,10 @@ which are multi-megabyte and not in the repo. Populate `addon/tests/firmware/`
 first; the test module says what it expects. Without the flag those tests skip.
 
 The suite needs no device, no broker and no network. CI runs it on Python 3.14, the
-version the image ships, and imports every module so a runtime-only one cannot break
-unnoticed. A pull request that changes `addon/Dockerfile`, `addon/requirements.txt` or
-`addon/pyproject.toml` also builds the container image for amd64, arm64 and armv7
+version the image ships, with the exact packages the image ships (`requirements-dev.lock`,
+below), and imports every module so a runtime-only one cannot break unnoticed. A pull
+request that changes `addon/Dockerfile`, `addon/requirements.txt`, `addon/requirements.lock`
+or `addon/pyproject.toml` also builds the container image for amd64, arm64 and armv7
 (`build-image.yml`), because a passing test suite says nothing about whether the
 image builds; a change to the code alone cannot break that build, so it is not
 paid for. A `v*` tag builds all three again before anything is published.
@@ -77,6 +78,79 @@ npx prettier@3 --write addon/petkit_local/web/static/js/*.js addon/petkit_local/
 ```
 
 Please run the tests before opening a PR.
+
+### The smoke test
+
+The suite tests the code; `addon/tests/smoke/` tests the image. Every pull request
+and push to `main` builds the amd64 image and runs it, and a `v*` tag publishes
+nothing until it passes. 2.3.0 passed the whole suite and then died on every
+start; this fails on that image in seconds. To run it yourself, with only Docker:
+
+```sh
+docker build -t petkit-local:smoke addon
+bash addon/tests/smoke/run.sh petkit-local:smoke
+```
+
+`run.sh` starts the image with `docker-compose.yml`'s command (`--no-ha`), runs
+`smoke.py` beside it in the same network namespace, and fails on a restart, a
+traceback in the log, or any step `smoke.py` lists in its docstring: the device API,
+the panel, the MQTT TLS listener with a device's cipher offer, and a fake T5 that
+signs up, connects without subscribing, receives a panel command and posts telemetry.
+On Windows, run it from a checkout with LF line endings (WSL, or a
+`git -c core.autocrlf=false` clone); bash refuses a CRLF script.
+
+### Dependencies
+
+Two kinds of file, and only one is edited by hand:
+
+| File | What it is | Edited |
+|---|---|---|
+| `addon/requirements.txt`, `pyproject.toml` `dependencies` | The ranges the add-on supports. One list written twice. | By hand, both together |
+| `pyproject.toml` `[dev]` | The ranges of the test and lint tools. | By hand |
+| `addon/requirements.lock` | Every package the image installs, transitive ones included, pinned with the hash of each wheel and sdist. | Generated |
+| `addon/requirements-dev.lock` | The same pins plus the tools. What CI installs. | Generated |
+
+The image installs `requirements.lock` with `pip install --require-hashes --no-deps`,
+so nothing outside it can get in. Built from the ranges, 2.3.0 picked up whatever amqtt
+PyPI had that day, and its broker died on every start. `tests/test_requirements_lock.py`
+fails when the four files disagree, and its message points here.
+
+The locks are made by [uv](https://docs.astral.sh/uv/) for every platform at once
+(`--universal`), which is what lets one file serve Alpine amd64 and arm64 and Debian
+armv7, the last compiling some packages from the sdist whose hash is in the lock. Run
+it in a container, so the result does not depend on what is installed on your machine:
+
+```sh
+cd addon
+docker run --rm -v "$PWD:/work" -w /work python:3.14-slim sh -c '
+  pip install -q uv &&
+  uv pip compile requirements.txt --universal --generate-hashes --python-version 3.14 \
+      -o requirements.lock "$@" &&
+  uv pip compile pyproject.toml --extra dev --universal --generate-hashes --python-version 3.14 \
+      -c requirements.lock -o requirements-dev.lock "$@"' -- --upgrade-package amqtt
+```
+
+The trailing arguments say what to move, and are passed to both commands:
+
+- **Nothing** (drop `-- --upgrade-package amqtt`): re-lock after editing a range.
+  uv keeps every existing pin that still satisfies the ranges and changes only what
+  it has to.
+- **`--upgrade-package NAME`**, repeatable: move that package, transitive ones
+  included, to the newest version the ranges allow, and its dependencies only as far
+  as it needs.
+- **`--upgrade`**: move everything. Worth doing on purpose, now and then, in a
+  pull request of its own, since nothing else ever moves a transitive package.
+
+Commit both locks with the range change that caused them; CI then builds the image
+for all three architectures and smoke-tests it.
+
+**What Dependabot does and does not do** (`.github/dependabot.yml`). It bumps the
+base images' digests, the SHA-pinned actions, and the ranges of DIRECT dependencies
+in `requirements.txt` and `pyproject.toml`. It cannot regenerate the locks: it does
+not read `.lock` files, and its pip-compile support runs pip-compile, not uv. So a
+Dependabot dependency PR fails `test_requirements_lock.py` until the command above
+is run on its branch (`--upgrade-package` the package it bumped) and the locks are
+pushed there. Transitive packages get no Dependabot PR at all.
 
 ## Things that are easy to break
 

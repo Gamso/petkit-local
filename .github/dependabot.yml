@@ -1,0 +1,48 @@
+# Upgrades arrive as pull requests, so they go through the same CI as any other
+# change: the suite, the image build for all three architectures
+# (build-image.yml) and the smoke test of the built image (tests.yml).
+#
+# What each entry can and cannot do -- read this before trusting a green PR:
+#
+# docker      Bumps the digest behind `python:3.14-alpine` / `python:3.14-slim`
+#             in addon/Dockerfile, keeping the tag. A Python MINOR (3.15) is
+#             ignored below: that is a deliberate move that also touches
+#             pyproject.toml, ruff's target, setup-python and the lock's
+#             `--python-version`, not something to merge from a bot.
+#
+# actions     Bumps the SHA-pinned actions and the version comment beside them.
+#
+# pip         Reads addon/requirements.txt and addon/pyproject.toml ONLY. It
+#             does NOT read or regenerate addon/requirements.lock: Dependabot's
+#             pip support parses `*.txt` files and runs pip-compile, not uv, and
+#             a `.lock` file is neither. So it opens a PR when a DIRECT
+#             dependency has a new release, raising the floor of its range
+#             (`increase`); the lock still pins the old version, the lock test
+#             (tests/test_requirements_lock.py) fails, and its message names
+#             the command to run on that branch. Nothing a bot did reaches the
+#             image until somebody regenerates the lock and CI builds and
+#             smoke-tests the result. Transitive packages (pydantic, yarl, cffi,
+#             ...) get no PR at all; CONTRIBUTING.md says how to upgrade them.
+version: 2
+updates:
+  - package-ecosystem: docker
+    directory: /addon
+    schedule:
+      interval: weekly
+    ignore:
+      - dependency-name: python
+        update-types: ["version-update:semver-major", "version-update:semver-minor"]
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      actions:
+        patterns: ["*"]
+
+  - package-ecosystem: pip
+    directory: /addon
+    schedule:
+      interval: weekly
+    versioning-strategy: increase

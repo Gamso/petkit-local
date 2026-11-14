@@ -12,8 +12,9 @@ name: publish
 # publish -> Run workflow) on any branch.
 #
 # A tag publishes only if the test suite and the lint pass on that exact
-# commit (`checks` below). The Supervisor pulls the version the moment it is
-# released, so a red tag must never reach it.
+# commit (`checks` below), and the amd64 image built from it passes the smoke
+# test (`smoke`). The Supervisor pulls the version the moment it is released,
+# so a red tag must never reach it.
 #
 # ONE image, multi-arch. That is what the add-on documentation asks for --
 # `{arch}` in the image name is described there as a compatibility fallback --
@@ -50,6 +51,9 @@ jobs:
   # tests.yml's concurrency group would collide with this one's and cancel it.
   checks:
     runs-on: ubuntu-latest
+    # Nothing here pushes, so it does not get the workflow's packages: write.
+    permissions:
+      contents: read
     defaults:
       run:
         working-directory: addon
@@ -60,20 +64,44 @@ jobs:
           # What the add-on image ships (Dockerfile: python:3.14).
           python-version: "3.14"
           cache: pip
-          cache-dependency-path: |
-            addon/requirements.txt
-            addon/pyproject.toml
+          cache-dependency-path: addon/requirements-dev.lock
       - name: Install ffmpeg
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ffmpeg
       - name: Install dependencies
-        run: pip install -r requirements.txt -e ".[dev]"
+        # Pinned and hashed, as in tests.yml.
+        run: pip install --require-hashes --no-deps -r requirements-dev.lock
       - name: Lint
         run: ruff check petkit_local/ tests/
       - name: Run test suite
         run: pytest -q
 
+  # The image this tag would publish, built for amd64 and driven as a device
+  # would drive it (tests/smoke/run.sh) -- the check that would have kept
+  # 2.3.0, which died on every start, from being pushed at all. Its own job so
+  # it runs beside `checks`; `build` waits for both, so a failure here pushes
+  # nothing. The amd64 leg of `build` then rebuilds from this job's cache
+  # (same scope), out of the same pinned base and the same lock.
+  smoke:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
+      - name: Build the amd64 image
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
+        with:
+          context: ./addon
+          platforms: linux/amd64
+          load: true
+          tags: petkit-local:smoke
+          cache-from: type=gha,scope=linux/amd64
+          cache-to: type=gha,mode=max,scope=linux/amd64
+      - name: Smoke test
+        run: bash addon/tests/smoke/run.sh petkit-local:smoke
+
   build:
-    needs: checks
+    needs: [checks, smoke]
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
