@@ -126,6 +126,27 @@ def _event_content(params: dict) -> dict:
 # namespaces.
 
 
+def _reported_feed_groups(feed: object) -> list[dict[str, Any]] | None:
+    """The `schedule` of a device-reported `feed`, or None when it is not one.
+
+    Shape only — groups are objects and their `it` a list of objects, which is
+    what `dev_feed_get` and the panel's editor index into without asking. The
+    values are the device's own and are served back to it as they came.
+    """
+    if not isinstance(feed, dict):
+        return None
+    groups = feed.get("schedule")
+    if not isinstance(groups, list):
+        return None
+    for group in groups:
+        if not isinstance(group, dict):
+            return None
+        meals = group.get("it", [])
+        if not isinstance(meals, list) or not all(isinstance(m, dict) for m in meals):
+            return None
+    return groups
+
+
 class MQTTBridge:
     """Bridges device MQTT messages to HA state updates.
 
@@ -556,14 +577,19 @@ class MQTTBridge:
         the litter box's cleaning/deodorizing schedule.
         """
         feed = params.get("feed")
-        if isinstance(feed, dict) and isinstance(feed.get("schedule"), list) \
-                and device.is_feeder:
+        groups = _reported_feed_groups(feed) if device.is_feeder else None
+        if groups is not None:
             # Merged over what is stored rather than replacing it. The device
             # knows its meals but not our one-off feeds, which `dev_feed_get`
             # serves from `deferred`, and its `t` is the wire's seconds by
             # definition: stored without the `v: 2` stamp, a schedule whose
             # meals all fall before 00:24 reads as a 2.0.x minute save and
             # `feed.migrate_minute_schedule` multiplies every time by 60.
+            #
+            # Only `schedule` is taken. Everything else in the stored dict is
+            # ours, and the broker accepts any CONNECT by default: a `deferred`
+            # sent along used to be stored as if the panel had written it, and
+            # the panel then rendered its fields as markup.
             stored = device.config.get("feed_schedule")
             if not device.feed_schedule_active and isinstance(stored, dict):
                 # A paused device was TOLD it has no meals, so what it reports
@@ -572,7 +598,7 @@ class MQTTBridge:
                 log.debug("Feed schedule from device %d ignored: plan is paused",
                           device.petkit_id)
             else:
-                merged = {**feed, "v": 2}
+                merged = {"schedule": groups, "v": 2}
                 if isinstance(stored, dict) and "deferred" in stored:
                     merged["deferred"] = stored["deferred"]
                 device.config["feed_schedule"] = merged

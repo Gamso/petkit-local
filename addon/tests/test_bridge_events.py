@@ -106,6 +106,49 @@ async def test_a_feed_echo_keeps_the_stamp_and_the_one_off_feeds(setup):
     assert feeder.config["feed_schedule"] is stored
 
 
+async def test_a_device_cannot_plant_one_off_feeds_through_its_feed_echo(setup):
+    """`deferred` is ours: the panel writes it and renders it. The broker
+    accepts any CONNECT by default, so a `feed` post is LAN input — and one
+    carrying its own `deferred` used to be stored whole, then listed by the
+    panel's deferred-feed endpoint as if the user had scheduled it."""
+    from aiohttp.test_utils import TestClient, TestServer
+
+    from petkit_local.devices.ble import BLERegistry
+    from petkit_local.web.panel import create_panel_app
+
+    reg, dev, pub, store, hub, pet_registry, bridge = setup
+    feeder = reg.get_or_create(petkit_id=11, device_type="d4sh", serial_number="SN11")
+    markup = "<img src=x onerror=alert(1)>"
+    hostile = {"schedule": [{"re": "1", "it": [{"id": "n_600", "t": 600, "a1": 1, "a2": 1}]}],
+               "deferred": [{"id": "d_1", "fire_at": 1, "t": 1, "a1": markup, "a2": markup}],
+               "anything": markup}
+    await bridge._handle_event(feeder, "property", {"params": {"feed": hostile}})
+    assert feeder.config["feed_schedule"] == {"schedule": hostile["schedule"], "v": 2}
+
+    c = TestClient(TestServer(create_panel_app(reg, BLERegistry(), hub, {})))
+    await c.start_server()
+    try:
+        listed = await (await c.get("/api/devices/11/deferred-feed")).json()
+        assert listed == {"deferred": []}
+    finally:
+        await c.close()
+
+
+@pytest.mark.parametrize("schedule", [
+    [1, 2],                                  # groups that are not objects
+    ["<img src=x onerror=alert(1)>"],
+    [{"re": "1", "it": "not a list"}],
+    [{"re": "1", "it": [600]}],              # meals that are not objects
+])
+async def test_a_feed_echo_of_the_wrong_shape_is_not_stored(setup, schedule):
+    """`dev_feed_get` and the panel's editor index straight into the groups and
+    their meals; a list of anything else must never get that far."""
+    reg, dev, pub, store, hub, pet_registry, bridge = setup
+    feeder = reg.get_or_create(petkit_id=11, device_type="d4sh", serial_number="SN11")
+    await bridge._handle_event(feeder, "property", {"params": {"feed": {"schedule": schedule}}})
+    assert "feed_schedule" not in feeder.config
+
+
 async def test_property_event_is_not_persisted(setup):
     reg, dev, pub, store, hub, pet_registry, bridge = setup
     await bridge._handle_event(dev, "property", {"params": {"sandPercent": 40}})
