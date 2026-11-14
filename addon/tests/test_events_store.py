@@ -297,6 +297,168 @@ async def test_migrate_adds_columns_to_an_existing_database_in_place():
         await store.close()
 
 
+def _index_names(path, table):
+    db = sqlite3.connect(str(path))
+    try:
+        return {row[1] for row in db.execute(f"PRAGMA index_list({table})")}
+    finally:
+        db.close()
+
+
+async def test_migrate_adds_the_indexes_an_existing_database_is_missing():
+    """`create_all` skips a table that exists, indexes and all — so an index
+    declared on a model later reached fresh installs only, and never the
+    upgraded ones whose `events` table is the big one."""
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "petkit.db"
+        old = sqlite3.connect(str(path))
+        old.executescript(_OLD_SCHEMA)
+        old.execute("CREATE INDEX idx_events_ts ON events(ts)")  # one it already has
+        old.execute("INSERT INTO events (event_uid, device_id, event_type, ts, created_at) "
+                    "VALUES ('e1', 7, '10', 100.0, 100.0)")
+        old.commit()
+        old.close()
+        assert _index_names(path, "events") == {"idx_events_ts"}
+
+        store = EventStore(path)
+        await store.connect()
+        await store.close()
+        await store.connect()  # a second start finds nothing left to add
+        await store.close()
+
+        assert _index_names(path, "events") == {
+            "idx_events_device_ts", "idx_events_related", "idx_events_ts",
+            "idx_events_uid", "idx_events_pet_ts"}
+        assert {"idx_media_related", "idx_media_device_created"} <= _index_names(path, "media")
+
+        # ...and they are what the two hot lookups actually use.
+        db = sqlite3.connect(str(path))
+        by_uid = db.execute("EXPLAIN QUERY PLAN SELECT * FROM events "
+                            "WHERE event_uid = 'e1'").fetchall()
+        by_pet = db.execute("EXPLAIN QUERY PLAN SELECT * FROM events WHERE pet_id = 3 "
+                            "AND event_kind = 'toilet_visit' ORDER BY ts DESC LIMIT 1").fetchall()
+        db.close()
+        assert "idx_events_uid" in by_uid[0][-1]
+        assert "idx_events_pet_ts" in by_pet[0][-1]
+
+
+async def test_a_fresh_database_has_the_same_indexes_as_a_migrated_one(tmp_path):
+    store = EventStore(tmp_path / "petkit.db")
+    await store.connect()
+    await store.close()
+    assert {"idx_events_uid", "idx_events_pet_ts"} <= _index_names(tmp_path / "petkit.db", "events")
+
+
+# --- the start-up backfill (events/migrations.py) ---------------------------
+
+
+async def _stale_rows(store, n, start=0):
+    """`n` cleaning reports as a build that did not know code 5 stored them."""
+    for i in range(start, start + n):
+        await store.upsert_event({
+            "event_uid": f"stale{i}", "related_event": None, "device_id": 1,
+            "event_type": "5", "event_kind": "other", "ts": 100.0 + i,
+            "content_json": json.dumps({"relate_event": f"visit{i}"}),
+            "state_json": json.dumps({"big": "x" * 100}),
+        })
+
+
+async def test_backfill_walks_every_page_and_then_costs_nothing(event_store, monkeypatch):
+    from petkit_local.events import migrations
+
+    monkeypatch.setattr(migrations, "PAGE_SIZE", 3)
+    await _stale_rows(event_store, 8)
+    pages = []
+    real_page = event_store.events_for_backfill
+
+    async def counting_page(after_id, limit):
+        rows = await real_page(after_id, limit)
+        pages.append(len(rows))
+        return rows
+
+    monkeypatch.setattr(event_store, "events_for_backfill", counting_page)
+
+    assert await migrations.backfill_event_rows(event_store) == 8
+    assert pages == [3, 3, 2, 0]
+    rows = await event_store.all_events()
+    assert {r["event_kind"] for r in rows} == {"cleaning"}
+    assert [r["parent_event"] for r in rows] == [f"visit{i}" for i in range(8)]
+    assert [r["related_event"] for r in rows] == [f"stale{i}" for i in range(8)]
+
+    # A start that finds its own stamp reads no row at all.
+    del pages[:]
+    assert await migrations.backfill_event_rows(event_store) == 0
+    assert pages == []
+    # Asked to, it still walks everything, and finds nothing left to fix.
+    assert await migrations.backfill_event_rows(event_store, force=True) == 0
+    assert pages == [3, 3, 2, 0]
+
+
+async def test_backfill_page_carries_only_what_the_pass_reads(event_store):
+    await _stale_rows(event_store, 1)
+    (row,) = await event_store.events_for_backfill(0, 10)
+    assert "state_json" not in row
+    assert {"id", "event_uid", "related_event", "parent_event", "device_type",
+            "event_type", "event_kind", "pet_ref", "content_json"} == set(row)
+
+
+async def test_backfill_runs_again_when_the_deriving_code_changes(event_store, monkeypatch):
+    """The stamp is a fingerprint of the code whose output is persisted: the
+    same build skips, a build that classifies differently does not."""
+    from petkit_local.events import migrations
+
+    await migrations.backfill_event_rows(event_store)
+    assert await event_store.backfill_stamp() == migrations._stamp() != 0
+
+    await _stale_rows(event_store, 2)
+    assert await migrations.backfill_event_rows(event_store) == 0, "same build: skipped"
+
+    monkeypatch.setattr(migrations, "_stamp", lambda: 12345)
+    assert await migrations.backfill_event_rows(event_store) == 2
+    assert await event_store.backfill_stamp() == 12345
+    assert await migrations.backfill_event_rows(event_store) == 0
+
+
+async def test_backfill_with_no_readable_source_runs_every_time(event_store, monkeypatch):
+    from petkit_local.events import migrations
+
+    monkeypatch.setattr(migrations, "_stamp", lambda: None)
+    await _stale_rows(event_store, 1)
+    assert await migrations.backfill_event_rows(event_store) == 1
+    await _stale_rows(event_store, 1, start=1)
+    assert await migrations.backfill_event_rows(event_store) == 1
+    assert await event_store.backfill_stamp() == 0
+
+
+async def test_an_interrupted_backfill_leaves_no_stamp_behind(event_store, monkeypatch):
+    """The stamp commits with the repairs or not at all — a pass that died
+    halfway must not be taken for a finished one on the next start."""
+    from petkit_local.events import migrations
+
+    monkeypatch.setattr(migrations, "PAGE_SIZE", 2)
+    await _stale_rows(event_store, 4)
+    real_page = event_store.events_for_backfill
+    calls = []
+
+    async def dies_on_second_page(after_id, limit):
+        calls.append(after_id)
+        if len(calls) == 2:
+            raise RuntimeError("add-on stopped")
+        return await real_page(after_id, limit)
+
+    monkeypatch.setattr(event_store, "events_for_backfill", dies_on_second_page)
+    try:
+        await migrations.backfill_event_rows(event_store)
+        raise AssertionError("expected the pass to be interrupted")
+    except RuntimeError:
+        pass
+
+    assert await event_store.backfill_stamp() == 0
+    assert {r["event_kind"] for r in await event_store.all_events()} == {"other"}
+    monkeypatch.setattr(event_store, "events_for_backfill", real_page)
+    assert await migrations.backfill_event_rows(event_store) == 4
+
+
 async def test_opens_the_intended_file_when_the_path_needs_url_escaping():
     """A "?" in --data-dir must not truncate the database path.
 

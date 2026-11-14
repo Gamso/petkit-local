@@ -672,3 +672,190 @@ async def test_one_exploding_episode_does_not_stop_the_sweep(monkeypatch):
     assert await sweeper.run_once() == 1
     assert seen == [("bad", "t5"), ("good", "t5")]
     assert hub.published == [("media", 1, {"stitched": True, "category": "cloudDouble"})]
+
+
+# --- the destructive tail: move, swap the rows, delete the sources LAST ------
+#
+# Every test below ends by checking the one thing that must hold whatever went
+# wrong: each media row points at a file that exists, with the bytes it had.
+
+
+def _friendly_path(media_root, start_ts):
+    """The name `stitch_episode` gives a clip whose first chunk starts at `start_ts`."""
+    from petkit_local.media import layout
+    return layout.build_media_path(media_root, "t5", 1, "fullVideo", start_ts,
+                                   layout.media_filename_label(None, None), "mp4")
+
+
+async def _named_episode(store, media_root, related_event, n, first_ts=1000.0):
+    """Like `_dummy_episode`, but the FIRST chunk already has the friendly name
+    the stitched clip will want — which is what the pipeline produces, and the
+    case where the output has to take the place of one of its own inputs."""
+    first = _friendly_path(media_root, first_ts)
+    day_dir = os.path.dirname(first)
+    os.makedirs(day_dir, exist_ok=True)
+    paths = [first] + [os.path.join(day_dir, f"{related_event}-{i}.mp4") for i in range(1, n)]
+    for i, p in enumerate(paths):
+        Path(p).write_bytes(b"chunk %d" % i)
+        await _add_chunk(store, p, related_event, "fullVideo", first_ts + i)
+    episode = (await store.stitch_candidates(("fullVideo",), quiet_before_ts=first_ts + 500))[0]
+    return paths, episode
+
+
+async def _assert_chunks_untouched(store, paths, work):
+    for i, p in enumerate(paths):
+        assert Path(p).read_bytes() == b"chunk %d" % i, f"{p} was lost or overwritten"
+    rows = await store.media_for_retention("fullVideo")
+    assert sorted(r["media_path"] for r in rows) == sorted(paths)
+    assert sorted(os.listdir(os.path.dirname(paths[0]))) == sorted(
+        os.path.basename(p) for p in paths), "a half-made output was left in the media tree"
+    assert os.listdir(work) == [], "the work dir was not cleaned up"
+
+
+async def test_a_failed_move_keeps_every_chunk_and_leaves_no_output(monkeypatch):
+    with tempfile.TemporaryDirectory() as tmp:
+        store = await _store(tmp)
+        media_root = os.path.join(tmp, "media")
+        work = os.path.join(tmp, "work")
+        paths, episode = await _named_episode(store, media_root, "epMv", 3)
+        _fake_media(monkeypatch)
+
+        def refuse(path):
+            raise OSError(28, "No space left on device")
+
+        monkeypatch.setattr(stitch, "_claim_unique_path", refuse)
+
+        out = await stitch.stitch_episode(store, episode, media_root, work_dir=work,
+                                          device_type="t5")
+
+        assert out is None
+        await _assert_chunks_untouched(store, paths, work)
+        assert await store.stitch_candidates(("fullVideo",), quiet_before_ts=2000.0) == []
+
+
+async def test_a_database_failure_after_the_move_keeps_every_chunk(monkeypatch):
+    """The rows are swapped AFTER the clip is in place and BEFORE any source is
+    deleted, so a failed swap has to put the tree back exactly as it was."""
+    from sqlalchemy.exc import OperationalError
+
+    with tempfile.TemporaryDirectory() as tmp:
+        store = await _store(tmp)
+        media_root = os.path.join(tmp, "media")
+        work = os.path.join(tmp, "work")
+        paths, episode = await _named_episode(store, media_root, "epDb", 3)
+        _fake_media(monkeypatch)
+        seen = {}
+
+        async def broken_swap(chunk_ids, merged_row):
+            # The clip is already where the row says it is.
+            seen["placed"] = Path(merged_row["media_path"]).read_bytes()
+            raise OperationalError("INSERT", {}, Exception("disk I/O error"))
+
+        monkeypatch.setattr(store, "replace_chunks_with_stitched", broken_swap)
+
+        out = await stitch.stitch_episode(store, episode, media_root, work_dir=work,
+                                          device_type="t5")
+
+        assert out is None
+        assert seen["placed"] == b"joined"
+        await _assert_chunks_untouched(store, paths, work)
+        assert await store.stitch_candidates(("fullVideo",), quiet_before_ts=2000.0) == []
+
+
+async def test_a_cancelled_stitch_finishes_the_swap_before_it_stops(monkeypatch):
+    """A shutdown landing mid-swap must not leave the files and the rows
+    disagreeing about whether the episode was stitched."""
+    with tempfile.TemporaryDirectory() as tmp:
+        store = await _store(tmp)
+        media_root = os.path.join(tmp, "media")
+        work = os.path.join(tmp, "work")
+        paths, episode = await _named_episode(store, media_root, "epCx", 3)
+        _fake_media(monkeypatch)
+        real_swap = store.replace_chunks_with_stitched
+        in_swap = asyncio.Event()
+
+        async def slow_swap(chunk_ids, merged_row):
+            in_swap.set()
+            await asyncio.sleep(0.05)
+            return await real_swap(chunk_ids, merged_row)
+
+        monkeypatch.setattr(store, "replace_chunks_with_stitched", slow_swap)
+
+        task = asyncio.ensure_future(stitch.stitch_episode(
+            store, episode, media_root, work_dir=work, device_type="t5"))
+        await in_swap.wait()
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+        rows = await store.media_for_retention("fullVideo")
+        assert [r["stitch_state"] for r in rows] == ["stitched"]
+        assert Path(rows[0]["media_path"]).read_bytes() == b"joined"
+        assert os.listdir(os.path.dirname(paths[0])) == [os.path.basename(paths[0])]
+        assert os.listdir(work) == []
+
+
+async def test_an_excluded_first_chunk_is_never_overwritten_by_the_output(monkeypatch):
+    """The clip is named from the first chunk that is IN the join. Named from
+    the episode's first chunk, it landed on top of an outlier that was being
+    deliberately kept — and an unrelated file holding the name it does want is
+    not an input either."""
+    with tempfile.TemporaryDirectory() as tmp:
+        store = await _store(tmp)
+        media_root = os.path.join(tmp, "media")
+        work = os.path.join(tmp, "work")
+        paths, episode = await _named_episode(store, media_root, "epO", 4)
+        outlier = paths[0]
+        bystander = _friendly_path(media_root, 1001.0)  # the name the output wants
+        Path(bystander).write_bytes(b"somebody else's clip")
+        joins = _fake_media(monkeypatch, probe_outliers={outlier})
+
+        out = await stitch.stitch_episode(store, episode, media_root, work_dir=work,
+                                          device_type="t5")
+
+        assert joins == [paths[1:]]
+        assert out is not None and out not in (outlier, bystander)
+        assert Path(out).read_bytes() == b"joined"
+        assert Path(outlier).read_bytes() == b"chunk 0", "the excluded chunk was overwritten"
+        assert Path(bystander).read_bytes() == b"somebody else's clip"
+        rows = {r["media_path"]: r for r in await store.media_for_retention("fullVideo")}
+        assert set(rows) == {out, outlier}
+        assert rows[outlier]["stitch_state"] == "excluded-stream-mismatch"
+        for p in paths[1:]:
+            assert not os.path.exists(p)
+        assert os.listdir(work) == []
+
+
+@requires_ffmpeg
+async def test_chunks_arriving_after_a_stitch_are_joined_into_a_second_clip():
+    """A late upload or the tail of the cleaning cycle forms a new candidate
+    under the same episode key. `media.file_id` is unique, so a second row with
+    the first pass's id was refused — after its sources had been deleted."""
+    with tempfile.TemporaryDirectory() as tmp:
+        store = await _store(tmp)
+        media_root = os.path.join(tmp, "media")
+        work = os.path.join(tmp, "work")
+        day_dir = os.path.join(media_root, "Dev", "Playback", "2026-07-22")
+        os.makedirs(day_dir, exist_ok=True)
+
+        async def stitch_next(names, first_ts):
+            for i, name in enumerate(names):
+                p = os.path.join(day_dir, name)
+                _make_clip(p, seconds=1)
+                await _add_chunk(store, p, "epL", "fullVideo", first_ts + i, duration_ms=1000)
+            (episode,) = await store.stitch_candidates(("fullVideo",), quiet_before_ts=5000.0)
+            assert len(episode["chunks"]) == len(names)
+            return await stitch.stitch_episode(store, episode, media_root, work_dir=work,
+                                               device_type="t5")
+
+        first = await stitch_next(["a0.mp4", "a1.mp4", "a2.mp4"], 1000.0)
+        second = await stitch_next(["late0.mp4", "late1.mp4"], 1100.0)
+
+        assert first is not None and second is not None and first != second
+        rows = await store.media_for_retention("fullVideo")
+        assert sorted(r["media_path"] for r in rows) == sorted([first, second])
+        assert {r["stitch_state"] for r in rows} == {"stitched"}
+        assert len({r["file_id"] for r in rows}) == 2
+        assert await stitch.verify_video(first, expected_duration_sec=3.0) is True
+        assert await stitch.verify_video(second, expected_duration_sec=2.0) is True
+        assert os.listdir(day_dir) == [] and os.listdir(work) == []

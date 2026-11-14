@@ -1,4 +1,6 @@
 import json
+import logging
+import ssl
 
 import pytest
 from aiohttp import web
@@ -18,6 +20,7 @@ from petkit_local.http.proxy import (
     normalize_upstream,
     proxy_request,
     resolve_upstream,
+    verifies_certificate,
 )
 from petkit_local.http.redact import RedactionPolicy
 
@@ -377,3 +380,91 @@ def test_merge_puts_primary_entries_first():
 def test_merge_refuses_shapes_it_cannot_join(left, right):
     """None rather than a silently mangled body — the caller picks a whole side."""
     assert merge_json_result_lists(left, right) is None
+
+
+# --- the upstream's certificate ----------------------------------------------
+
+def test_every_preset_is_verified():
+    for key in UPSTREAM_PRESETS:
+        assert verifies_certificate(resolve_upstream(key)), key
+
+
+@pytest.mark.parametrize("upstream,verified", [
+    ("https://api-eu.petkt.com", True),
+    ("https://my-own-mirror.example:8443", True),
+    # An address carries no name to check a certificate against.
+    ("https://203.0.113.7", False),
+    ("https://203.0.113.7:8443", False),
+    ("https://[2001:db8::7]:8443", False),
+    # No TLS at all — nothing for this to decide.
+    ("http://203.0.113.7:8080", True),
+    ("http://api-eu.petkt.com", True),
+])
+def test_only_an_https_address_goes_unverified(upstream, verified):
+    assert verifies_certificate(upstream) is verified
+
+
+async def _tls_upstream(tmp_path, handler):
+    """A fake PetKit cloud on TLS with a certificate no public root signed."""
+    from petkit_local.mqtt.broker import ensure_self_signed
+
+    cert, key = str(tmp_path / "up.crt"), str(tmp_path / "up.key")
+    assert ensure_self_signed(cert, key, extra_hosts=["127.0.0.1"])
+    context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    context.load_cert_chain(cert, key)
+
+    app = web.Application()
+    app.router.add_route("*", "/{path:.*}", handler)
+    server = TestServer(app)
+    await server.start_server(ssl=context)
+    return server
+
+
+async def test_forward_refuses_an_upstream_whose_certificate_does_not_verify(tmp_path, caplog):
+    """Anything on the path can present a certificate of its own. It used to be
+    believed (`ssl=False`), and its reply recorded and served as PetKit's."""
+    hits = []
+
+    async def impostor(request):
+        hits.append(request.headers.get("X-Device"))
+        return web.json_response({"result": {"secret": "planted"}})
+
+    up = await _tls_upstream(tmp_path, impostor)
+    captured = []
+    client = await _forwarding_client(f"https://localhost:{up.port}", _policy(), captured)
+    try:
+        with caplog.at_level(logging.WARNING, logger="petkit_local.http.proxy"):
+            r = await client.post("/6/t5/dev_signup", headers={"X-Device": "id=1&sign=abc"})
+        assert (await r.json()) == {"local": True}
+        assert captured == [None]
+        assert "certificate" in caplog.text.lower()
+        # The handshake failed, so the signed header never left.
+        assert hits == []
+    finally:
+        await close_proxy_session(client.app)
+        await client.close()
+        await up.close()
+
+
+async def test_forward_reaches_an_address_unverified_and_says_so(tmp_path, caplog):
+    async def cloud(request):
+        return web.json_response({"result": {"from": "cloud"}})
+
+    up = await _tls_upstream(tmp_path, cloud)
+    captured = []
+    base = f"https://127.0.0.1:{up.port}"
+    client = await _forwarding_client(base, _policy(), captured)
+    try:
+        with caplog.at_level(logging.WARNING, logger="petkit_local.http.proxy"):
+            r1 = await client.post("/6/t5/dev_device_info")
+            r2 = await client.post("/6/t5/dev_device_info")
+        assert (await r1.json())["result"]["from"] == "cloud"
+        assert (await r2.json())["result"]["from"] == "cloud"
+
+        warnings = [rec for rec in caplog.records if "cannot be verified" in rec.getMessage()]
+        # Once per setting, not once per request.
+        assert len(warnings) == 1 and base in warnings[0].getMessage()
+    finally:
+        await close_proxy_session(client.app)
+        await client.close()
+        await up.close()

@@ -32,12 +32,14 @@ which must happen before `AppRunner.setup()` freezes the app.
 from __future__ import annotations
 
 import asyncio
+import ipaddress
 import json
 import logging
 import time
 import weakref
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
+from urllib.parse import urlparse
 
 import aiohttp
 from aiohttp import web
@@ -112,6 +114,12 @@ _BREAKERS: weakref.WeakKeyDictionary[web.Application, list[float]] = (
 # The `proxy_dns` each live session was built with. The resolver is fixed at
 # connector construction, so this is what notices the setting changing.
 _SESSION_DNS: weakref.WeakKeyDictionary[web.Application, str] = (
+    weakref.WeakKeyDictionary()
+)
+
+# The upstream each app was last warned about reaching without verifying its
+# certificate, so the warning is one line per setting and not one per request.
+_UNVERIFIED: weakref.WeakKeyDictionary[web.Application, str] = (
     weakref.WeakKeyDictionary()
 )
 
@@ -197,6 +205,52 @@ def resolve_upstream(setting: str) -> str:
     return normalize_upstream(value)
 
 
+def verifies_certificate(upstream: str) -> bool:
+    """Whether the TLS certificate of `upstream` is checked before we talk to it.
+
+    True for every name, which covers all of `UPSTREAM_PRESETS`: PetKit's API
+    hosts chain to public roots, and `http/cloud_fetch.py` has always relied on
+    that for the same servers. `proxy_dns` does not change the answer — it
+    changes where the name is looked up, not the name the certificate must carry.
+
+    False only for an `https://` upstream written as an ADDRESS, the escape
+    hatch `resolve_upstream` keeps for a LAN that redirects PetKit's names here.
+    PetKit's certificate names a host, so against an address there is nothing
+    to check it by, and the choice is between an unverified link and no link.
+    Plain `http://` has no certificate at all and is not this function's
+    business.
+
+    Not to be confused with `mqtt/upstream.py::build_tls_context`, which cannot
+    verify for a different reason: Aliyun's broker chains to a private root.
+    """
+    parsed = urlparse(upstream)
+    if parsed.scheme != "https" or not parsed.hostname:
+        return True
+    try:
+        ipaddress.ip_address(parsed.hostname)
+    except ValueError:
+        return True
+    return False
+
+
+def _warn_unverified(app: web.Application, upstream: str) -> None:
+    """Say, once per setting, that this upstream is being reached on trust.
+
+    What rides on it is not small — the device's signed `X-Device` header goes
+    up, and an `api_secret` in the reply is adopted
+    (`middleware/proxy.py::_remember_upstream_credentials`) — so it must not be
+    something a log reader has to infer from the URL.
+    """
+    if _UNVERIFIED.get(app) == upstream:
+        return
+    _UNVERIFIED[app] = upstream
+    log.warning(
+        "PROXY: %s is an address, not a name, so its TLS certificate cannot be "
+        "verified — anything on the path can read and answer this traffic. Use "
+        "a preset or a hostname (with an upstream DNS server in Setup if your "
+        "LAN redirects it) to have it checked.", upstream)
+
+
 def get_proxy_session(app: web.Application, dns_server: str = "") -> aiohttp.ClientSession:
     """Return the shared upstream session for `app`, creating it on first use.
 
@@ -241,6 +295,7 @@ async def close_proxy_session(app: web.Application) -> None:
     """
     _BREAKERS.pop(app, None)
     _SESSION_DNS.pop(app, None)
+    _UNVERIFIED.pop(app, None)
     session = _SESSIONS.pop(app, None)
     if session is not None and not session.closed:
         await session.close()
@@ -303,6 +358,10 @@ async def forward(
 
     headers = {h: request.headers[h] for h in _FORWARD_HEADERS if h in request.headers}
 
+    verify = verifies_certificate(upstream)
+    if not verify:
+        _warn_unverified(request.app, upstream)
+
     session = get_proxy_session(request.app, dns_server)
     try:
         async with session.request(
@@ -310,7 +369,7 @@ async def forward(
             url=target_url,
             headers=headers,
             data=body if body else None,
-            ssl=False,
+            ssl=verify,
         ) as resp:
             raw = await resp.read()
             resp_headers = {k: v for k, v in resp.headers.items() if k not in _HOP_BY_HOP}

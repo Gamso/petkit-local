@@ -170,6 +170,23 @@ async def test_frontend_has_no_inline_event_handlers():
         await c.close()
 
 
+async def test_live_traffic_can_be_narrowed_to_one_device():
+    """The picker is bound by delegation, so the template's `data-change` name
+    and the handler `log.js` registers have to be the same string — a mismatch
+    is a select that silently does nothing."""
+    app, reg, hub = _panel()
+    c = await _mk_client(app)
+    try:
+        html = await (await c.get("/")).text()
+        js = _panel_js()
+        assert re.search(r'<select id="logDevice" data-change="log-device">', html)
+        assert "onChange('log-device'" in js
+        # The download saves what is on screen, so it has to apply the same filter.
+        assert "LOG.rows.filter(e => matchesLogDevice(e)" in js
+    finally:
+        await c.close()
+
+
 async def test_devices_tab_is_one_collapsible_panel_per_device():
     """The grid plus a single shared detail pane is gone. That pane is why the
     `<details>` sections inside it collapsed a few seconds after being opened:
@@ -430,10 +447,10 @@ async def test_the_panel_runs_only_a_w7hs_own_actions_on_it():
     try:
         for action in ("level_litter", "light", "maintenance_start", "reset_n60",
                        "power_off", "cleaning_start"):
-            r = await c.post("/api/devices/1/command", data=json.dumps({"action": action}))
+            r = await c.post("/api/devices/1/command", json={"action": action})
             assert r.status == 400, action
         assert not reg.get(1).command_queue
-        r = await c.post("/api/devices/1/command", data=json.dumps({"action": "fountain_drain"}))
+        r = await c.post("/api/devices/1/command", json={"action": "fountain_drain"})
         out = await r.json()
         assert out["ok"], out
         assert "\"start_action\": 3" in json.dumps(reg.get(1).command_queue[-1])
@@ -447,10 +464,35 @@ async def test_command_sender_queues_without_bridge():
     app, reg, hub = _panel(reg=reg, bridge=None)
     c = await _mk_client(app)
     try:
-        r = await c.post("/api/devices/1/command", data=json.dumps({"action": "cleaning_start"}))
+        r = await c.post("/api/devices/1/command", json={"action": "cleaning_start"})
         out = await r.json()
         assert out["ok"] and out["delivered"] == "heartbeat-queue"
         assert reg.get(1).command_queue  # queued
+    finally:
+        await c.close()
+
+
+async def test_t6_bag_reset_is_destructive_and_queues_native_service():
+    reg = DeviceRegistry()
+    reg.get_or_create(petkit_id=1, device_type="t6", serial_number="SN6")
+    app, reg, hub = _panel(reg=reg, bridge=None)
+    c = await _mk_client(app)
+    try:
+        detail = await (await c.get("/api/devices/1")).json()
+        action = next(a for a in detail["actions"] if a["key"] == "reset_bagbox")
+        assert action["destructive"] is True
+
+        response = await c.post(
+            "/api/devices/1/command",
+            data=json.dumps({"action": "reset_bagbox"}),
+        )
+        payload = await response.json()
+        assert response.status == 200
+        assert payload["ok"] and payload["delivered"] == "heartbeat-queue"
+        queued = reg.get(1).command_queue[-1]
+        assert queued["_service_suffix"] == "reset_bagbox"
+        assert queued["method"] == "thing.service.reset_bagbox"
+        assert queued["params"] == {}
     finally:
         await c.close()
 
@@ -470,7 +512,7 @@ async def test_action_form_records_a_consumable_reset_like_the_entity_form():
     app, reg, hub = _panel(reg=reg, bridge=None)
     c = await _mk_client(app)
     try:
-        r = await c.post("/api/devices/1/command", data=json.dumps({"action": "reset_n50"}))
+        r = await c.post("/api/devices/1/command", json={"action": "reset_n50"})
         assert (await r.json())["ok"]
         assert reg.get(1).config["consumables"]["n50"] > 0
     finally:
@@ -512,9 +554,9 @@ async def test_action_and_entity_forms_have_the_same_side_effects():
             ca, cb = await _mk_client(app_a), await _mk_client(app_b)
             try:
                 ra = await ca.post("/api/devices/1/command",
-                                   data=json.dumps({"action": key}))
+                                   json={"action": key})
                 rb = await cb.post("/api/devices/1/command",
-                                   data=json.dumps({"entity": key, "value": ""}))
+                                   json={"entity": key, "value": ""})
                 oa, ob = await ra.json(), await rb.json()
                 assert oa.get("ok") and ob.get("ok"), f"{device_type}/{key}: {oa} {ob}"
                 assert oa.get("suffix") == ob.get("suffix"), f"{device_type}/{key}"
@@ -536,7 +578,7 @@ async def test_command_sender_uses_bridge_when_connected():
     app, reg, hub = _panel(reg=reg, bridge=bridge)
     c = await _mk_client(app)
     try:
-        r = await c.post("/api/devices/1/command", data=json.dumps({"action": "cleaning_start"}))
+        r = await c.post("/api/devices/1/command", json={"action": "cleaning_start"})
         out = await r.json()
         assert out["delivered"] == "mqtt"
         assert bridge.sent and bridge.sent[0][1] == "start"
@@ -570,7 +612,7 @@ async def test_command_falls_back_to_heartbeat_when_device_not_on_mqtt():
     app, reg, hub = _panel(reg=reg, bridge=bridge)
     c = await _mk_client(app)
     try:
-        r = await c.post("/api/devices/1/command", data=json.dumps({"action": "cleaning_start"}))
+        r = await c.post("/api/devices/1/command", json={"action": "cleaning_start"})
         out = await r.json()
         assert out["delivered"] == "heartbeat-queue"
         assert not bridge.sent  # never went to MQTT
@@ -587,7 +629,7 @@ async def test_command_entity_setting_updates_and_queues():
     c = await _mk_client(app)
     try:
         r = await c.post("/api/devices/1/command",
-                         data=json.dumps({"entity": "auto_work", "value": "OFF"}))
+                         json={"entity": "auto_work", "value": "OFF"})
         out = await r.json()
         assert out["ok"] and out["delivered"] == "heartbeat-queue"
         # optimistic settings update applied (auto_work -> settings.autoWork)
@@ -612,7 +654,7 @@ async def test_settings_live_update_mutates_shared_config():
     try:
         s = await (await c.get("/api/settings")).json()
         assert s["writable"] is True and s["settings"]["proxy_mode"] is False
-        r = await (await c.post("/api/settings", data=json.dumps({"proxy_mode": True, "capture": True}))).json()
+        r = await (await c.post("/api/settings", json={"proxy_mode": True, "capture": True})).json()
         assert r["ok"] and r["changed"]["proxy_mode"] is True
         assert live["proxy_mode"] is True and live["capture"] is True  # shared dict mutated live
         # capture flag now reflected everywhere it's read
@@ -628,7 +670,7 @@ async def test_settings_not_writable_without_live_config():
     try:
         s = await (await c.get("/api/settings")).json()
         assert s["writable"] is False
-        r = await c.post("/api/settings", data=json.dumps({"proxy_mode": True}))
+        r = await c.post("/api/settings", json={"proxy_mode": True})
         assert r.status == 400
     finally:
         await c.close()
@@ -877,9 +919,9 @@ async def test_settings_overrides_written_atomically_and_merged():
         path = Path(tmp) / "overrides.json"
         c = await _mk_client(_settings_app(tmp))
         try:
-            await c.post("/api/settings", data=json.dumps({"proxy_mode": True}))
+            await c.post("/api/settings", json={"proxy_mode": True})
             assert json.loads(path.read_text()) == {"proxy_mode": True}
-            await c.post("/api/settings", data=json.dumps({"capture": True}))
+            await c.post("/api/settings", json={"capture": True})
             assert json.loads(path.read_text()) == {"proxy_mode": True, "capture": True}
             # no temp file survived the write-then-rename
             assert os.listdir(tmp) == ["overrides.json"]
@@ -895,7 +937,7 @@ async def test_settings_overrides_repair_a_corrupt_file():
         path.write_text('{"proxy_mode": tr')
         c = await _mk_client(_settings_app(tmp))
         try:
-            r = await c.post("/api/settings", data=json.dumps({"proxy_mode": True}))
+            r = await c.post("/api/settings", json={"proxy_mode": True})
             assert (await r.json())["ok"] is True
             assert json.loads(path.read_text()) == {"proxy_mode": True}
         finally:
@@ -999,7 +1041,11 @@ async def test_background_task_exception_is_retrieved():
     panel_log.disabled = True  # the failure is logged; keep the test output clean
     try:
         task = _spawn_background(app, _boom(), name="test-boom")
-        await asyncio.sleep(0.05)
+        # Wait for the task itself, not a fixed 50ms a loaded runner may not
+        # give it. Its done-callback was registered before `wait`'s, so it has
+        # run by the time `wait` returns; the extra turn is belt and braces.
+        await asyncio.wait({task}, timeout=5)
+        await asyncio.sleep(0)
     finally:
         panel_log.disabled = False
     assert task.done() and isinstance(task.exception(), RuntimeError)
@@ -1012,8 +1058,12 @@ async def test_patcher_run_is_tracked_and_drained_by_app_cleanup():
     import petkit_local.web.api.patchers as patchers_mod
     import petkit_local.web.panel as panel
 
+    from petkit_local.devices import addresses
+
     reg = DeviceRegistry()
-    reg.get_or_create(petkit_id=1, device_type="t5", serial_number="SN").state["ip"] = "192.0.2.10"
+    d = reg.get_or_create(petkit_id=1, device_type="t5", serial_number="SN")
+    d.state["ip"] = "192.0.2.10"
+    addresses.note(d, addresses.CLAIMED, "192.0.2.10")
     app, reg, hub = _panel(reg=reg)
     started = asyncio.Event()
 
@@ -1025,7 +1075,7 @@ async def test_patcher_run_is_tracked_and_drained_by_app_cleanup():
     patchers_mod._patcher_apply = _slow_apply
     c = await _mk_client(app)
     try:
-        r = await c.post("/api/devices/1/patcher", data=json.dumps({"patcher": "mqtt"}))
+        r = await c.post("/api/devices/1/patcher", json={"patcher": "mqtt"})
         assert (await r.json())["ok"] is True
         await asyncio.wait_for(started.wait(), timeout=2)
         tasks = list(app[panel.BACKGROUND_TASKS])
@@ -1233,7 +1283,7 @@ async def test_upstream_presets_are_offered_and_accepted():
         assert [u["key"] for u in upstreams if u["default"]] == ["petkit-eu"]
 
         for key in offered:
-            r = await c.post("/api/settings", data=json.dumps({"proxy_upstream": key}))
+            r = await c.post("/api/settings", json={"proxy_upstream": key})
             assert r.status == 200, key
             assert live["proxy_upstream"] == key
     finally:
@@ -1244,7 +1294,7 @@ async def test_a_custom_upstream_url_is_accepted():
     app, live = _proxy_settings_app()
     c = await _mk_client(app)
     try:
-        r = await c.post("/api/settings", data=json.dumps({"proxy_upstream": "https://my.mirror/6/"}))
+        r = await c.post("/api/settings", json={"proxy_upstream": "https://my.mirror/6/"})
         assert r.status == 200
         assert live["proxy_upstream"] == "https://my.mirror/6/"
     finally:
@@ -1258,7 +1308,7 @@ async def test_a_bad_upstream_is_rejected_and_changes_nothing():
     c = await _mk_client(app)
     try:
         for bad in ["not a url", "ftp://petkt.com", "https://", "javascript:alert(1)"]:
-            r = await c.post("/api/settings", data=json.dumps({"proxy_upstream": bad}))
+            r = await c.post("/api/settings", json={"proxy_upstream": bad})
             assert r.status == 400, bad
             assert live["proxy_upstream"] == "", bad
     finally:
@@ -1270,8 +1320,8 @@ async def test_a_rejected_batch_applies_none_of_its_settings():
     app, live = _proxy_settings_app()
     c = await _mk_client(app)
     try:
-        r = await c.post("/api/settings", data=json.dumps(
-            {"proxy_mode": True, "proxy_upstream": "nonsense"}))
+        r = await c.post("/api/settings", json=
+            {"proxy_mode": True, "proxy_upstream": "nonsense"})
         assert r.status == 400
         assert live["proxy_mode"] is False
     finally:
@@ -1763,7 +1813,7 @@ async def test_timezone_override_is_pushed_as_a_STRING():
     app, reg, hub = _panel(reg=reg, bridge=bridge)
     c = await _mk_client(app)
     try:
-        r = await c.post("/api/devices/1/timezone", data=json.dumps({"timezone": 5.75}))
+        r = await c.post("/api/devices/1/timezone", json={"timezone": 5.75})
         out = await r.json()
         assert out["ok"] and out["delivered"] == "mqtt"
         assert out["override"] == 5.75 and out["source"] == "override"
@@ -1789,8 +1839,8 @@ async def test_clearing_the_timezone_override_falls_back_to_what_the_device_said
     app, reg, hub = _panel(reg=reg, bridge=None)
     c = await _mk_client(app)
     try:
-        await c.post("/api/devices/1/timezone", data=json.dumps({"timezone": 2}))
-        r = await c.post("/api/devices/1/timezone", data=json.dumps({"timezone": None}))
+        await c.post("/api/devices/1/timezone", json={"timezone": 2})
+        r = await c.post("/api/devices/1/timezone", json={"timezone": None})
         out = await r.json()
         assert out["override"] is None
         assert out["effective"] == -4.0 and out["source"] == "device"
@@ -1830,7 +1880,7 @@ async def test_timezone_push_falls_back_to_the_heartbeat_queue_on_http():
     app, reg, hub = _panel(reg=reg, bridge=FakeBridge(connected=False))
     c = await _mk_client(app)
     try:
-        r = await c.post("/api/devices/1/timezone", data=json.dumps({"timezone": 2}))
+        r = await c.post("/api/devices/1/timezone", json={"timezone": 2})
         out = await r.json()
         assert out["delivered"] == "heartbeat-queue"
         queued = reg.get(1).command_queue[-1]
@@ -1849,7 +1899,7 @@ async def test_an_impossible_offset_is_refused():
     c = await _mk_client(app)
     try:
         for bad in (99, -99, "nonsense", True):
-            r = await c.post("/api/devices/1/timezone", data=json.dumps({"timezone": bad}))
+            r = await c.post("/api/devices/1/timezone", json={"timezone": bad})
             assert r.status == 400, f"accepted {bad!r}"
         assert "timezone" not in reg.get(1).config
     finally:
