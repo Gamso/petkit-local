@@ -124,12 +124,18 @@ async def test_process_file_info_plaintext_image_end_to_end():
 
 async def test_process_file_info_decrypts_when_encrypted():
     tmp, config, store, device, raw_root, media_root = _env()
+    # A fixed key, not the random one `resolve_key` would mint. The pipeline
+    # decrypts only what does not already look like media, and a buffer this
+    # short counts as MPEG-TS on a single leading 0x47 -- so a random key made
+    # one run in 256 keep the ciphertext as "plaintext" and fail.
+    Path(tmp.name, crypto._KEY_FILENAME).write_text("0123456789abcdef", encoding="ascii")
     key = crypto.resolve_key(config)
     iv = b"\xcc" * 16
 
     from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
     encryptor = Cipher(algorithms.AES(key), modes.CBC(iv)).encryptor()
     ciphertext = encryptor.update(JPEG_BYTES) + encryptor.finalize()
+    assert not crypto.looks_plaintext(ciphertext), "pick another fixed key"
 
     rel = "t5/1/eventImage/f2"
     full = os.path.join(raw_root, rel)
