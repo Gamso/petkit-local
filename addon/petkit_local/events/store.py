@@ -16,6 +16,7 @@ import asyncio
 import json
 import logging
 import os
+import statistics
 import time
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -54,7 +55,8 @@ _NO_SYNC = {"synchronize_session": False}
 _ADDED_COLUMNS = {
     "events": {"parent_event": "TEXT", "pet_ref": "INTEGER"},
     "media": {"stitch_state": "TEXT"},
-    "pets": {"device_pet_ids_json": "TEXT"},
+    "pets": {"device_pet_ids_json": "TEXT", "learned_weight_g": "REAL",
+             "learned_samples": "INTEGER", "learned_since": "REAL"},
 }
 
 
@@ -84,6 +86,38 @@ _BACKFILL_COLUMNS = (Event.id, Event.event_uid, Event.related_event, Event.paren
 #: what PetKit itself considers the maximum. A capture showing four faces is no
 #: evidence against it: that is simply how many slots the household had filled.
 MAX_FACES_PER_PET = 6
+
+
+#: How many of a pet's newest weighed visits its weight is the median of --
+#: both the HA `Weight` sensor and the learned reference weight. A median, not
+#: a mean, so one visit with two cats in the box moves nothing; seven, so it
+#: takes four wrong readings in a row to move it at all.
+WEIGHT_MEDIAN_SAMPLES = 7
+
+#: A visit weight outside this range, in grams, is not a cat: 0 is what a box
+#: reports when the scale read nothing, a few hundred grams is a paw on the
+#: step or a reading taken mid-entry, and nothing a litter box weighs is 20 kg.
+PLAUSIBLE_WEIGHT_G = (500, 20_000)
+
+#: How many of a pet's newest toilet rows `pet_recent_weights` reads to find
+#: its samples. A visit is several rows sharing one `related_event` and only
+#: the summary carries the weight, so the scan is wider than the sample count
+#: -- and bounded, so a long history costs the same as a short one.
+_WEIGHT_SCAN_ROWS = WEIGHT_MEDIAN_SAMPLES * 8
+
+
+def visit_weight_grams(content: Any) -> float | None:
+    """The weight a visit's `content` reports, in grams, or None if implausible.
+
+    Both spellings are read (`pet_weight` over HTTP, `petWeight` over MQTT).
+    """
+    if not isinstance(content, dict):
+        return None
+    weight = to_float(content.get("pet_weight", content.get("petWeight")), None)
+    low, high = PLAUSIBLE_WEIGHT_G
+    if weight is None or not low <= weight <= high:
+        return None
+    return weight
 
 
 def _accepted(row: dict[str, Any], columns: tuple[str, ...]) -> dict[str, Any]:
@@ -919,13 +953,55 @@ class EventStore:
                 out.append(pet["id"])
         return out
 
+    async def pet_recent_weights(self, pet_id: int, limit: int = WEIGHT_MEDIAN_SAMPLES,
+                                 since: float | None = None) -> list[float]:
+        """The weights, in grams, of a pet's newest weighed visits, newest first.
+
+        Only a visit SUMMARY counts (`codes.ROLE_VISIT_SUMMARY`): the other
+        reports of the same session either carry no weight or a partial one
+        taken while the cat was still stepping in. Which rows are summaries
+        depends on the device type, so that is decided here row by row rather
+        than in SQL. Readings outside `PLAUSIBLE_WEIGHT_G` are skipped.
+
+        Args:
+            pet_id: The pet the visits were credited to.
+            limit: At most this many weights.
+            since: Only visits strictly after this timestamp, or all of them.
+        """
+        where = [Event.pet_id == pet_id, Event.event_kind == codes.KIND_TOILET,
+                 Event.content_json.isnot(None)]
+        if since is not None:
+            where.append(Event.ts > since)
+        async with self._read() as session:
+            rows = await session.execute(
+                select(Event.event_type, Event.device_type, Event.content_json)
+                .where(*where).order_by(Event.ts.desc()).limit(_WEIGHT_SCAN_ROWS))
+            weights: list[float] = []
+            for event_type, device_type, content_json in rows:
+                code = codes.lookup(event_type, device_type)
+                if code is None or code.role != codes.ROLE_VISIT_SUMMARY:
+                    continue
+                try:
+                    content = json.loads(content_json)
+                except (json.JSONDecodeError, TypeError):
+                    continue
+                weight = visit_weight_grams(content)
+                if weight is not None:
+                    weights.append(weight)
+                if len(weights) >= limit:
+                    break
+        return weights
+
     async def pet_visit_stats(self, pet_id: int, now: float | None = None) -> dict[str, Any]:
         """Aggregate stats backing one pet's virtual HA device.
 
         Returns `{last_visit_ts, visits_today, last_visit_weight,
-        last_visit_duration, last_device_id}`, every value None/0 for a pet
-        that has never been recognised - the entities exist from the moment
-        the pet does (see ha/publisher.py::publish_pet_state).
+        last_visit_duration, last_device_id, weight}`, every value None/0 for
+        a pet that has never been recognised - the entities exist from the
+        moment the pet does (see ha/publisher.py::publish_pet_state).
+
+        `weight` is the median of the pet's newest weighed visits
+        (`pet_recent_weights`), None until it has one.
 
         `visits_today` counts from LOCAL midnight, which is the boundary the
         owner means by "today". Counting from UTC midnight instead credits a
@@ -1001,7 +1077,11 @@ class EventStore:
                         # digits of precision the inputs cannot support.
                         duration = round(max(0.0, last_visit_ts - pet_in_ts))
 
+        weights = await self.pet_recent_weights(pet_id)
         return {
+            # Whole grams, for the reason given above; the median of an even
+            # number of whole readings can end in .5.
+            "weight": round(statistics.median(weights)) if weights else None,
             "last_visit_ts": last_visit_ts,
             "visits_today": visits_today,
             "last_visit_weight": weight,

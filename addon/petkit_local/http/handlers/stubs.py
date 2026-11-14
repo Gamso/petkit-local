@@ -195,6 +195,9 @@ async def handle_event_report(request: web.Request) -> web.Response:
 
     _, is_new = await store.record_event(row)
 
+    # After the insert: the learned weight is derived from the stored visits.
+    if pet:
+        await pet_registry.refresh_learned_weight(pet["id"])
     if pet and ha_publisher is not None:
         await ha_publisher.publish_pet_discovery(pet)
         await ha_publisher.publish_pet_state(pet, store)
