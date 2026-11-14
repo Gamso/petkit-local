@@ -494,7 +494,10 @@ class MQTTBridge:
             if pet:
                 await self._pet_registry.refresh_learned_weight(pet["id"])
             if self._hub is not None:
-                self._hub.publish("event", device.petkit_id, f"{event_type} ({row['event_kind']})")
+                # The row rides along as the detail, as on the HTTP path: the
+                # live log shows it and the ntfy notifier classifies it.
+                self._hub.publish("event", device.petkit_id, f"{event_type} ({row['event_kind']})",
+                                  detail={**row, "is_new": is_new})
             if pet and self._ha_publisher:
                 await self._ha_publisher.publish_pet_discovery(pet)
                 await self._ha_publisher.publish_pet_state(pet, self._event_store)

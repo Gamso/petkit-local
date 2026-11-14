@@ -289,8 +289,11 @@ class HAPublisher:
                              device.petkit_id, device.device_type, timeout)
                     await self.publish_availability(device)
                     if self._hub:
+                        # `online: False` is how a listener (the ntfy notifier)
+                        # tells the watchdog's decision from any other connect line.
                         self._hub.publish("connect", device.petkit_id,
-                                          f"offline (no contact for >{timeout}s)")
+                                          f"offline (no contact for >{timeout}s)",
+                                          detail={"online": False, "timeout": timeout})
 
     async def publish_discovery(self, device: Device) -> None:
         """Announce every entity of `device` and rebuild its command index."""
