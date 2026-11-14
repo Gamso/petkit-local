@@ -32,13 +32,13 @@ from aiohttp import web
 
 from petkit_local.devices.ble import cloud_bindings
 from petkit_local.devices.registry import DeviceRegistry
+from petkit_local.ha.schedules import clean_feed_schedule
 from petkit_local.utils.coerce import to_float, to_int
 from petkit_local.utils.const import (
     DEVICE_TYPES_ALL, DEVICE_TYPES_BLE_ONLY, DEVICE_TYPES_FEEDER_DUAL,
 )
 from petkit_local.web.api._common import _json_body
 from petkit_local.web.api.ble import _announce_pairing, _ble_view
-from petkit_local.web.api.schedules import _clean_feed_schedule
 from petkit_local.web.appkeys import BLE_REGISTRY, HA_PUBLISHER, REGISTRY
 
 log = logging.getLogger(__name__)
@@ -156,7 +156,7 @@ def import_device(registry: DeviceRegistry, ble: Any, entry: Any) -> tuple[Any, 
     if "dev_feed_get" in replies:
         result = replies["dev_feed_get"]
         dual = device_type in DEVICE_TYPES_FEEDER_DUAL
-        feed = (_clean_feed_schedule({"schedule": result.get("schedule")}, dual)
+        feed = (clean_feed_schedule({"schedule": result.get("schedule")}, dual)
                 if isinstance(result, dict) and device.is_feeder else None)
         if feed is None:
             skip("dev_feed_get", "not a feeding schedule for this model")
