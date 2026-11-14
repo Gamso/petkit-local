@@ -97,7 +97,7 @@ file; `CLAUDE.md` is a two-line stub that imports it.)
 ## Releasing
 
 Images are published to GHCR by `.github/workflows/publish.yml` as a single
-multi-architecture package, `ghcr.io/junekiwi/petkit-local`. That is what the
+multi-architecture package, `ghcr.io/gamso/petkit-local`. That is what the
 add-on documentation asks for — a per-architecture name with `{arch}` in it is
 described there as a compatibility fallback — and it is also the only shape
 docker-compose can use, since Compose has no `{arch}` substitution.
@@ -106,14 +106,15 @@ docker-compose can use, since Compose has no `{arch}` substitution.
 package instead of building the Dockerfile on the user's machine. It pulls
 `<image>:<version>`, taking the version from the same file.
 
-**A push to `main` publishes `dev` and nothing else.** It always points at the
-last commit, which is what makes it useful for trying a change before it ships.
-To pin one particular build, use its digest — `image@sha256:...`, which is
-permanent — rather than adding a tag for it; `org.opencontainers.image.revision`
-on the image says which commit it came from.
+**A push to `main` publishes nothing.** To try a change before it ships, run
+`publish` by hand (Actions -> publish -> Run workflow) on that branch: it builds
+the branch and moves `dev` to it. To pin one particular build, use its digest —
+`image@sha256:...`, which is permanent — rather than adding a tag for it;
+`org.opencontainers.image.revision` on the image says which commit it came from.
 
 The version tag is what the Supervisor pulls, so it is a promise that the
-version is released, and it is cut by a git tag and nothing else.
+version is released, and it is cut by a git tag and nothing else. A tag
+publishes only after the test suite and the lint pass on that commit.
 
 `prune-packages.yml` deletes the versions `dev` leaves behind as it moves. It
 runs weekly, and `workflow_dispatch` takes a `dry_run` (on by default) so you

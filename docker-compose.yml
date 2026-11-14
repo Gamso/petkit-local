@@ -24,12 +24,13 @@ services:
     #
     #   :latest   the newest release
     #   :2.0.0    a release you pin, so nothing moves until you say so
-    #   :dev      the last commit on main. Untested by definition; use it to try
-    #             a fix before it ships, with `docker compose up -d --pull always`
+    #   :dev      the last build run by hand from the publish workflow, of
+    #             whatever branch it was run on. Untested by definition; use it
+    #             to try a fix before it ships, with `docker compose up -d --pull always`
     #             (a moving tag is cached by digest, so Compose will not refetch
     #             it on its own). To hold one exact build, use its digest:
-    #             ghcr.io/junekiwi/petkit-local@sha256:...
-    image: ghcr.io/junekiwi/petkit-local:latest
+    #             ghcr.io/gamso/petkit-local@sha256:...
+    image: ghcr.io/gamso/petkit-local:latest
     #
     # To build it yourself instead — a local change, or an architecture nobody
     # publishes — comment out the line above and uncomment this, then
