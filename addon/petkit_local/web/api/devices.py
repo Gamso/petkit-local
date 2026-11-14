@@ -21,7 +21,7 @@ from petkit_local.devices.state_parsers import apply_consumable_state
 from petkit_local.events import codes
 from petkit_local.ha.categories import get_entities_for_device
 from petkit_local.ha.commands import (
-    ALL_ACTIONS, PROPERTY_SET_SUFFIX, Refused, handle_ha_command,
+    ALL_ACTIONS, LOCAL_DEFAULTS, PROPERTY_SET_SUFFIX, Refused, handle_ha_command,
     make_mqtt_property_set, multi_config_texts,
 )
 from petkit_local.media.go2rtc import stream_urls_with_rtsp
@@ -81,6 +81,9 @@ def _state_doc(d: Device) -> dict[str, Any]:
         "schedule": d.config.get("schedule", []),
         "feed_schedule": d.config.get("feed_schedule", {}),
         "capabilities": {ct: (ct in enabled) for ct in d.CAPABILITY_TYPES},
+        # Without it every `local.` control reads empty here while HA shows
+        # its value -- and the paused-plan switch would read as off.
+        "local": {**LOCAL_DEFAULTS, **(d.config.get("local") or {})},
         "multi_config": multi_config_texts(d),
     }
 

@@ -95,7 +95,7 @@ def migrate_minute_schedule(feed: dict) -> bool:
     return True
 
 
-def _build_latest(feed: dict, now: float) -> list[dict]:
+def _build_latest(feed: dict, now: float, recurring: bool = True) -> list[dict]:
     """Compute ``latest[]``: every feed firing today or tomorrow, local days.
 
     Both kinds land here — ``s_`` instances of recurring meals and ``d_``
@@ -112,11 +112,16 @@ def _build_latest(feed: dict, now: float) -> list[dict]:
     after the last entry anyway (``nextTick``).
 
     Expired deferred feeds are pruned from ``feed`` as a side effect.
+
+    ``recurring=False`` is a paused plan (``Device.feed_schedule_active``): the
+    ``s_`` instances are left out and the ``d_`` ones are not. The firmware
+    fires from ``latest``, so a meal listed here is dispensed whatever
+    ``schedule`` says beside it.
     """
     result = []
     cutoff = _local_midnight(now, 2)  # end of tomorrow
 
-    for day_offset in (0, 1):
+    for day_offset in (0, 1) if recurring else ():
         day_start = _local_midnight(now, day_offset)
         # PetKit weekday: Sunday=1 .. Saturday=7; tm_wday: Monday=0.
         pk_wd = (time.localtime(day_start + 43200).tm_wday + 2) % 7 or 7
@@ -165,6 +170,34 @@ def _compute_next_tick(latest: list[dict]) -> int:
     return max(entry["t"] for entry in latest)
 
 
+def feed_push(device, now: float | None = None) -> dict:
+    """The ``feed`` object of a ``property.set``: the plan, pushed.
+
+    ``{schedule, nextTick, latest}`` with the countdowns recomputed -- the
+    shape PetKit's own cloud pushes a D4H (upstream issue #36), without the
+    ``itemJsonString`` that ``dev_feed_get`` carries.
+
+    One builder for every push, because a paused plan has to be withheld from
+    all of them alike: the meals stay in ``config["feed_schedule"]`` and the
+    device is told there are none. A one-off deferred feed is NOT part of what
+    a pause withholds -- it is a dated instruction of its own, and swallowing
+    it would let it expire unfed and unseen.
+    """
+    feed = device.config.get("feed_schedule")
+    if not isinstance(feed, dict):
+        feed = {}
+    active = device.feed_schedule_active
+    latest = _build_latest(feed, time.time() if now is None else now,
+                           recurring=active)
+    groups = feed.get("schedule") if active else []
+    return {
+        "schedule": [{"re": g.get("re", ""), "it": g.get("it", [])}
+                     for g in groups or [] if isinstance(g, dict)],
+        "nextTick": _compute_next_tick(latest),
+        "latest": latest,
+    }
+
+
 async def handle_feed_get(request: web.Request) -> web.Response:
     """Return the device's stored feeding schedule with live countdowns.
 
@@ -190,8 +223,12 @@ async def handle_feed_get(request: web.Request) -> web.Response:
     if migrate_minute_schedule(feed):
         request.app["registry"].save()
 
+    # A paused plan is served as no plan: the device is told it has no meals,
+    # exactly as if the owner had deleted them -- except that nothing is
+    # deleted, and a one-off feed still fires (see `feed_push`).
+    active = device.feed_schedule_active
     now = time.time()
-    latest = _build_latest(feed, now)
+    latest = _build_latest(feed, now, recurring=active)
     next_tick = _compute_next_tick(latest)
 
     for group in feed.get("schedule", []):
@@ -200,7 +237,8 @@ async def handle_feed_get(request: web.Request) -> web.Response:
 
     return web.json_response({
         "result": {
-            "schedule": feed.get("schedule", [_EMPTY_GROUP]),
+            "schedule": (feed.get("schedule", [_EMPTY_GROUP]) if active
+                         else [_EMPTY_GROUP]),
             "nextTick": next_tick,
             "latest": latest,
         }

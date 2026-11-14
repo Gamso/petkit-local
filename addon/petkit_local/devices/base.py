@@ -233,6 +233,26 @@ class Device:
         return self.device_type in DEVICE_TYPES_FEEDER
 
     @property
+    def feed_schedule_active(self) -> bool:
+        """Whether a feeder is served its recurring meals, or they are paused.
+
+        A pause is ours alone: the firmware has no "schedule enabled" field a
+        server can write, only the plan itself, so pausing means answering
+        with a plan that has no meals in it while the real one stays stored.
+        That makes this the single question every place that hands a device
+        its plan has to ask -- `dev_feed_get` over either transport and both
+        `property.set{feed}` pushes -- because one that forgets hands the
+        meals straight back.
+
+        Kept under `config["local"]` with the other values that are our intent
+        and never a device setting; absent means nobody has paused anything.
+        """
+        local = self.config.get("local")
+        if not isinstance(local, dict):
+            return True
+        return to_bool(local.get("feedScheduleActive"), True)
+
+    @property
     def is_water_fountain(self) -> bool:
         """Whether this is a fountain, which selects the fountain settings block."""
         return self.device_type in DEVICE_TYPES_WATER_FOUNTAIN

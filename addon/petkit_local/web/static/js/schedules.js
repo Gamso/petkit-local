@@ -192,10 +192,17 @@ function renderFeedEditor(id, t, value) {
   const groups = Array.isArray(value.schedule) ? value.schedule : [];
   const dat = ` data-id="${esc(id)}" data-target="${esc(t.target)}"`;
   const add = `<button class="link"${dat} data-action="sched-add-feed-group">+ Add days</button>`;
+  // Pause keeps the meals here and hands the device a plan without them; the
+  // switch is the `feeding_schedule_active` entity, so HA and the panel agree.
+  const pause = `<div class="sched-row"><label class="sw-inline"><input type="checkbox" ${t.active === false ? '' : 'checked'} data-change="sched-feed-active" data-id="${esc(id)}"><span>${
+    t.active === false
+      ? 'Plan paused — the meals are kept, the feeder is told it has none'
+      : 'Plan active'
+  }</span></label></div>`;
   if (!groups.length)
-    return `<p class="sub">No meals set — the feeder dispenses only when you press Feed.</p>${add}`;
+    return `${pause}<p class="sub">No meals set — the feeder dispenses only when you press Feed.</p>${add}`;
 
-  return `${groups
+  return `${pause}${groups
     .map(
       (group, gi) => `<div class="sched-entry">
       <div class="sched-row">
@@ -519,6 +526,13 @@ const mealAmount = (el, field) =>
   });
 onChange('sched-meal-a1', el => mealAmount(el, 'a1'));
 onChange('sched-meal-a2', el => mealAmount(el, 'a2'));
+// Not an edit of the plan, so it does not wait for Save: it goes out as the
+// `feeding_schedule_active` switch, the same write Home Assistant makes.
+onChange('sched-feed-active', el =>
+  setEntity(Number(el.dataset.id), 'feeding_schedule_active', el.checked ? 'ON' : 'OFF', () =>
+    scheduleDetail(Number(el.dataset.id)),
+  ),
+);
 onChange('sched-meal-a', el => mealAmount(el, 'a'));
 
 onAction('sched-revert', el => {

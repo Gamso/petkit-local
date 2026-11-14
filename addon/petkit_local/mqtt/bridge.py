@@ -555,12 +555,19 @@ class MQTTBridge:
             # meals all fall before 00:24 reads as a 2.0.x minute save and
             # `feed.migrate_minute_schedule` multiplies every time by 60.
             stored = device.config.get("feed_schedule")
-            merged = {**feed, "v": 2}
-            if isinstance(stored, dict) and "deferred" in stored:
-                merged["deferred"] = stored["deferred"]
-            device.config["feed_schedule"] = merged
-            log.info("Stored feed schedule for device %d from property post",
-                     device.petkit_id)
+            if not device.feed_schedule_active and isinstance(stored, dict):
+                # A paused device was TOLD it has no meals, so what it reports
+                # back is our own empty answer. Storing that would turn the
+                # pause into the deletion it exists to avoid.
+                log.debug("Feed schedule from device %d ignored: plan is paused",
+                          device.petkit_id)
+            else:
+                merged = {**feed, "v": 2}
+                if isinstance(stored, dict) and "deferred" in stored:
+                    merged["deferred"] = stored["deferred"]
+                device.config["feed_schedule"] = merged
+                log.info("Stored feed schedule for device %d from property post",
+                         device.petkit_id)
         sched = params.get("schedule")
         if isinstance(sched, list) and device.is_litter:
             device.config["schedule"] = sched
@@ -661,6 +668,10 @@ class MQTTBridge:
             return {"result": sched} if sched is not None else None
         if data_type == "dev_feed_get":
             feed = device.config.get("feed_schedule")
+            if isinstance(feed, dict) and not device.feed_schedule_active:
+                # Paused: the same store with its recurring meals withheld,
+                # as `http/handlers/feed.py` does for the HTTP form of this ask.
+                feed = {**feed, "schedule": []}
             return {"result": feed} if feed is not None else None
         if data_type == "dev_ble_device":
             # Deliberately identical to `http/handlers/ble_device.py` — the two
