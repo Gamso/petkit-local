@@ -44,7 +44,7 @@ def _refuse(status: type[web.HTTPException], error: str) -> web.HTTPException:
     """A JSON `{"error": ...}` refusal, shaped exactly like a returned one.
 
     Raised rather than returned so the checks below read as one line at the top
-    of a handler. There is no middleware on this app to swallow it.
+    of a handler. The app's one middleware (`web/origin.py`) lets it through.
     """
     return status(text=json.dumps({"error": error}),
                   content_type="application/json")
@@ -82,9 +82,19 @@ async def _json_body(request: web.Request) -> dict[str, Any]:
     reads it with `.get`, so a list would reach that call as an AttributeError
     and answer 500 to what is a malformed request.
 
+    The content type is part of the check, and not for tidiness: a page on
+    another site can make a browser POST `text/plain` or a form encoding to us
+    with no questions asked, but `application/json` costs it a CORS preflight
+    this app never grants. `web/origin.py` already refuses such a request by
+    its `Origin`; this holds if that header is ever missing.
+
     Raises:
+        web.HTTPUnsupportedMediaType: the body is not declared as JSON.
         web.HTTPBadRequest: the body is not a JSON object.
     """
+    if request.content_type != "application/json":
+        raise _refuse(web.HTTPUnsupportedMediaType,
+                      "send JSON with Content-Type: application/json")
     try:
         body = await request.json()
     except Exception:
