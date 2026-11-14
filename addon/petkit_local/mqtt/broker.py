@@ -313,9 +313,14 @@ async def start_broker(
     # amqtt builds the listener's context itself; this is the one place to
     # reach it. `configure_device_tls` admits the ciphers a device's mbedTLS
     # offers and shows a patched ESP32 the leaf its firmware trusts.
-    _orig = Broker._create_ssl_context
+    # Taken from the INSTANCE, so it comes back bound whatever amqtt made it:
+    # a staticmethod up to 0.11, an instance method from 0.12 on. Reading it off
+    # the class instead returned 0.12's plain function, which then wanted the
+    # missing `self`, and the broker died on every start with the TLS listener
+    # on. The replacement is a plain function set on the instance, so amqtt's
+    # `self._create_ssl_context(listener)` calls it with the listener alone.
+    _orig = broker._create_ssl_context
 
-    @staticmethod
     def _device_friendly_ssl_context(listener):
         return configure_device_tls(_orig(listener), data_dir)
 

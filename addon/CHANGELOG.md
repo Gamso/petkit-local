@@ -99,6 +99,11 @@ The first release published from this fork's own image, `ghcr.io/gamso/petkit-lo
 
 ### Fixed
 
+- **The device MQTT broker starts with its TLS listener on amqtt 0.12**, the
+  version the image now installs. Its TLS hook called amqtt's
+  `_create_ssl_context` the way 0.11 defined it, and the broker, then the whole
+  add-on, failed on every start with `--mqtt-tls`. A test now starts the
+  broker with its TLS listener and completes a handshake.
 - **The stitcher no longer deletes its sources before the joined clip is in
   place and recorded.** It now verifies, moves, records, then deletes; a
   failure keeps the chunks. Late chunks for an already-stitched episode make a
