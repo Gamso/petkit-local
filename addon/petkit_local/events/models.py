@@ -220,6 +220,14 @@ class Pet(Base):
     `face_id`/`photo_path` are LEGACY, from when a pet had exactly one photo.
     `PetFace` replaced them; `EventStore.connect` migrates any surviving value
     across and nothing reads these two afterwards.
+
+    `weight` is what the owner TYPED, in kilograms, and is never written by
+    anything else. The three `learned_*` columns are the weight the scale has
+    since observed (`ai/pets.py::refresh_learned_weight`), kept apart so the
+    typed value survives as the seed and the way back: `learned_weight_g` is
+    the median, in GRAMS as the scale reports it, of the `learned_samples`
+    newest visits credited to this pet since `learned_since` -- the moment the
+    learning was last reset, before which no visit is evidence any more.
     """
 
     __tablename__ = "pets"
@@ -232,6 +240,9 @@ class Pet(Base):
     face_id: Mapped[str | None] = mapped_column(Text)
     photo_path: Mapped[str | None] = mapped_column(Text)
     weight: Mapped[float | None] = mapped_column(REAL)
+    learned_weight_g: Mapped[float | None] = mapped_column(REAL)
+    learned_samples: Mapped[int | None] = mapped_column(Integer)
+    learned_since: Mapped[float | None] = mapped_column(REAL)
     created_at: Mapped[float] = mapped_column(REAL, nullable=False)
 
 

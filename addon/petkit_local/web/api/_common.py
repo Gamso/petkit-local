@@ -17,6 +17,9 @@ from typing import Any
 
 from aiohttp import web
 
+from petkit_local.ai.pets import (
+    learned_weight_in_use, pet_weight_grams, reference_weight_grams,
+)
 from petkit_local.devices.base import Device, split_bucket_authority
 from petkit_local.http.proxy import resolve_upstream
 from petkit_local.utils.coerce import to_int
@@ -138,6 +141,11 @@ async def _pets_by_id(request: web.Request) -> dict[int, dict[str, Any]]:
     pets = await pet_registry.all()
     for pet in pets:
         pet["faces"] = await _face_summaries(pet_registry, pet["id"])
+        # What a visit is actually compared with, and which of the two weights
+        # that is -- so the panel shows the decision rather than re-deriving it.
+        pet["entered_weight_g"] = pet_weight_grams(pet.get("weight"))
+        pet["reference_weight_g"] = reference_weight_grams(pet)
+        pet["learned_weight_in_use"] = learned_weight_in_use(pet)
     return {p["id"]: p for p in pets}
 
 

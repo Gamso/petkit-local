@@ -460,6 +460,9 @@ class MQTTBridge:
                 content = json.loads(row["content_json"]) if row.get("content_json") else {}
                 pet = await self._pet_registry.attribute_event(device, row, content)
             _, is_new = await self._event_store.record_event(row)
+            # After the insert: the learned weight is derived from the stored visits.
+            if pet:
+                await self._pet_registry.refresh_learned_weight(pet["id"])
             if self._hub is not None:
                 self._hub.publish("event", device.petkit_id, f"{event_type} ({row['event_kind']})")
             if pet and self._ha_publisher:

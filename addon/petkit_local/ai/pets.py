@@ -21,10 +21,13 @@ import json
 import logging
 import os
 import re
+import statistics
+import time
 from typing import TYPE_CHECKING, Any
 from urllib.parse import urlparse
 
 from petkit_local.events import codes
+from petkit_local.events.store import WEIGHT_MEDIAN_SAMPLES, visit_weight_grams
 from petkit_local.media.transcode import normalize_face_photo
 from petkit_local.utils.coerce import to_float, to_int
 from petkit_local.utils.paths import UnsafePathError, safe_join, sanitize_filename
@@ -102,6 +105,39 @@ WEIGHT_MATCH_MIN_TOLERANCE_G = 500
 #: forth on a few grams of scale noise.
 WEIGHT_MATCH_MARGIN_G = 300
 
+#: The two of those the owner may change, as the panel's live settings: the
+#: key, then the lowest and highest value accepted and the default. The
+#: tolerance is a whole PERCENT there, because that is what a person types.
+#: Below 1% nothing ever matches a real scale; above 50% a 4 kg cat would
+#: claim a 6 kg visit. A margin of 0 switches the ambiguity check off, and
+#: one past 2 kg refuses every visit in any household this is meant for.
+SETTING_TOLERANCE_PCT = "weight_match_tolerance_pct"
+SETTING_MARGIN_G = "weight_match_margin_g"
+WEIGHT_MATCH_SETTINGS = {
+    SETTING_TOLERANCE_PCT: (1, 50, round(WEIGHT_MATCH_TOLERANCE * 100)),
+    SETTING_MARGIN_G: (0, 2000, WEIGHT_MATCH_MARGIN_G),
+}
+
+#: How many visits a pet must have been credited with before the weight they
+#: add up to replaces the one the owner typed. Under this the median is one or
+#: two readings, and one cat sitting oddly on the scale would move the
+#: reference every later visit is judged against.
+LEARNED_WEIGHT_MIN_SAMPLES = 3
+
+
+def clamp_weight_setting(key: str, value: Any) -> int | None:
+    """One of `WEIGHT_MATCH_SETTINGS` as a whole number inside its range.
+
+    None for something that is not a number at all. Used both where the panel
+    writes the value and where it is read back, because the overrides file it
+    is persisted in can be edited by hand.
+    """
+    low, high, _default = WEIGHT_MATCH_SETTINGS[key]
+    number = None if isinstance(value, bool) else to_float(value, None)
+    if number is None:
+        return None
+    return int(min(high, max(low, round(number))))
+
 
 def pet_weight_grams(value: Any) -> float | None:
     """A pet's stored `weight` in grams, or None if it has none.
@@ -114,6 +150,25 @@ def pet_weight_grams(value: Any) -> float | None:
     if weight is None or weight <= 0:
         return None
     return weight if weight > 100 else weight * 1000
+
+
+def learned_weight_in_use(pet: dict) -> bool:
+    """Whether a pet's learned weight has enough visits behind it to be used."""
+    samples = to_int(pet.get("learned_samples"), 0) or 0
+    learned = to_float(pet.get("learned_weight_g"), None)
+    return samples >= LEARNED_WEIGHT_MIN_SAMPLES and learned is not None and learned > 0
+
+
+def reference_weight_grams(pet: dict) -> float | None:
+    """The weight, in grams, a visit is compared with for this pet.
+
+    The learned weight once `LEARNED_WEIGHT_MIN_SAMPLES` visits stand behind
+    it, so the reference follows a cat that gains or loses weight; until then,
+    and again after a reset, the weight the owner typed.
+    """
+    if learned_weight_in_use(pet):
+        return float(pet["learned_weight_g"])
+    return pet_weight_grams(pet.get("weight"))
 
 
 def cloud_pets(payload: Any, device_id: int) -> list[dict[str, Any]]:
@@ -183,8 +238,12 @@ class PetRegistry:
     exists purely for identities we did NOT hand out.
     """
 
-    def __init__(self, store: EventStore, faces_dir: str) -> None:
+    def __init__(self, store: EventStore, faces_dir: str,
+                 settings: dict[str, Any] | None = None) -> None:
         """Bind to the store and make `faces_dir` exist.
+
+        `settings` is the live config dict the panel writes to, read on every
+        match so a threshold changed there applies to the next visit.
 
         Created eagerly because `add_face` writes straight into it —
         it resolves a filename with `safe_join` and opens it, with no
@@ -193,6 +252,7 @@ class PetRegistry:
         """
         self._store = store
         self._faces_dir = faces_dir
+        self._settings: dict[str, Any] = settings if settings is not None else {}
         os.makedirs(faces_dir, exist_ok=True)
 
     # --- CRUD ---------------------------------------------------------
@@ -399,26 +459,86 @@ class PetRegistry:
         For a box that cannot say who visited -- a T4 has no camera, and
         PetKit's cloud matched its visits to pets by weight on its own side. The
         candidates are the pets assigned to the device, or every pet when none
-        is; only pets with a weight take part. The nearest one gets the visit if
-        it is within its tolerance (`WEIGHT_MATCH_TOLERANCE`, at least
+        is; only pets with a reference weight take part
+        (`reference_weight_grams`). The nearest one gets the visit if it is
+        within its tolerance (`WEIGHT_MATCH_TOLERANCE`, at least
         `WEIGHT_MATCH_MIN_TOLERANCE_G`) AND no other pet is within
-        `WEIGHT_MATCH_MARGIN_G` of being as near. Otherwise None: an unnamed
-        visit is better than one credited to the wrong cat.
+        `WEIGHT_MATCH_MARGIN_G` of being as near -- both as adjusted in the
+        panel (`weight_match_thresholds`). Otherwise None: an unnamed visit is
+        better than one credited to the wrong cat.
+
+        That refusal is also what keeps a learned reference honest. A visit
+        nobody is credited with teaches nobody, so two cats whose weights
+        converge stop being told apart and their references stop moving,
+        rather than one drifting onto the other's visits.
         """
+        tolerance, margin_g = self.weight_match_thresholds()
         pets = await self.for_device(device_id) or await self.all()
         distances = sorted(
             (abs(grams - weight_g), grams, pet["id"])
             for pet in pets
-            if (grams := pet_weight_grams(pet.get("weight"))) is not None
+            if (grams := reference_weight_grams(pet)) is not None
         )
         if not distances:
             return None
         nearest, grams, pet_id = distances[0]
-        if nearest > max(WEIGHT_MATCH_MIN_TOLERANCE_G, grams * WEIGHT_MATCH_TOLERANCE):
+        if nearest > max(WEIGHT_MATCH_MIN_TOLERANCE_G, grams * tolerance):
             return None
-        if len(distances) > 1 and distances[1][0] - nearest < WEIGHT_MATCH_MARGIN_G:
+        if len(distances) > 1 and distances[1][0] - nearest < margin_g:
             return None
         return pet_id
+
+    def weight_match_thresholds(self) -> tuple[float, float]:
+        """`(tolerance, margin_g)` as set in the panel, or the defaults.
+
+        The tolerance comes back as a fraction of the pet's weight.
+        """
+        values = {}
+        for key, (_low, _high, default) in WEIGHT_MATCH_SETTINGS.items():
+            value = clamp_weight_setting(key, self._settings.get(key, default))
+            values[key] = default if value is None else value
+        return values[SETTING_TOLERANCE_PCT] / 100, float(values[SETTING_MARGIN_G])
+
+    async def refresh_learned_weight(self, pet_id: int) -> dict | None:
+        """Recompute a pet's learned weight from the visits credited to it.
+
+        Called once a pet-attributed event is STORED. The value is the median
+        of the newest `WEIGHT_MEDIAN_SAMPLES` visit summaries credited to the
+        pet since its learning was last reset -- derived from the events table
+        every time, so a retried report or a restart cannot count a visit
+        twice. Mid-visit reports never count; only the summary carries the
+        weight (`EventStore.pet_recent_weights`).
+
+        What makes a visit evidence is that it was credited at all: either the
+        device named the pet (`pet_ref`), or `match_by_weight` did, and that
+        only ever credits a visit no other pet could plausibly claim.
+
+        Returns:
+            The pet's row after the update, or None if it does not exist.
+        """
+        pet = await self._store.get_pet(pet_id)
+        if pet is None:
+            return None
+        weights = await self._store.pet_recent_weights(
+            pet_id, WEIGHT_MEDIAN_SAMPLES, since=to_float(pet.get("learned_since"), None))
+        learned = round(statistics.median(weights)) if weights else None
+        if (learned, len(weights)) != (pet.get("learned_weight_g"),
+                                       to_int(pet.get("learned_samples"), 0) or 0):
+            await self._store.upsert_pet(
+                {"learned_weight_g": learned, "learned_samples": len(weights)}, pet_id=pet_id)
+            pet = await self._store.get_pet(pet_id)
+        return pet
+
+    async def reset_learned_weight(self, pet_id: int, now: float | None = None) -> dict | None:
+        """Forget what the scale taught us about a pet; back to the typed weight.
+
+        `learned_since` moves to now, so the visits already recorded stop being
+        evidence -- without it the very next visit would recompute the same
+        median from the same rows and the reset would last one visit.
+        """
+        return await self.update(
+            pet_id, learned_weight_g=None, learned_samples=0,
+            learned_since=now if now is not None else time.time())
 
     async def attribute_event(self, device: Any, row: dict, content: dict) -> dict | None:
         """Set `row["pet_id"]` for an event, and name the box's last visitor.
@@ -436,8 +556,10 @@ class PetRegistry:
         code = codes.lookup(row.get("event_type"), device.device_type)
         is_visit = code is not None and code.role == codes.ROLE_VISIT_SUMMARY
         if row["pet_id"] is None and is_visit:
-            weight = to_float(content.get("pet_weight", content.get("petWeight")), None)
-            if weight is not None and weight > 0:
+            # A reading of 0, or of a few hundred grams, is the scale catching
+            # nothing or a cat half in: matched to nobody.
+            weight = visit_weight_grams(content)
+            if weight is not None:
                 row["pet_id"] = await self.match_by_weight(device.petkit_id, weight)
         pet = await self.get(row["pet_id"]) if row["pet_id"] is not None else None
         if is_visit:

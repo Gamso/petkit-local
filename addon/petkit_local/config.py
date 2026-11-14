@@ -46,6 +46,8 @@ PANEL_LIVE_KEYS = (
     "proxy_mqtt_bridge",
     "proxy_only",
     "capture",
+    "weight_match_tolerance_pct",
+    "weight_match_margin_g",
 )
 OVERRIDES_FILENAME = "settings_overrides.json"
 
@@ -288,6 +290,13 @@ class Config:
     # Panel-only (see PANEL_LIVE_KEYS).
     capture: bool = False
 
+    # How a litter-box visit that names no pet is matched to one by weight
+    # (`ai/pets.py::match_by_weight`, which also clamps both). Panel-only, set
+    # on the Pets tab. The tolerance is a percentage of the pet's weight; the
+    # margin is how many grams nearer the best pet must be than the next.
+    weight_match_tolerance_pct: int = 15
+    weight_match_margin_g: int = 300
+
     # Proxy mode: forward every device request to the real PetKit cloud and
     # answer with its reply, redacted (`http/redact/`). All panel-only.
     proxy_mode: bool = False
@@ -432,6 +441,8 @@ class Config:
             "proxy_mqtt_bridge": self.proxy_mqtt_bridge,
             "proxy_only": self.proxy_only,
             "capture": self.capture,
+            "weight_match_tolerance_pct": self.weight_match_tolerance_pct,
+            "weight_match_margin_g": self.weight_match_margin_g,
             "capture_dir": self.capture_dir,
             "bucket_endpoint": self.bucket_endpoint,
             "data_dir": self.data_dir,

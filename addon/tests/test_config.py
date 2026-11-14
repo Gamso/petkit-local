@@ -244,6 +244,8 @@ def test_every_live_key_round_trips_through_the_overrides_file():
         "proxy_mqtt_bridge": False,
         "proxy_only": "dev_device_info",
         "capture": True,
+        "weight_match_tolerance_pct": 22,
+        "weight_match_margin_g": 450,
     }
     assert set(non_default) == set(PANEL_LIVE_KEYS)
 
