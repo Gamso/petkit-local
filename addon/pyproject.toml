@@ -31,7 +31,7 @@ dev = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/junekiwi/petkit-local"
+Homepage = "https://github.com/Gamso/petkit-local"
 
 [project.scripts]
 petkit-local = "petkit_local.main:main"

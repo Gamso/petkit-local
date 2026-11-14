@@ -39,6 +39,23 @@ def _upload_body(file_id: str, rel: str, module_type: str = "EVENT_PREVIEW") -> 
     return "fileInfos=" + urllib.parse.quote(json.dumps(infos))
 
 
+async def _media_when(store: EventStore, file_id: str, status: str,
+                      timeout: float = 5.0) -> dict:
+    """The media row once the fire-and-forget pipeline task has set `status`.
+
+    Polled rather than slept for: a fixed 0.2s was enough on a quiet machine
+    and not on a CI runner sharing its CPU with thirty other jobs. Returns
+    the last row seen on timeout, so the caller's assert shows what it held.
+    """
+    deadline = asyncio.get_running_loop().time() + timeout
+    while True:
+        media = await store.get_media_by_file_id(file_id)
+        if (media and media.get("status") == status
+                or asyncio.get_running_loop().time() > deadline):
+            return media
+        await asyncio.sleep(0.02)
+
+
 def _stage_raw(raw_root: str, rel: str) -> None:
     full = Path(raw_root) / rel
     full.parent.mkdir(parents=True, exist_ok=True)
@@ -199,8 +216,7 @@ async def test_upload_file_info_creates_media_row_and_schedules_processing():
             assert media["category"] == "eventImage"
 
             # let the fire-and-forget pipeline task run
-            await asyncio.sleep(0.2)
-            media = await store.get_media_by_file_id("f1")
+            media = await _media_when(store, "f1", "ready")
             assert media["status"] == "ready"
             assert Path(media["media_path"]).is_file()
         finally:
@@ -356,9 +372,8 @@ async def test_upload_file_info_skips_disabled_capability():
                      "cycleType": "eventImage"}]
             body = "fileInfos=" + urllib.parse.quote(json.dumps(infos))
             await client.post("/6/t5/dev_upload_file_info_v2", headers=HDR, data=body)
-            await asyncio.sleep(0.2)
 
-            media = await store.get_media_by_file_id("f2")
+            media = await _media_when(store, "f2", "skipped")
             assert media["status"] == "skipped"
         finally:
             await client.close()
