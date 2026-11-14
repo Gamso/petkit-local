@@ -484,6 +484,25 @@ class UpstreamMQTT:
 
         result = redact_mqtt(raw, topic=topic, policy=self._policy_factory(device))
 
+        if result.unreadable:
+            # Not JSON, so no rule read it — and the device's parser accepts
+            # frames ours refuses (cJSON ignores whatever follows the first
+            # value), so "we could not read it" is not "it is harmless".
+            # Shown on the panel, not persisted: a cloud that sent these
+            # routinely would bury the attempts that matter.
+            log.warning("Refusing to relay an unreadable frame from upstream for "
+                        "device %d on %s: %s",
+                        device.petkit_id, topic, _text_or_empty(raw)[:200])
+            if self._hub is not None:
+                self._hub.record_redaction(
+                    device.petkit_id, "unreadable", f"unreadable frame on {topic}",
+                    detail={"topic": topic, "payload": _text_or_empty(raw)[:2000],
+                            "note": "not JSON, not relayed"},
+                    blocked=True)
+            self._capture(device, "down", local_topic, topic, raw, ["unreadable"],
+                          blocked=True)
+            return
+
         if self._hub is not None:
             for record in result.records:
                 self._hub.record_redaction(

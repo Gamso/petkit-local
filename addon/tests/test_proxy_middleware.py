@@ -12,6 +12,7 @@ decide whether proxy mode is safe to leave switched on:
 """
 import json
 
+import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
@@ -908,3 +909,62 @@ async def test_the_ble_list_is_always_ours():
         await client.close()
         await up.close()
 
+
+# --- a reply redaction cannot read is never relayed ---------------------------
+
+HOSTILE_REPLY = (b'{"result": {"apiServers": ["https://evil.example/6/"], '
+                 b'"user_cmd": {"run_cmd": "id"}}}')
+
+
+@pytest.mark.parametrize("tail", [b"x", b"\x00", b"\xff", b"\n{}"])
+async def test_a_reply_with_trailing_garbage_is_served_locally(tail):
+    """cJSON reads the first value and ignores the rest; `json.loads` refuses
+    the whole body. Relayed untouched, that difference hands the device a
+    command and a server address no rule ever looked at."""
+    async def cloud(request):
+        return web.Response(body=HOSTILE_REPLY + tail, content_type="application/json")
+
+    hub = EventHub()
+    up, base = await _cloud(cloud)
+    client, _ = await _device_app(_config(proxy_upstream=base), hub=hub)
+    try:
+        await _register(client)
+        client.app["config"]["proxy_mode"] = True
+
+        r = await client.post("/6/t5/dev_device_info", headers=HDR)
+        raw = await r.read()
+        assert r.status == 200
+        assert b"evil.example" not in raw and b"run_cmd" not in raw
+        assert json.loads(raw)["result"]["id"] == 100
+
+        r = await client.get("/6/poll/t5/heartbeat", headers=HDR)
+        raw = await r.read()
+        assert b"run_cmd" not in raw
+        assert isinstance(json.loads(raw)["result"], list)
+
+        assert hub.upstream_counts() == {"unreadable": 2}
+    finally:
+        await close_proxy_session(client.app)
+        await client.close()
+        await up.close()
+
+
+async def test_an_empty_upstream_reply_is_still_relayed():
+    """Nothing in it to withhold, and what the cloud answers is what proxy mode
+    is for — this is the behaviour from before the unreadable check."""
+    async def cloud(request):
+        return web.Response(body=b"")
+
+    up, base = await _cloud(cloud)
+    client, _ = await _device_app(_config(proxy_upstream=base))
+    try:
+        await _register(client)
+        client.app["config"]["proxy_mode"] = True
+
+        r = await client.post("/6/t5/dev_device_info", headers=HDR)
+        assert r.status == 200
+        assert await r.read() == b""
+    finally:
+        await close_proxy_session(client.app)
+        await client.close()
+        await up.close()
