@@ -41,6 +41,7 @@ petkit_local/
 │                  publisher.py (the one HA-broker connection, outbound)
 │                  command_router.py + commands.py (inbound: HA write -> device command)
 │                  learn.py (proxy mode: settings the real cloud tells a device)
+│                  timezone_sync.py (re-pushes a locale-derived UTC offset across DST)
 │                  entities/ one module per component
 ├── events/        codes.py THE protocol tables · decode.py renders values for humans
 │                  normalize.py transport -> row · sessions.py rows -> visits

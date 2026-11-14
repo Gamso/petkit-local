@@ -867,6 +867,41 @@ a:hover {
   gap: 5px;
   flex-wrap: wrap;
 }
+/* The entered and the learned weight, on one wrapping line under the name. */
+.pet-weight {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-top: 8px;
+  font-size: 13px;
+}
+.pet-weight-val {
+  cursor: text;
+  border-bottom: 1px dashed var(--mut);
+}
+.pet-weight-edit {
+  width: 90px;
+  color: var(--fg);
+  background: transparent;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 1px 6px;
+}
+/* The explanation sits under the label, so these rows need more room than a
+   switch does. */
+.ctrls.weight-match {
+  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+}
+.ctrls.weight-match .ctrl {
+  align-items: flex-start;
+}
+.ctrls.weight-match .mut {
+  font-size: 11px;
+}
+.ctrls.weight-match input {
+  width: 80px;
+}
 .pet-foot {
   font-size: 12px;
   margin-top: 10px;

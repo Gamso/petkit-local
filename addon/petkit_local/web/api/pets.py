@@ -20,16 +20,29 @@ from typing import Any
 import aiohttp
 from aiohttp import web
 
-from petkit_local.ai.pets import cloud_pets
+from petkit_local.ai.pets import cloud_pets, pet_weight_grams
 from petkit_local.events.store import MAX_FACES_PER_PET
 from petkit_local.http.cloud_fetch import CLOUD_TIMEOUT, CloudRefused, fetch_as_device
-from petkit_local.utils.coerce import to_int
+from petkit_local.utils.coerce import to_float, to_int
 from petkit_local.utils.paths import UnsafePathError, safe_join
 from petkit_local.web.api._common import (
     _cloud_upstream, _face_summaries, _json_body, _path_id, _pets_by_id,
 )
 
 log = logging.getLogger(__name__)
+
+
+def _entered_weight(value: Any) -> float | None:
+    """A typed pet weight as the number to store, or None for "no weight".
+
+    Kilograms, as PetKit's app shows it (`ai/pets.py::pet_weight_grams` reads a
+    value above 100 as grams). Anything that is not a positive number clears
+    the weight rather than reaching a REAL column as text.
+    """
+    weight = to_float(value, None)
+    if isinstance(value, bool) or weight is None or weight <= 0:
+        return None
+    return weight
 
 
 async def api_pets_list_create(request: web.Request) -> web.Response:
@@ -57,7 +70,8 @@ async def api_pets_list_create(request: web.Request) -> web.Response:
     except (TypeError, ValueError):
         device_ids = []
 
-    pet = await pet_registry.create(name, device_ids=device_ids, weight=body.get("weight"))
+    pet = await pet_registry.create(name, device_ids=device_ids,
+                                    weight=_entered_weight(body.get("weight")))
     ha_publisher = request.app.get("ha_publisher")
     if ha_publisher is not None:
         await ha_publisher.publish_pet_discovery(pet)
@@ -71,6 +85,11 @@ async def api_pet_detail(request: web.Request) -> web.Response:
     POST is a partial update: only the fields present in the body are touched,
     and a `device_ids` that will not parse is skipped rather than clearing the
     links.
+
+    `weight` is the weight the owner types (kg). Changing it also resets the
+    learned weight, as does `reset_learned_weight: true` on its own: a new
+    number is a correction, and a correction the learned value went on
+    overriding would be one the owner could not make.
     """
     pet_registry = request.app.get("pet_registry")
     if pet_registry is None:
@@ -112,12 +131,17 @@ async def api_pet_detail(request: web.Request) -> web.Response:
                 [int(x) for x in body["device_pet_ids"]])
         except (TypeError, ValueError):
             pass
+    reset_learned = bool(body.get("reset_learned_weight"))
     if "weight" in body:
-        fields["weight"] = body["weight"]
+        fields["weight"] = _entered_weight(body["weight"])
+        if pet_weight_grams(fields["weight"]) != pet_weight_grams(before.get("weight")):
+            reset_learned = True
 
     pet = await pet_registry.update(pid, **fields)
     if pet is None:
         return web.json_response({"error": "not found"}, status=404)
+    if reset_learned:
+        pet = await pet_registry.reset_learned_weight(pid) or pet
 
     # Binding a foreign identity is retroactive: the events already carry it in
     # `pet_ref`, so attributing them is a single UPDATE and the user sees their

@@ -42,7 +42,8 @@ from petkit_local.devices.state_parsers import (apply_consumable_state,
                                                 reported_ip,
                                                 reports_used_times)
 from petkit_local.events import codes, decode
-from petkit_local.utils.coerce import to_float, to_int
+from petkit_local.utils.coerce import to_bool, to_float, to_int
+from petkit_local.utils.const import DEVICE_TYPES_FEEDER_DUAL
 from petkit_local.utils.dicts import first_of
 
 if TYPE_CHECKING:
@@ -577,6 +578,11 @@ def _accumulate_feed_totals(device: Device, content: dict) -> None:
     NOT persisted: `Device.to_dict` deliberately excludes `state`, and this
     stays inside it. `seed_feed_state` rebuilds the day from the event store at
     startup instead, through this same function.
+
+    A hopper pair's amounts are also filed PER HOPPER under how the feed was
+    asked for (`_feed_origin`): `addAmountTotal1/2` by hand,
+    `planRealAmountTotal1/2` by the schedule. A feed that cannot be told apart
+    goes in neither, and still counts toward the two totals above.
     """
     grams = sum(
         to_float(content.get(key), 0) or 0
@@ -593,7 +599,125 @@ def _accumulate_feed_totals(device: Device, content: dict) -> None:
     totals["times"] = int(to_float(totals.get("times"), 0) or 0) + 1
     totals["realAmountTotal"] = round(
         (to_float(totals.get("realAmountTotal"), 0) or 0) + grams, 1)
+
+    per_hopper = {
+        hopper: sum(to_float(content.get(f"{name}{hopper}"), 0) or 0
+                    for name in ("real_amount", "realAmount"))
+        for hopper in ("1", "2")
+        if f"real_amount{hopper}" in content or f"realAmount{hopper}" in content
+    }
+    if per_hopper:
+        # Every bucket exists from the first hopper-pair feed of the day, so a
+        # day of scheduled meals reads "0 by hand" rather than nothing.
+        for field_name in _HOPPER_BUCKET_FIELDS:
+            totals.setdefault(field_name, 0)
+        bucket = _ORIGIN_BUCKET.get(_feed_origin(content))
+        if bucket:
+            for hopper, amount in per_hopper.items():
+                field_name = f"{bucket}{hopper}"
+                totals[field_name] = round(
+                    (to_float(totals.get(field_name), 0) or 0) + amount, 1)
     device.state["feedState"] = totals
+
+
+FEED_MANUAL = "manual"
+FEED_SCHEDULED = "scheduled"
+
+#: `feedState` field stem per origin; the hopper number is appended. The names
+#: are the cloud model's, as the reference integration reads them for a
+#: dual-hopper feeder (`addAmountTotal1`, `planRealAmountTotal1`).
+_ORIGIN_BUCKET = {FEED_MANUAL: "addAmountTotal", FEED_SCHEDULED: "planRealAmountTotal"}
+_HOPPER_BUCKET_FIELDS = tuple(f"{stem}{hopper}" for stem in _ORIGIN_BUCKET.values()
+                              for hopper in ("1", "2"))
+
+
+def _feed_origin(content: dict) -> str | None:
+    """Whether a finished feed was asked for by hand or run by the schedule.
+
+    Read from the feed's own id, which the device echoes back verbatim and
+    whose first letter says where it was minted:
+
+      * `s_YYYYMMDD_SSSSS` is an instance of a recurring meal, handed out in
+        `dev_feed_get`'s `latest[]` -- a D4's meal report carries
+        `"id":s_20261022_64800` (fw 1.267, proxied 2026-10-22);
+      * `r_YYYYMMDD_N_N-1` is a `feed_realtime`, ours or the app's -- a D4S
+        answered one with `"id":r_20260826_37258_37258-1` in its `feed_over`
+        (fw 1.198, 2026-08-26, captured on another fork);
+      * `d_YYYYMMDD_SSSSS` is a one-off deferred feed. Somebody asked for it by
+        hand, and it is in no day's plan, so it is filed as manual. That a
+        device echoes this id too is assumed from the other two, not seen.
+
+    The id, and not which feed we last sent: the day's totals are REPLAYED
+    from the event store after a restart (`seed_feed_state`), and a rule that
+    depends on anything outside `content` would file the same feed differently
+    the second time.
+
+    `content.manual` is NOT the answer it looks like: that same D4S reported
+    `manual: 0` for the feed above, which it was told to run. A truthy one is
+    still taken at its word -- nothing here has seen what sets it, and the
+    front-panel button is the likely candidate.
+
+    Returns None when neither says: the feed is then counted in the totals and
+    filed under no origin, rather than guessed into one.
+    """
+    feed_id = str(content.get("id") or "")
+    if feed_id.startswith("s_"):
+        return FEED_SCHEDULED
+    if feed_id.startswith(("r_", "d_")) or to_bool(content.get("manual"), False):
+        return FEED_MANUAL
+    return None
+
+
+def apply_feed_plan_state(device: Device, now: float | None = None) -> None:
+    """Keep "what today's schedule intends" current for a dual-hopper feeder.
+
+    `feedState.planAmountTotal1/2` is an INTENTION, not an outcome, so no event
+    carries it: it is the sum of the stored meals whose weekdays include today.
+    Recomputed whenever the state document is built, like the consumable
+    countdowns and for the same reasons -- it changes with the calendar and
+    with an edit to the schedule, neither of which is a device report.
+
+    Recurring meals only. A one-off deferred feed is dropped from the store
+    once it has fired, so counting it would make the day's plan shrink at the
+    moment it was carried out.
+
+    `re` is PetKit's weekday numbering, SUNDAY = 1 (`codes.py`), and "today" is
+    the LOCAL day, the one `dev_feed_get` builds `latest[]` for.
+
+    A paused plan (`Device.feed_schedule_active`) intends nothing: the device
+    is handed a plan with no meals in it, so the stored meals are not today's
+    intention while the pause lasts.
+
+    The dispensed buckets are zeroed here if no feed has set them, so the four
+    sensors that read them say 0 before the first meal instead of nothing.
+    """
+    if device.device_type.lower() not in DEVICE_TYPES_FEEDER_DUAL:
+        return
+    feed = device.config.get("feed_schedule")
+    groups = feed.get("schedule") if isinstance(feed, dict) else None
+    if not device.feed_schedule_active:
+        groups = None
+    lt = time.localtime(time.time() if now is None else now)
+    today = str((lt.tm_wday + 2) % 7 or 7)
+    planned = {"1": 0.0, "2": 0.0}
+    for group in groups if isinstance(groups, list) else ():
+        if not isinstance(group, dict):
+            continue
+        days = {d.strip() for d in str(group.get("re", "")).split(",")}
+        if today not in days:
+            continue
+        for meal in group.get("it") or ():
+            if isinstance(meal, dict):
+                for hopper in planned:
+                    planned[hopper] += to_float(meal.get(f"a{hopper}"), 0) or 0
+
+    totals = device.state.get("feedState")
+    if not isinstance(totals, dict):
+        totals = device.state["feedState"] = {}
+    for hopper, amount in planned.items():
+        totals[f"planAmountTotal{hopper}"] = round(amount, 1)
+    for field_name in _HOPPER_BUCKET_FIELDS:
+        totals.setdefault(field_name, 0)
 
 
 def seed_feed_state(device: Device, feeds: list[dict], last_feed_ts: float | None) -> None:

@@ -275,6 +275,54 @@ FEEDER_DUAL_HOPPER_SENSORS = [
               options=["Empty", "Has food"], option_values=[0, 2]),
 ]
 
+#: A hopper pair's feed accounting, per hopper and per day: what was dispensed
+#: BY HAND, what the schedule INTENDS today, and what the schedule actually put
+#: out. DUAL-HOPPER ONLY -- the unsuffixed spellings of these fields belong to
+#: single-hopper feeders, and no single-hopper report carries a split.
+#:
+#: Names and fields are the reference integration's for a D4S:
+#: `ManualDispensedHopper1/2` (`addAmountTotal1/2`), `TotalPlannedHopper1/2`
+#: (`planAmountTotal1/2`) and `PlannedDispensedHopper1/2`
+#: (`planRealAmountTotal1/2`). There they come from PetKit's account; here all
+#: six are OURS, because no feeder state report carries a `feedState` block:
+#:
+#: * the two dispensed pairs are summed from `feed_over`'s
+#:   `real_amount1`/`real_amount2` and told apart by the feed id the device
+#:   echoes (`events/normalize.py::_feed_origin`);
+#: * the planned pair is summed from the stored schedule for today's weekday
+#:   (`events/normalize.py::apply_feed_plan_state`).
+#:
+#: The unit is PORTIONS, not grams. A meal's `a1`/`a2` and a manual feed's
+#: `amount1`/`amount2` count portions on this hardware (`ha/commands.py::_feed`),
+#: and `real_amount1/2` is taken to answer in the unit it was asked in: a D4S
+#: reported `real_amount2: 2` for a two-portion feed.
+#:
+#: `total_increasing` on the dispensed four for the reason `total_dispensed`
+#: gives -- they reset at the device's midnight. The planned pair is a
+#: `measurement`: it moves both ways, with the weekday and with an edit.
+FEEDER_DUAL_FEED_SENSORS = [
+    EntityDef(component="sensor", key="hopper1_manual", name="Hopper 1 Dispensed Manually",
+              value_path="state.feedState.addAmountTotal1", unit="portions",
+              state_class="total_increasing", icon="mdi:hand-pointing-up"),
+    EntityDef(component="sensor", key="hopper2_manual", name="Hopper 2 Dispensed Manually",
+              value_path="state.feedState.addAmountTotal2", unit="portions",
+              state_class="total_increasing", icon="mdi:hand-pointing-up"),
+    EntityDef(component="sensor", key="hopper1_planned", name="Hopper 1 Planned",
+              value_path="state.feedState.planAmountTotal1", unit="portions",
+              state_class="measurement", icon="mdi:calendar-check"),
+    EntityDef(component="sensor", key="hopper2_planned", name="Hopper 2 Planned",
+              value_path="state.feedState.planAmountTotal2", unit="portions",
+              state_class="measurement", icon="mdi:calendar-check"),
+    EntityDef(component="sensor", key="hopper1_planned_dispensed",
+              name="Hopper 1 Dispensed On Schedule",
+              value_path="state.feedState.planRealAmountTotal1", unit="portions",
+              state_class="total_increasing", icon="mdi:calendar-clock"),
+    EntityDef(component="sensor", key="hopper2_planned_dispensed",
+              name="Hopper 2 Dispensed On Schedule",
+              value_path="state.feedState.planRealAmountTotal2", unit="portions",
+              state_class="total_increasing", icon="mdi:calendar-clock"),
+]
+
 #: The single hopper-level reading for a one-hopper next-gen feeder (D4H). It is
 #: the dual `hopper1_level` with the "1" dropped and pointed at the singular
 #: `state.food` the rest of the feeder family uses.

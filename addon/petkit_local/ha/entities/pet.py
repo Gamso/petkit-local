@@ -26,4 +26,10 @@ PET_SENSORS = [
               icon="mdi:timer-outline"),
     EntityDef(component="sensor", key="last_device_used", name="Last Device Used",
               value_path="state.lastDeviceUsed", icon="mdi:home-floor-a"),
+    # What the scale has OBSERVED: the median of the pet's newest weighed
+    # visits, so one odd reading does not put a spike in the history graph.
+    # Grams, as the box reports them and as Last Visit Weight already is.
+    EntityDef(component="sensor", key="weight", name="Weight",
+              value_path="state.weight", device_class="weight", unit="g",
+              state_class="measurement", icon="mdi:scale-bathroom"),
 ]
