@@ -80,7 +80,7 @@ async def test_disconnect_clears_mqtt_connected():
 
 async def test_disconnect_leaves_online_alone():
     """A device off MQTT is still reachable over HTTP; `online` belongs to
-    ha/publisher.py::availability_watchdog."""
+    devices/liveness.py::offline_watchdog."""
     plugin, dev, client_id = _plugin_with_device()
     dev.online = True
     await plugin.on_broker_client_disconnected(client_id)

@@ -26,6 +26,7 @@ import logging
 import os
 import stat
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -344,27 +345,36 @@ async def test_the_offline_watchdog_decision_and_nothing_else_is_an_offline(tmp_
     assert "stopped responding" in queued[0].message
 
 
-async def test_the_watchdog_says_online_false(tmp_path):
-    from petkit_local.ha.publisher import HAPublisher
+async def test_without_home_assistant_a_silent_device_still_reaches_the_phone(tmp_path, ntfy):
+    """`--no-ha`: no publisher, yet the watchdog runs and "Device offline" is sent."""
+    from petkit_local.main.lifecycle import _start_offline_watchdog
 
+    server = await ntfy.start()
     registry = DeviceRegistry()
     device = registry.get_or_create(petkit_id=100, device_type="t5")
     device.online = True
-    device.last_seen = 1.0
+    device.mqtt_connected = True
+    device.last_seen = 1.0  # long ago
     hub = EventHub()
-    publisher = HAPublisher(registry, {}, hub=hub)
-    task = asyncio.create_task(publisher.availability_watchdog(timeout=1, interval=0.01))
+    notifier = Notifier(await _config(tmp_path, server=server), registry, hub=hub)
+    notifier_task = asyncio.create_task(notifier.run())
+    host = web.Application()
+    host[device_keys.BACKGROUND_TASKS] = []
+    services = SimpleNamespace(registry=registry, hub=hub, ha_publisher=None,
+                               config=SimpleNamespace(offline_timeout=1))
     try:
-        for _ in range(200):
-            if not device.online:
-                break
-            await asyncio.sleep(0.01)
+        await asyncio.sleep(0)  # let the notifier subscribe
+        watchdog = _start_offline_watchdog(services, host, interval=0.01)
+        assert host[device_keys.BACKGROUND_TASKS] == [watchdog]
+        await ntfy.wait(1)
+        assert not device.online and not device.mqtt_connected
+        assert ntfy.requests[0]["headers"]["Title"] == "Device offline"
+        assert ntfy.requests[0]["headers"]["Tags"] == "electric_plug,offline"
     finally:
-        task.cancel()
-        with pytest.raises(asyncio.CancelledError):
-            await task
-    lines = [e for e in hub.recent() if e["kind"] == "connect"]
-    assert lines and lines[-1]["detail"] == {"online": False, "timeout": 1}
+        for task in (*host[device_keys.BACKGROUND_TASKS], notifier_task):
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
 
 
 # --- the publish request ----------------------------------------------------------

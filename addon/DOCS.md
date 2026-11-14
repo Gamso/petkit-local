@@ -494,8 +494,9 @@ on every report, and whatever was already true when the add-on started is not
 announced at all. Each event is announced once, however often the device
 retries it. Each device may send only a few notifications of one kind per
 period (one error per five minutes, one food-low per hour, …), so a device that
-flaps cannot flood the phone. Device offline needs the watchdog, which runs with
-Home Assistant publishing on; with `--no-ha` nothing is ever marked offline.
+flaps cannot flood the phone. Device offline works the same with or without
+Home Assistant (`--no-ha` included): the watchdog that decides it runs either
+way, and only telling Home Assistant depends on HA publishing being on.
 
 #### On the ntfy server
 
