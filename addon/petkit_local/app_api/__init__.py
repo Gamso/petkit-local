@@ -13,6 +13,8 @@ authenticate), every request here is authenticated by petkit-local itself.
     serializers.py  every JSON shape returned, explicit, so the panel can change freely
     handlers/       one module per area: meta, auth, devices, timeline, media, pets
     openapi.yaml    the contract the app's client is generated from (tested against ROUTES)
+    notify/         push notifications through the owner's ntfy server, fed by the
+                    event hub; settings in `{data_dir}/ntfy.json`, set from the panel
 
 Layering: this package reads the same stores, registries and helpers the panel
 reads (`events/`, `ai/pets.py`, `ha/categories.py`, `ha/state_doc.py`,
