@@ -9,7 +9,7 @@ from petkit_local.ha.categories import get_entities_for_device, get_setting_fiel
 from petkit_local.ha.commands import handle_ha_command
 import base64
 
-from petkit_local.ha.publisher import device_is_stale
+from petkit_local.devices.liveness import device_is_stale
 from petkit_local.devices.ble import parse_w5_ble_response, _decode_w5_status
 from petkit_local.utils.capture import capture_record
 

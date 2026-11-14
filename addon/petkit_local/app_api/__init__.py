@@ -15,6 +15,8 @@ authenticate), every request here is authenticated by petkit-local itself.
     handlers/       one module per area: meta, auth, devices, controls (actions and
                     settings), feeding (plan, one-off feeds), timeline, media, pets, live
     openapi.yaml    the contract the app's client is generated from (tested against ROUTES)
+    notify/         push notifications through the owner's ntfy server, fed by the
+                    event hub; settings in `{data_dir}/ntfy.json`, set from the panel
 
 Layering: this package reads the same stores, registries and helpers the panel
 reads (`events/`, `ai/pets.py`, `ha/categories.py`, `ha/state_doc.py`,

@@ -20,6 +20,7 @@ from aiohttp import web
 from sqlalchemy.exc import SQLAlchemyError
 
 from petkit_local.app_api.server import create_app_api
+from petkit_local.devices.liveness import offline_watchdog
 from petkit_local.devices.state_parsers import reports_used_times
 from petkit_local.events.ingest import _MODULE_TYPE_TO_CATEGORY, backfill_event_rows
 from petkit_local.events.normalize import seed_feed_state, visit_day_key
@@ -167,6 +168,22 @@ async def _start_app_api(services: Services, app_instance: web.Application) -> N
              else " (closed until a password is set in the panel)")
 
 
+def _start_offline_watchdog(services: Services, app_instance: web.Application, *,
+                            interval: float | None = None) -> asyncio.Task[Any]:
+    """Run the offline watchdog, with Home Assistant publishing or without it.
+
+    Liveness is not an HA question (`devices/liveness.py`): with `--no-ha`
+    a silent device must still come offline, drop `mqtt_connected` and reach
+    the phone as "Device offline". Only HA's availability publish depends on
+    there being a publisher.
+    """
+    ha_publisher = services.ha_publisher
+    return _spawn(app_instance, "offline-watchdog", offline_watchdog(
+        services.registry, services.config.offline_timeout, hub=services.hub,
+        on_offline=ha_publisher.publish_availability if ha_publisher else None,
+        interval=interval))
+
+
 async def start_background(services: Services, app_instance: web.Application) -> None:
     """aiohttp on_startup hook: open the store, then spawn every service.
 
@@ -259,6 +276,8 @@ async def start_background(services: Services, app_instance: web.Application) ->
     # goes for the broker, which is why the panel is only started (below)
     # once the broker is up.
     panel[panel_keys.GO2RTC] = go2rtc
+    if services.notifier is not None:
+        panel[panel_keys.NOTIFIER] = services.notifier
 
     # Local S3/OSS bucket — accepts uploads from the device's cloud
     # process. Raw uploads (AES-encrypted, cryptically named) land in a
@@ -320,8 +339,7 @@ async def start_background(services: Services, app_instance: web.Application) ->
 
     if ha_publisher:
         _spawn(app_instance, "ha-publisher", ha_publisher.start())
-        _spawn(app_instance, "availability-watchdog",
-               ha_publisher.availability_watchdog(config.offline_timeout))
+    _start_offline_watchdog(services, app_instance)
 
     # A BLE accessory reports only when we tell its parent to open a
     # session. Reacting to the parent's own traffic is not enough — a
@@ -396,6 +414,10 @@ async def start_background(services: Services, app_instance: web.Application) ->
              " (HA Ingress)" if services.ha_addon else "")
 
     await _start_app_api(services, app_instance)
+    # Phone notifications through ntfy. Idle until enabled in the panel; it
+    # only listens to the hub, and only ever calls the configured ntfy server.
+    if services.notifier is not None:
+        _spawn(app_instance, "ntfy-notifier", services.notifier.run())
 
     # A device holds a fixed UTC offset and knows nothing of DST, so when its
     # zone changes offset somebody has to tell it (see ha/timezone_sync.py).

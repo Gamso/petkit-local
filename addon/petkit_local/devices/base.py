@@ -194,7 +194,7 @@ class Device:
     #: the broker STOPS polling `poll/{type}/heartbeat` — confirmed on a T5,
     #: which went quiet over HTTP some 40s after its CONNECT — so without this
     #: the liveness check sees only silence and calls a perfectly healthy device
-    #: offline (`ha/publisher.py::device_is_stale`).
+    #: offline (`devices/liveness.py::device_is_stale`).
     last_mqtt: float = 0.0
     #: Every LAN address recently named for this device, `{kind: {ip: when}}` —
     #: see `devices/addresses.py`. `state["ip"]` is one unauthenticated claim;
