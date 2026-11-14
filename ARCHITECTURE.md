@@ -61,7 +61,8 @@ petkit_local/
 │                  server.py the application + ROUTES · middleware.py the access policy
 │                  auth.py password (scrypt), hashed session tokens, trusted proxies
 │                  throttle.py failed-login lockout, client address · serializers.py every shape
-│                  live.py the WebSocket feed (one hub subscription, diffed, fanned out)
+│                  updates.py live updates on /ws (one hub subscription, diffed, fanned out)
+│                  video.py live video: go2rtc's fMP4 WebSocket and HLS relayed, capped
 │                  handlers/ · openapi.yaml the contract, tested against ROUTES
 │                  notify/ ntfy push: hub subscriber -> rules -> bounded publish queue
 ├── patchers/      on-device patches: cacert · mqtt · cloud · camera · ssh
@@ -96,7 +97,8 @@ phone --HTTPS--> your tunnel / reverse proxy --HTTP--> app_api/server.py (port 8
                                                              └─> handlers/ -> serializers.py
 writes:  handlers/controls.py, feeding.py -> ha/commands.py, ha/schedules.py
                                           -> ha/command_router.deliver_command (MQTT, else queue)
-/ws:     EventHub --(device id marked dirty)--> live.LiveFeed: re-read, diff, fan out per socket
+/ws:     EventHub --(device id marked dirty)--> updates.UpdateFeed: re-read, diff, fan out per socket
+/devices/{id}/live:  handlers/video.py -> video.VideoSessions (caps) -> go2rtc on loopback
 ```
 
 A separate application on a separate port, not a sub-app of the panel: a reverse proxy pointed at
@@ -105,10 +107,11 @@ built field by field in `serializers.py`, never the panel's internal dicts, so t
 without breaking a released app; `openapi.yaml` describes exactly those shapes and exactly the
 routes in `server.ROUTES`.
 
-The WebSocket never trusts the hub's events as state — they are log lines — only as a hint of
-WHICH device to re-read; what a phone is sent is the diff of the serialized device against what was
-last sent, at most once per second per device, plus a 30-second sweep for the changes nothing
-narrates (the offline watchdog). One `LiveFeed` serves every socket; it runs only while one is open.
+The live-updates WebSocket (`app_api/updates.py`) never trusts the hub's events as state — they
+are log lines — only as a hint of WHICH device to re-read; what a phone is sent is the diff of the
+serialized device against what was last sent, at most once per second per device, plus a 30-second
+sweep for the changes nothing narrates (the offline watchdog). One `UpdateFeed` serves every
+socket; it runs only while one is open.
 
 Live video (`app_api/video.py`) is the one place the app API talks to another process: it relays
 go2rtc's fMP4 WebSocket and HLS from loopback, for the stream of the device in the path only —

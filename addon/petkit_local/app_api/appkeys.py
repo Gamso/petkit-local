@@ -24,11 +24,12 @@ key                     what it holds                                set by
 `HUB`                   the panel's `EventHub`, typed `Any` here     create_app_api
                         (`web` is off limits): writes narrate into
                         it and the WebSocket feed reads from it
-`LIVE`                  `LiveFeed`, the WebSocket fan-out            create_app_api
+`UPDATE_FEED`           `UpdateFeed` — the live-updates WebSocket    create_app_api
+                        fan-out (`app_api/updates.py`)
 `GO2RTC`                the camera sidecar (`media/go2rtc.py`), or   create_app_api
                         None: which streams exist, whether it runs
-`VIDEO_SESSIONS`        `LiveSessions` — live viewers, their caps    create_app_api
-                        and relays (`app_api/video.py`)
+`VIDEO_SESSIONS`        `VideoSessions` — live-video viewers, their  create_app_api
+                        caps and relays (`app_api/video.py`)
 ======================  ===========================================  ==========
 
 `SESSION` is set on each request by the auth middleware once a bearer token
@@ -43,9 +44,9 @@ from aiohttp import web
 if TYPE_CHECKING:
     from petkit_local.ai.pets import PetRegistry
     from petkit_local.app_api.auth import AppAuth, AppSession
-    from petkit_local.app_api.live import LiveFeed
     from petkit_local.app_api.throttle import LoginThrottle
-    from petkit_local.app_api.video import LiveSessions
+    from petkit_local.app_api.updates import UpdateFeed
+    from petkit_local.app_api.video import VideoSessions
     from petkit_local.devices.registry import DeviceRegistry
     from petkit_local.events.store import EventStore
     from petkit_local.ha.publisher import HAPublisher
@@ -62,9 +63,9 @@ DATA_DIR: web.AppKey[str] = web.AppKey("app_data_dir")
 COMMAND_SINK: web.AppKey[MQTTBridge | None] = web.AppKey("app_command_sink")
 HA_PUBLISHER: web.AppKey[HAPublisher | None] = web.AppKey("app_ha_publisher")
 HUB: web.AppKey[Any] = web.AppKey("app_hub")
-LIVE: web.AppKey[LiveFeed] = web.AppKey("app_live")
+UPDATE_FEED: web.AppKey[UpdateFeed] = web.AppKey("app_update_feed")
 GO2RTC: web.AppKey[Go2rtc | None] = web.AppKey("app_go2rtc")
-VIDEO_SESSIONS: web.AppKey[LiveSessions] = web.AppKey("app_video_sessions")
+VIDEO_SESSIONS: web.AppKey[VideoSessions] = web.AppKey("app_video_sessions")
 
 #: The session the bearer token belongs to.
 SESSION: web.RequestKey[AppSession] = web.RequestKey("app_session")

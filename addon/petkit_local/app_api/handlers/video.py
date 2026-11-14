@@ -48,7 +48,7 @@ def _signed_in(request: web.Request):
     return lambda: auth.password_set and any(s.id == session_id for s in auth.sessions())
 
 
-async def live(request: web.Request) -> web.StreamResponse:
+async def video_ws(request: web.Request) -> web.StreamResponse:
     """`GET /app/v1/devices/{id}/live` — WebSocket upgrade to the camera's fMP4 feed."""
     device_id, name = _stream(request)
     client = web.WebSocketResponse(heartbeat=CLIENT_HEARTBEAT_SECONDS,
@@ -77,7 +77,7 @@ async def live(request: web.Request) -> web.StreamResponse:
     return client
 
 
-async def live_hls(request: web.Request) -> web.StreamResponse:
+async def video_hls(request: web.Request) -> web.StreamResponse:
     """`GET /app/v1/devices/{id}/live/hls/{file}` — the HLS fallback.
 
     `playlist.m3u8` without `id` opens a session (a viewer slot) and answers a

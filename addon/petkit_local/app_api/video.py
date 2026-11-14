@@ -30,7 +30,7 @@ What this module refuses, and why:
   the original goes to the log (`from_go2rtc_text`).
 * **An HLS session id is only good for the phone and device it was opened for.**
   go2rtc's ids are global; one taken from another device's playlist, or from
-  another phone's, is a 404 here (`LiveSessions.hls_slot`).
+  another phone's, is a 404 here (`VideoSessions.hls_slot`).
 * **A slow client is dropped, not buffered for.** go2rtc's output is read
   as it comes so the camera's other viewers never wait on this one, into a
   queue capped at `CLIENT_BACKLOG_BYTES`; a client that lets it fill is closed
@@ -227,7 +227,7 @@ class _Backlog:
         return item
 
 
-class LiveSessions:
+class VideoSessions:
     """The live viewers, their caps, and the relays they run.
 
     One per app API. Admission is synchronous — no await between counting the

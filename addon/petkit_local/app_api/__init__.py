@@ -11,11 +11,12 @@ authenticate), every request here is authenticated by petkit-local itself.
                     trusted proxies, persisted to `{data_dir}/app_api.json`
     throttle.py     failed-login lockouts, and which client address a request is charged to
     serializers.py  every JSON shape returned, explicit, so the panel can change freely
-    live.py         the WebSocket feed: one EventHub subscription, diffed, fanned out
-    video.py        live video: go2rtc's fMP4 WebSocket and HLS relayed, viewer caps
+    updates.py      live updates (`/ws`): one EventHub subscription, diffed, fanned out
+    video.py        live video (`/devices/{id}/live`): go2rtc's fMP4 WebSocket and HLS
+                    relayed, viewer caps
     handlers/       one module per area: meta, auth, devices, controls (actions and
                     settings), feeding (plan, one-off feeds), timeline, media, pets,
-                    live (the WebSocket feed), video (live video)
+                    updates (the live-updates WebSocket), video (live video)
     openapi.yaml    the contract the app's client is generated from (tested against ROUTES)
     notify/         push notifications through the owner's ntfy server, fed by the
                     event hub; settings in `{data_dir}/ntfy.json`, set from the panel

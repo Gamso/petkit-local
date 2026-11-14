@@ -38,7 +38,7 @@ from petkit_local.app_api.middleware import ApiError
 from petkit_local.app_api.server import PREFIX, create_app_api
 from petkit_local.app_api.video import (
     CLIENT_BACKLOG_BYTES, CLOSE_REPLACED, CLOSE_SESSION_ENDED, CLOSE_SHUTDOWN, CLOSE_TOO_SLOW,
-    MAX_LIVE_PER_DEVICE, MAX_LIVE_TOTAL, STREAM_ERROR, LiveSessions, _Backlog, device_stream,
+    MAX_LIVE_PER_DEVICE, MAX_LIVE_TOTAL, STREAM_ERROR, VideoSessions, _Backlog, device_stream,
     master_playlist, mse_request, rewrite_playlist,
 )
 from petkit_local.devices.registry import DeviceRegistry
@@ -163,9 +163,9 @@ class Env:
                                      if d.state.get(STREAM_AVAILABLE)})
         self.clock = Clock()
         live_kw.setdefault("recheck_seconds", 0.05)
-        self.live = LiveSessions(go2rtc_api=fake.addr, clock=self.clock, **live_kw)
+        self.video = VideoSessions(go2rtc_api=fake.addr, clock=self.clock, **live_kw)
         self.app = create_app_api(self.auth, self.registry, go2rtc=self.go2rtc,
-                                  live_sessions=self.live)
+                                  video_sessions=self.video)
         self.server = TestServer(self.app)
         self.client: TestClient | None = None
 
@@ -283,17 +283,17 @@ async def test_nothing_to_watch_is_404_and_no_go2rtc_is_503(setup):
     r = await env.hls(token, "playlist.m3u8")
     assert r.status == 503
     assert fake.ws_srcs == [] and fake.m3u8_queries == []
-    assert env.live.viewers() == 0
+    assert env.video.viewers() == 0
 
 
 async def test_an_unreachable_go2rtc_is_503_and_frees_the_slot(setup):
     env, _fake = setup
-    env.live.go2rtc_api = f"127.0.0.1:{unused_port()}"
+    env.video.go2rtc_api = f"127.0.0.1:{unused_port()}"
     token = await env.login()
     with pytest.raises(aiohttp.WSServerHandshakeError) as e:
         await env.ws(token)
     assert e.value.status == 503
-    assert env.live.viewers() == 0
+    assert env.video.viewers() == 0
 
 
 async def test_no_go2rtc_at_all_is_503(tmp_path: Path):
@@ -339,11 +339,11 @@ async def test_the_relay_carries_the_stream_and_rebuilds_the_request(setup):
     await ws.send_bytes(b"\x00binary")
     await asyncio.sleep(0.05)
     assert len(fake.ws_received) == 1
-    assert env.live.viewers(100) == 1
+    assert env.video.viewers(100) == 1
 
     await ws.close()
     await asyncio.wait_for(fake.ws_closed.wait(), 5)
-    await _until(lambda: env.live.viewers() == 0)
+    await _until(lambda: env.video.viewers() == 0)
 
 
 async def test_go2rtcs_error_text_is_not_shown_to_the_phone(setup):
@@ -366,7 +366,7 @@ async def test_go2rtc_closing_ends_the_relay(setup):
     await asyncio.sleep(0.05)
     await fake.drop_all()
     assert await _closed_code(ws) == video_mod.CLOSE_STREAM_ENDED
-    await _until(lambda: env.live.viewers() == 0)
+    await _until(lambda: env.video.viewers() == 0)
 
 
 async def test_a_slow_client_is_dropped_not_buffered_for(tmp_path: Path):
@@ -374,17 +374,17 @@ async def test_a_slow_client_is_dropped_not_buffered_for(tmp_path: Path):
     try:
         fake.flood = 2000  # 125 MiB the client never reads
         codes = []
-        close_client = env.live._close_client
+        close_client = env.video._close_client
 
         async def record(request, client, slot):
             codes.append(slot.close_code)
             await close_client(request, client, slot)
-        env.live._close_client = record
+        env.video._close_client = record
         token = await env.login()
         ws = await env.ws(token)
         await ws.send_str(json.dumps({"type": "mse", "value": CODECS}))
         await asyncio.wait_for(fake.ws_closed.wait(), 30)
-        await _until(lambda: env.live.viewers() == 0, 10)
+        await _until(lambda: env.video.viewers() == 0, 10)
         assert codes == [CLOSE_TOO_SLOW]
         await ws.close()
     finally:
@@ -417,13 +417,13 @@ async def test_viewers_are_capped_per_camera_and_in_total(tmp_path: Path):
         assert r.status == 429 and (await r.json())["error"] == "live_limit_reached"
 
         c = await env.ws(phones[2], 101)
-        assert env.live.viewers() == 3
+        assert env.video.viewers() == 3
         with pytest.raises(aiohttp.WSServerHandshakeError) as e:
             await env.ws(phones[3], 102)
         assert e.value.status == 429
 
         await a.close()
-        await _until(lambda: env.live.viewers() == 2)
+        await _until(lambda: env.video.viewers() == 2)
         d = await env.ws(phones[3], 102)
         for ws in (b, c, d):
             await ws.close()
@@ -439,7 +439,7 @@ async def test_a_phone_reopening_a_camera_replaces_its_older_view(tmp_path: Path
         old = await env.ws(token)
         new = await env.ws(token)   # not refused: the old view goes
         assert await _closed_code(old) == CLOSE_REPLACED
-        assert env.live.viewers() == 1
+        assert env.video.viewers() == 1
         await new.close()
     finally:
         await env.client.close()
@@ -447,25 +447,25 @@ async def test_a_phone_reopening_a_camera_replaces_its_older_view(tmp_path: Path
 
 
 def test_admission_has_no_await_between_counting_and_taking():
-    live = LiveSessions(per_device=1, total=5)
-    live.admit("s1", 100, "ws")
+    sessions = VideoSessions(per_device=1, total=5)
+    sessions.admit("s1", 100, "ws")
     with pytest.raises(ApiError) as e:
-        live.admit("s2", 100, "ws")
+        sessions.admit("s2", 100, "ws")
     assert e.value.status == 429
 
 
 def test_an_idle_hls_viewer_stops_counting():
     clock = Clock()
-    live = LiveSessions(per_device=1, total=5, clock=clock, hls_idle_seconds=10)
-    slot = live.admit("s1", 100, "hls")
+    sessions = VideoSessions(per_device=1, total=5, clock=clock, hls_idle_seconds=10)
+    slot = sessions.admit("s1", 100, "hls")
     slot.hls_id = HLS_ID
     clock.now += 5
-    assert live.hls_slot("s1", 100, HLS_ID) is slot   # a request moves the deadline
+    assert sessions.hls_slot("s1", 100, HLS_ID) is slot   # a request moves the deadline
     clock.now += 9
-    assert live.viewers(100) == 1
+    assert sessions.viewers(100) == 1
     clock.now += 2
-    assert live.viewers(100) == 0
-    live.admit("s2", 100, "hls")
+    assert sessions.viewers(100) == 0
+    sessions.admit("s2", 100, "hls")
 
 
 # --- ending a relay -----------------------------------------------------------------
@@ -489,7 +489,7 @@ async def test_a_running_relay_ends_with_its_session(setup, how):
         await env.auth.clear_password()
     assert await _closed_code(ws) == CLOSE_SESSION_ENDED
     await asyncio.wait_for(fake.ws_closed.wait(), 5)
-    await _until(lambda: env.live.viewers() == 0)
+    await _until(lambda: env.video.viewers() == 0)
 
 
 async def test_shutdown_ends_every_relay_at_once(tmp_path: Path):
@@ -500,7 +500,7 @@ async def test_shutdown_ends_every_relay_at_once(tmp_path: Path):
                                    headers={"Authorization": f"Bearer {token}"})
         await ws.send_str(json.dumps({"type": "mse", "value": CODECS}))
         await ws.receive_str()
-        assert env.live.close_all in env.app.on_shutdown
+        assert env.video.close_all in env.app.on_shutdown
         loop = asyncio.get_running_loop()
         started = loop.time()
         closing = asyncio.create_task(env.client.close())
@@ -546,7 +546,7 @@ async def test_hls_is_rewritten_to_stay_under_the_route(setup):
     r = await env.hls(token, f"segment.m4s?id={HLS_ID}&n=1")
     assert r.status == 200 and await r.read() == FRAGMENT
     assert r.headers["Content-Type"] == "video/iso.segment"
-    assert env.live.viewers(100) == 1
+    assert env.video.viewers(100) == 1
 
 
 async def test_an_hls_id_is_good_for_one_phone_and_one_camera(setup):
@@ -578,7 +578,7 @@ async def test_an_expired_hls_session_is_404_and_frees_its_slot(setup):
     fake.hls_gone = True
     r = await env.hls(token, f"playlist.m3u8?id={HLS_ID}")
     assert r.status == 404 and (await r.json())["error"] == "hls_session_expired"
-    assert env.live.viewers() == 0
+    assert env.video.viewers() == 0
 
 
 async def test_a_playlist_naming_anything_else_is_refused(setup):

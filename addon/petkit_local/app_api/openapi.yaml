@@ -35,7 +35,8 @@ tags:
   - name: meta
   - name: auth
   - name: devices
-  - name: live
+  - name: updates
+  - name: video
   - name: timeline
   - name: media
   - name: pets
@@ -379,7 +380,7 @@ paths:
               schema: { $ref: "#/components/schemas/Error" }
   /devices/{id}/live:
     get:
-      tags: [live]
+      tags: [video]
       operationId: openLiveVideo
       summary: The camera's live video as fragmented MP4 over a WebSocket (go2rtc MSE).
       description: |
@@ -433,12 +434,12 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
-        "429": { $ref: "#/components/responses/LiveLimitReached" }
-        "503": { $ref: "#/components/responses/LiveUnavailable" }
+        "429": { $ref: "#/components/responses/VideoLimitReached" }
+        "503": { $ref: "#/components/responses/VideoUnavailable" }
 
   /devices/{id}/live/hls/{file}:
     get:
-      tags: [live]
+      tags: [video]
       operationId: getLiveHls
       summary: The camera's live video as HLS (fMP4 segments), the fallback to the WebSocket.
       description: |
@@ -489,14 +490,14 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
-        "429": { $ref: "#/components/responses/LiveLimitReached" }
+        "429": { $ref: "#/components/responses/VideoLimitReached" }
         "502":
           description: "`bad_upstream`: go2rtc answered something this route will not
             relay (refused rather than passed through)."
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
-        "503": { $ref: "#/components/responses/LiveUnavailable" }
+        "503": { $ref: "#/components/responses/VideoUnavailable" }
 
   /timeline:
     get:
@@ -664,13 +665,13 @@ paths:
 
   /ws:
     get:
-      tags: [live]
+      tags: [updates]
       operationId: openLiveUpdates
       summary: Live updates over a WebSocket.
       description: |
         Upgrade with `Authorization: Bearer <token>` on the request (a native client
         can send headers on the upgrade). Every frame the server sends is one JSON
-        text message, a `LiveMessage` told apart by `type`:
+        text message, an `UpdateMessage` told apart by `type`:
 
         * `hello` — first, once: every device as `DeviceDetail`. Start from it rather
           than from an earlier `GET`, so nothing falls between the two.
@@ -696,10 +697,10 @@ paths:
         fresh `hello`.
       responses:
         "101":
-          description: Switching to the WebSocket protocol; each message is a `LiveMessage`.
+          description: Switching to the WebSocket protocol; each message is an `UpdateMessage`.
           content:
             application/json:
-              schema: { $ref: "#/components/schemas/LiveMessage" }
+              schema: { $ref: "#/components/schemas/UpdateMessage" }
         "400":
           description: Not a WebSocket upgrade request.
           content:
@@ -791,7 +792,7 @@ components:
       content:
         application/json:
           schema: { $ref: "#/components/schemas/Error" }
-    LiveLimitReached:
+    VideoLimitReached:
       description: "`live_limit_reached`: this camera (2) or the server (4) already has
         as many live viewers as it serves."
       headers:
@@ -799,7 +800,7 @@ components:
       content:
         application/json:
           schema: { $ref: "#/components/schemas/Error" }
-    LiveUnavailable:
+    VideoUnavailable:
       description: "`live_unavailable`: go2rtc, which serves the camera's stream, is not
         running or did not answer. Retry shortly."
       content:
@@ -1263,26 +1264,26 @@ components:
               description: Up to 20 visits from the last 7 days, newest first.
               items: { $ref: "#/components/schemas/TimelineItem" }
 
-    LiveMessage:
+    UpdateMessage:
       description: One WebSocket message from `/ws`, told apart by `type`.
       oneOf:
-        - { $ref: "#/components/schemas/LiveHello" }
-        - { $ref: "#/components/schemas/LiveState" }
-        - { $ref: "#/components/schemas/LiveDevice" }
-        - { $ref: "#/components/schemas/LiveDeviceRemoved" }
-        - { $ref: "#/components/schemas/LiveTimeline" }
-        - { $ref: "#/components/schemas/LivePong" }
+        - { $ref: "#/components/schemas/UpdateHello" }
+        - { $ref: "#/components/schemas/UpdateState" }
+        - { $ref: "#/components/schemas/UpdateDevice" }
+        - { $ref: "#/components/schemas/UpdateDeviceRemoved" }
+        - { $ref: "#/components/schemas/UpdateTimeline" }
+        - { $ref: "#/components/schemas/UpdatePong" }
       discriminator:
         propertyName: type
         mapping:
-          hello: "#/components/schemas/LiveHello"
-          state: "#/components/schemas/LiveState"
-          device: "#/components/schemas/LiveDevice"
-          device_removed: "#/components/schemas/LiveDeviceRemoved"
-          timeline: "#/components/schemas/LiveTimeline"
-          pong: "#/components/schemas/LivePong"
+          hello: "#/components/schemas/UpdateHello"
+          state: "#/components/schemas/UpdateState"
+          device: "#/components/schemas/UpdateDevice"
+          device_removed: "#/components/schemas/UpdateDeviceRemoved"
+          timeline: "#/components/schemas/UpdateTimeline"
+          pong: "#/components/schemas/UpdatePong"
 
-    LiveHello:
+    UpdateHello:
       type: object
       required: [type, server_time, heartbeat_sec, devices]
       properties:
@@ -1293,7 +1294,7 @@ components:
           type: array
           items: { $ref: "#/components/schemas/DeviceDetail" }
 
-    LiveState:
+    UpdateState:
       type: object
       required: [type, device_id, ts, entities]
       properties:
@@ -1305,21 +1306,21 @@ components:
           description: Only the entities whose value changed.
           items: { $ref: "#/components/schemas/EntityChange" }
 
-    LiveDevice:
+    UpdateDevice:
       type: object
       required: [type, device]
       properties:
         type: { type: string, const: device }
         device: { $ref: "#/components/schemas/DeviceSummary" }
 
-    LiveDeviceRemoved:
+    UpdateDeviceRemoved:
       type: object
       required: [type, device_id]
       properties:
         type: { type: string, const: device_removed }
         device_id: { type: integer }
 
-    LiveTimeline:
+    UpdateTimeline:
       type: object
       required: [type, item, replaces]
       properties:
@@ -1330,7 +1331,7 @@ components:
           description: Ids of cards sent earlier that this one now stands for; drop them.
           items: { type: integer }
 
-    LivePong:
+    UpdatePong:
       type: object
       required: [type]
       properties:

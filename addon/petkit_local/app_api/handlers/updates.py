@@ -2,7 +2,7 @@
 
 Authenticated like every other route — the middleware checks the bearer token
 on the upgrade request, so a socket opens only with a session — and then kept
-honest by `app_api/live.py`, which closes it within a second or so of that
+honest by `app_api/updates.py`, which closes it within a second or so of that
 session ending. The messages and close codes are described there and in
 `openapi.yaml`.
 
@@ -21,8 +21,8 @@ import logging
 
 from aiohttp import WSCloseCode, WSMsgType, web
 
-from petkit_local.app_api.appkeys import LIVE, SESSION
-from petkit_local.app_api.live import HEARTBEAT_SEC, Subscriber
+from petkit_local.app_api.appkeys import SESSION, UPDATE_FEED
+from petkit_local.app_api.updates import HEARTBEAT_SEC, Subscriber
 
 log = logging.getLogger(__name__)
 
@@ -43,12 +43,12 @@ async def _write(ws: web.WebSocketResponse, sub: Subscriber) -> None:
         await ws.send_str(item)
 
 
-async def live(request: web.Request) -> web.StreamResponse:
+async def updates(request: web.Request) -> web.StreamResponse:
     """`GET /app/v1/ws` — upgrade, then stream `hello` and the changes after it."""
     ws = web.WebSocketResponse(heartbeat=HEARTBEAT_SEC, max_msg_size=MAX_INBOUND,
                                timeout=CLOSE_TIMEOUT)
     await ws.prepare(request)
-    feed = request.app[LIVE]
+    feed = request.app[UPDATE_FEED]
     session = request[SESSION]
     try:
         sub = await feed.attach(session)

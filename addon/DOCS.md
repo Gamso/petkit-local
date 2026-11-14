@@ -504,9 +504,10 @@ same `Authorization: Bearer` header as everything else — there are no signed
 URLs to leak into logs. Adding a field is a compatible change; anything else
 moves to `/app/v2`.
 
-The WebSocket's messages are in the same file (`LiveMessage` and the `Live*`
-schemas): a `hello` with every device as `DeviceDetail`, then `state` (only the
-entities that changed), `device` (a summary, when it went online or offline),
+Live updates come over one WebSocket, `/app/v1/ws` (not to be confused with
+live video, below). Its messages are in the same file (`UpdateMessage` and the
+`Update*` schemas): a `hello` with every device as `DeviceDetail`, then `state`
+(only the entities that changed), `device` (a summary, when it went online or offline),
 `device_removed` and `timeline` (a card to insert or replace by `id`, with the
 ids it `replaces`). Open the socket before fetching the timeline and merge by
 `id`. It closes with `4001` when the session ends (sign in again), `4008` when

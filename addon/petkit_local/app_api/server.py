@@ -11,7 +11,7 @@ reverse proxy be pointed at this one without exposing either of the others —
 test fails the moment the two differ. Writes (phase 2) are ordinary rows:
 every route needs a session unless marked otherwise, so a write is
 authenticated by default. The WebSocket (phase 3) is one too — the bearer
-check runs on the upgrade request like any other — fed by `live.LiveFeed`.
+check runs on the upgrade request like any other — fed by `updates.UpdateFeed`.
 Extension points for the later phases:
 
 * phase 4 (ntfy) — no route here: a publisher fed by the `EventHub`, with its
@@ -28,16 +28,16 @@ from typing import TYPE_CHECKING, Any
 from aiohttp import web
 
 from petkit_local.app_api.appkeys import (
-    AUTH, COMMAND_SINK, DATA_DIR, EVENT_STORE, GO2RTC, HA_PUBLISHER, HUB, LIVE, MEDIA_ROOT,
-    PET_REGISTRY, REGISTRY, THROTTLE, VIDEO_SESSIONS,
+    AUTH, COMMAND_SINK, DATA_DIR, EVENT_STORE, GO2RTC, HA_PUBLISHER, HUB, MEDIA_ROOT, PET_REGISTRY,
+    REGISTRY, THROTTLE, UPDATE_FEED, VIDEO_SESSIONS,
 )
 from petkit_local.app_api.handlers import (
-    auth, controls, devices, feeding, live, media, meta, pets, timeline, video,
+    auth, controls, devices, feeding, media, meta, pets, timeline, updates, video,
 )
-from petkit_local.app_api.live import LiveFeed
 from petkit_local.app_api.middleware import app_api_middleware
 from petkit_local.app_api.throttle import LoginThrottle
-from petkit_local.app_api.video import LiveSessions
+from petkit_local.app_api.updates import UpdateFeed
+from petkit_local.app_api.video import VideoSessions
 
 if TYPE_CHECKING:
     from petkit_local.ai.pets import PetRegistry
@@ -73,8 +73,8 @@ ROUTES: tuple[tuple[str, str, Handler], ...] = (
     ("GET", "/devices/{id}/deferred-feeds", feeding.list_deferred_feeds),
     ("POST", "/devices/{id}/deferred-feeds", feeding.add_deferred_feed),
     ("DELETE", "/devices/{id}/deferred-feeds/{feed_id}", feeding.delete_deferred_feed),
-    ("GET", "/devices/{id}/live", video.live),
-    ("GET", "/devices/{id}/live/hls/{file}", video.live_hls),
+    ("GET", "/devices/{id}/live", video.video_ws),
+    ("GET", "/devices/{id}/live/hls/{file}", video.video_hls),
     ("GET", "/timeline", timeline.timeline),
     ("GET", "/timeline/{event_id}", timeline.timeline_event),
     ("GET", "/media/thumb/{path:.*}", media.media_thumbnail),
@@ -82,7 +82,7 @@ ROUTES: tuple[tuple[str, str, Handler], ...] = (
     ("GET", "/pets", pets.list_pets),
     ("GET", "/pets/{id}", pets.pet_detail),
     ("GET", "/pets/{id}/photo", pets.pet_photo),
-    ("GET", "/ws", live.live),
+    ("GET", "/ws", updates.updates),
 )
 
 
@@ -95,7 +95,7 @@ def create_app_api(app_auth: AppAuth, registry: DeviceRegistry, *,
                    ha_publisher: HAPublisher | None = None,
                    hub: Any = None,
                    go2rtc: Go2rtc | None = None,
-                   live_sessions: LiveSessions | None = None) -> web.Application:
+                   video_sessions: VideoSessions | None = None) -> web.Application:
     """Build the app API application.
 
     Everything after `registry` is optional so a test can build one without
@@ -115,12 +115,12 @@ def create_app_api(app_auth: AppAuth, registry: DeviceRegistry, *,
     app[COMMAND_SINK] = command_sink
     app[HA_PUBLISHER] = ha_publisher
     app[HUB] = hub
-    app[LIVE] = LiveFeed(app_auth, registry, hub, event_store=event_store,
-                         pet_registry=pet_registry, media_root=media_root)
-    app.on_shutdown.append(_close_live_sockets)
+    app[UPDATE_FEED] = UpdateFeed(app_auth, registry, hub, event_store=event_store,
+                                  pet_registry=pet_registry, media_root=media_root)
+    app.on_shutdown.append(_close_update_sockets)
     app[GO2RTC] = go2rtc
-    app[VIDEO_SESSIONS] = live_sessions if live_sessions is not None else LiveSessions()
-    # Ends every live relay as shutdown begins, so none holds the bounded drain.
+    app[VIDEO_SESSIONS] = video_sessions if video_sessions is not None else VideoSessions()
+    # Ends every live-video relay as shutdown begins, so none holds the bounded drain.
     app.on_shutdown.append(app[VIDEO_SESSIONS].close_all)
     for method, path, handler in ROUTES:
         # `add_get` would also register HEAD; the OpenAPI file lists GET only.
@@ -128,11 +128,11 @@ def create_app_api(app_auth: AppAuth, registry: DeviceRegistry, *,
     return app
 
 
-async def _close_live_sockets(app: web.Application) -> None:
+async def _close_update_sockets(app: web.Application) -> None:
     """Close every WebSocket (1001) BEFORE the runner's bounded drain starts.
 
     An open socket is a request that never finishes on its own, so left to the
     drain it would hold shutdown for the whole `shutdown_timeout` and then be
     cut without a close frame.
     """
-    await app[LIVE].shutdown()
+    await app[UPDATE_FEED].shutdown()

@@ -1,6 +1,6 @@
 """The app's live updates: ONE EventHub subscription, fanned out to every open socket.
 
-`GET /app/v1/ws` (`handlers/live.py`) attaches a `Subscriber` here. What it is
+`GET /app/v1/ws` (`handlers/updates.py`) attaches a `Subscriber` here. What it is
 sent is built once per change and shared by every phone, so ten phones cost
 what one does:
 
@@ -117,7 +117,7 @@ class Subscriber:
         return item is _CLOSE
 
 
-class LiveFeed:
+class UpdateFeed:
     """The shared half of `/app/v1/ws`: what changed, worked out once."""
 
     def __init__(self, auth: AppAuth, registry: DeviceRegistry, hub: Any = None, *,
@@ -197,9 +197,9 @@ class LiveFeed:
         # Every card already there is known, not new: the app fetched those
         # with `GET /timeline`, and a burst of them on connect is noise.
         await self._scan_timeline({d.petkit_id for d in self._registry.all()}, announce=False)
-        self._tasks = [asyncio.create_task(self._run(), name="app-live-flush")]
+        self._tasks = [asyncio.create_task(self._run(), name="app-updates-flush")]
         if self._hub_queue is not None:
-            self._tasks.append(asyncio.create_task(self._pump(), name="app-live-hub"))
+            self._tasks.append(asyncio.create_task(self._pump(), name="app-updates-hub"))
 
     async def _stop(self) -> None:
         tasks, self._tasks = self._tasks, []
