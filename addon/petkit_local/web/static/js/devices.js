@@ -413,7 +413,7 @@ async function loadDeferred(deviceId) {
         ' ' +
         dt.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
       return `<div class="row" style="align-items:center;gap:8px;margin:4px 0">
-      <span style="flex:1">${esc(when)} — H1: ${d.a1}, H2: ${d.a2}</span>
+      <span style="flex:1">${esc(when)} — H1: ${esc(d.a1)}, H2: ${esc(d.a2)}</span>
       <button class="act mini-ex danger" data-action="delete-deferred" data-id="${esc(String(deviceId))}" data-fid="${esc(d.id)}">Delete</button>
     </div>`;
     })

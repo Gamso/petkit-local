@@ -356,6 +356,20 @@ async def test_esc_escapes_every_markup_breaking_character():
         await c.close()
 
 
+def test_a_deferred_feed_is_never_rendered_as_markup():
+    """Every field of a stored one-off feed goes through esc() on its way into
+    innerHTML. The amounts did not, and a feeder's `feed` post could put a
+    `deferred` list of its own in the registry (see mqtt/bridge.py) — so a host
+    on the LAN could run script in the panel, which under Ingress is Home
+    Assistant's own origin."""
+    js = _panel_js()
+    start = js.index("async function loadDeferred")
+    body = js[start:js.index("onAction('add-deferred'", start)]
+    assert "${esc(d.a1)}" in body and "${esc(d.a2)}" in body
+    raw = re.findall(r"\$\{d\.[^}]*\}", body)
+    assert raw == [], f"interpolated without esc(): {raw}"
+
+
 async def test_info_and_devices():
     reg = DeviceRegistry()
     reg.get_or_create(petkit_id=1, device_type="t5", serial_number="SN")
