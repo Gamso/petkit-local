@@ -676,6 +676,10 @@ def apply_feed_plan_state(device: Device, now: float | None = None) -> None:
     `re` is PetKit's weekday numbering, SUNDAY = 1 (`codes.py`), and "today" is
     the LOCAL day, the one `dev_feed_get` builds `latest[]` for.
 
+    A paused plan (`Device.feed_schedule_active`) intends nothing: the device
+    is handed a plan with no meals in it, so the stored meals are not today's
+    intention while the pause lasts.
+
     The dispensed buckets are zeroed here if no feed has set them, so the four
     sensors that read them say 0 before the first meal instead of nothing.
     """
@@ -683,6 +687,8 @@ def apply_feed_plan_state(device: Device, now: float | None = None) -> None:
         return
     feed = device.config.get("feed_schedule")
     groups = feed.get("schedule") if isinstance(feed, dict) else None
+    if not device.feed_schedule_active:
+        groups = None
     lt = time.localtime(time.time() if now is None else now)
     today = str((lt.tm_wday + 2) % 7 or 7)
     planned = {"1": 0.0, "2": 0.0}

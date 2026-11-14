@@ -170,6 +170,18 @@ def test_a_feeder_with_no_schedule_plans_nothing_and_reads_zero_not_unknown():
         assert _planned(dev) == (0, 0)
 
 
+def test_a_paused_plan_plans_nothing_and_resumes_with_its_meals():
+    """While the plan is paused the device is served no meals, so nothing is
+    planned; the stored meals come back the moment it is resumed."""
+    dev = _feeder()
+    dev.config["feed_schedule"] = {"schedule": [
+        {"re": "4", "it": [{"id": "n_43200", "t": 43200, "a1": 1, "a2": 2}]}]}
+    dev.config["local"] = {"feedScheduleActive": False}
+    assert _planned(dev) == (0, 0)
+    dev.config["local"]["feedScheduleActive"] = True
+    assert _planned(dev) == (1, 2)
+
+
 def test_one_off_feeds_are_not_in_the_plan():
     """A deferred feed leaves the store once it has fired, so counting it
     would shrink the day's plan at the moment it was carried out."""
