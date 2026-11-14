@@ -191,7 +191,7 @@ async def test_the_panel_shows_them_unset_and_queues_a_write_for_the_heartbeat()
             assert ents[key]["value"] is None, f"{key} must read unknown, not 0"
 
         r = await c.post("/api/devices/1/command",
-                         data=json.dumps({"entity": "camera_inward", "value": "ON"}))
+                         json={"entity": "camera_inward", "value": "ON"})
         out = await r.json()
         assert r.status == 200 and out["delivered"] == "heartbeat-queue"
         queued = reg.get(1).command_queue[-1]
