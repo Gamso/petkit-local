@@ -36,6 +36,29 @@ real certificate in front of the ordinary panel port instead. (Confirmed on
 hardware: it works through Ingress when Home Assistant itself is served over a
 valid certificate.)
 
+### The one surface meant for the internet
+
+| Surface | How it is protected |
+|---|---|
+| Phone app API (container `8097`, unmapped by default) | Its own password, set only from the panel, stored as a salted `scrypt` hash. Every route answers 401 until one is set; afterwards every route but `/app/v1/info` and `/app/v1/openapi.yaml` needs a per-phone bearer token, of which only a SHA-256 hash is stored. Tokens end on logout, revocation from the panel, any password change, or 90 days unused. Failed logins lock the client address out for exponentially longer (up to 15 min), with a global ceiling; `X-Forwarded-For` / `CF-Connecting-IP` count only from proxies the owner listed as trusted. Only `/app/v1/...` is routed there — no panel route, no device route, no admin feature (patchers, firmware, capture, proxy settings, BLE). |
+
+What it does not do, so you can judge it:
+
+- **It does not terminate TLS.** It speaks plain HTTP and expects your reverse
+  proxy or tunnel to provide HTTPS. Reached over plain HTTP from outside, the
+  password and the tokens travel in the clear.
+- **One password, no accounts and no second factor.** Whoever has the password
+  sees everything the app sees. Choose a long one; the lockout slows guessing,
+  it does not make a weak password strong.
+- **The lockout is in memory**, so a restart forgets it, and it is per address:
+  an attacker with many addresses gets each its own allowance, until the global
+  ceiling (100 failures in 10 minutes) makes every login wait.
+- **The read-only API still reveals a lot**: device state, the visit history,
+  photos and video from inside your home. Treat the password accordingly.
+- **The panel remains the recovery path and is not authenticated.** Anything
+  that can reach the panel can reset the app password. That is why the panel
+  must never be exposed the way the app API is.
+
 ### Things that are deliberately permissive
 
 - **`mqtt_strict_auth` defaults to `false`**, so the device-facing MQTT broker

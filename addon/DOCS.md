@@ -70,6 +70,7 @@ effect immediately, and persist to `/data/settings_overrides.json`.
 | `1883` | *(unmapped)* | Plain MQTT listener, internal to this app. Map it only if a device connects in plaintext. |
 | `9000` | `9000` | Media upload bucket the device PUTs photos and videos to. |
 | `8099` | *(unmapped)* | The web panel over plain HTTP, **no authentication**. Ingress proxies this internally. |
+| `8097` | *(unmapped)* | The phone app API (`/app/v1` only). **Authenticated by its own password**, and closed until one is set. Map it for your reverse proxy or tunnel — see [The phone app](#the-phone-app). |
 | `8554` | *(unmapped)* | Camera RTSP from the bundled go2rtc. Home Assistant reaches it over the internal network, so map it only to watch the stream from elsewhere on the LAN — and note 8554 clashes with the go2rtc app. |
 | `8555` tcp + udp | *(unmapped)* | WebRTC media from the bundled go2rtc. Unmapped, WebRTC is off and go2rtc does not listen on it. Map both to any free host port to turn it on (8555 itself is taken on a host that runs Frigate). No authentication of its own: a viewer needs the signalling first, which only the panel and the go2rtc API hand out. |
 | `1984` | *(unmapped)* | go2rtc's HTTP API. Served on this port only when it is mapped **and** `go2rtc_api_password` is set; otherwise it stays on loopback inside the container whatever is mapped. Basic auth over plain HTTP. |
@@ -390,6 +391,85 @@ models and does not support ESP32 feeders such as the D4S Gemini.
 
 Chrome or Edge only, on desktop or Android. Firefox, Safari and iOS have no Web
 Bluetooth at all.
+
+## The phone app
+
+A separate app can show your devices, the timeline, photos and clips, and your
+pets from outside your home network. It talks to petkit-local through the **app
+API**, a read-only, versioned JSON API on its own port, `8097`. Nothing of the
+panel and nothing of the device API is reachable on that port, and the app API
+is reachable on neither of theirs.
+
+Unlike the panel, the app API authenticates every request itself — it is meant
+to be reached from the internet, through your own reverse proxy or tunnel. With
+no password set it refuses every request, so mapping the port changes nothing
+until you choose one.
+
+### Setting it up
+
+1. **Set a password** in the panel, **Setup → Phone app access** (at least 8
+   characters). The panel is the only place to set it, and the way back in if
+   it is forgotten: setting it again there never asks for the old one.
+2. **Map port 8097.** Under Home Assistant, in the app's **Network** settings,
+   give `8097/tcp` a host port. Standalone, publish it in `docker-compose.yml`
+   (there is a commented line; bind it to `127.0.0.1` if your reverse proxy runs
+   on the same machine), or move it with `--app-port`.
+3. **Point your reverse proxy or tunnel at that port, on a host of its own** —
+   for example `petkit.example.org` → `http://<this host>:8097`. Serve it over
+   HTTPS; the app sends its password and token in every login and request.
+4. **Do not put forward authentication on that host** (Authelia, Authentik,
+   Cloudflare Access and the like). They work by browser redirects and cookies,
+   which a native app cannot follow, and petkit-local is already doing the
+   authenticating.
+5. Sign in from the app with the password. Each phone gets its own session,
+   listed under **Phone app access**, where you can sign one out or all of
+   them.
+
+**Never expose the panel (8099) or the device API (80) the same way.** The
+panel has no login of its own and can flash firmware; the device API cannot
+have one, because the firmware has no way to authenticate. Only `8097` is
+built for the internet.
+
+### Sessions and the password
+
+- A session ends when the phone signs out, when you sign it out in the panel,
+  when the password changes, or after **90 days without use** — every request
+  extends it, so a phone in daily use never has to sign in again.
+- Setting, resetting or removing the password in the panel signs out **every**
+  phone. Removing it closes the app API again.
+- The app can change the password too, but only by sending the current one as
+  well — a stolen phone's session is not enough to lock you out. That signs out
+  every other phone and keeps the one that made the change.
+- Only a hash of the password and of each session token is stored, in
+  `/data/app_api.json`; neither is ever an add-on option or written to the log.
+
+### Wrong passwords and trusted proxies
+
+Each wrong password locks the address it came from out for twice as long as
+the last (1 s, 2 s, 4 s … up to 15 minutes). Behind a reverse proxy every
+request comes from the proxy, so all phones would share one allowance — set
+**Trusted reverse proxies** on the same card to the address (or CIDR) your
+proxy connects from. Only then are `X-Forwarded-For` and `CF-Connecting-IP`
+believed; from anyone else they are ignored, because anyone can send them.
+
+- The address your proxy connects from is what petkit-local sees, not its
+  public one: the Docker or LAN address of the reverse-proxy container or host.
+  Under Home Assistant OS, a reverse-proxy add-on usually connects from
+  `172.30.32.0/23`.
+- `CF-Connecting-IP` is preferred when present. Trust it only if every request
+  really comes through Cloudflare (a Cloudflare Tunnel, or a firewall that
+  admits nothing else); otherwise use `X-Forwarded-For` alone, which your proxy
+  appends to.
+- Leave the list empty if nothing sits in front of port 8097.
+
+### For app developers
+
+The API is described by an OpenAPI 3.1 file served at
+`/app/v1/openapi.yaml` (public once a password is set), which a Kotlin client
+can be generated from. Media URLs in responses are paths; fetch them with the
+same `Authorization: Bearer` header as everything else — there are no signed
+URLs to leak into logs. Adding a field is a compatible change; anything else
+moves to `/app/v2`.
 
 ## T4 litter-level calibration
 
