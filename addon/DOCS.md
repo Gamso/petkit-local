@@ -395,8 +395,9 @@ Bluetooth at all.
 ## The phone app
 
 A separate app can show your devices, the timeline, photos and clips, and your
-pets from outside your home network. It talks to petkit-local through the **app
-API**, a read-only, versioned JSON API on its own port, `8097`. Nothing of the
+pets from outside your home network, run their buttons, change their settings and
+edit a feeder's plan. It talks to petkit-local through the **app API**, a
+versioned JSON API on its own port, `8097`. Nothing of the
 panel and nothing of the device API is reachable on that port, and the app API
 is reachable on neither of theirs.
 
@@ -421,6 +422,9 @@ until you choose one.
    Cloudflare Access and the like). They work by browser redirects and cookies,
    which a native app cannot follow, and petkit-local is already doing the
    authenticating.
+   The proxy must also pass **WebSockets** through for live updates
+   (`/app/v1/ws`): Cloudflare does by default; nginx needs the usual
+   `Upgrade`/`Connection` headers on that location.
 5. Sign in from the app with the password. Each phone gets its own session,
    listed under **Phone app access**, where you can sign one out or all of
    them.
@@ -462,6 +466,35 @@ believed; from anyone else they are ignored, because anyone can send them.
   appends to.
 - Leave the list empty if nothing sits in front of port 8097.
 
+### What the app can change
+
+Exactly what Home Assistant can, through the same code, so a value is checked
+and sent the same way whichever of the two changed it:
+
+- **Buttons** — feed now, clean, deodorize, a W7H's deep clean and the rest:
+  only the ones Home Assistant shows for that model. The ones the panel shows
+  in red (dump the litter, start maintenance, reset a filter's date, drain a
+  fountain, deep clean, flip the camera) cannot be undone, and the API refuses
+  them unless the app confirms explicitly.
+- **Settings** — the switches, numbers, lists and times Home Assistant can
+  set, within the same bounds.
+- **A feeder's plan** — its meals, and pausing it: paused, the meals are kept
+  and the feeder is served none until it is resumed. And **one-off feeds** at a
+  date and time.
+
+A change reaches the device at once if it is connected over MQTT, otherwise on
+its next poll; the app is told which. Each one is in the panel's log, marked
+`app:`, and Home Assistant shows it straight away.
+
+### Live updates
+
+While the app is open it holds one WebSocket, `/app/v1/ws`, authenticated by
+the same token. It is sent every device once, then only what changes: the
+values that moved (at most once a second per device), a device going online or
+offline, a new or updated timeline card. Signing the phone out — from the app or
+from the panel — closes its socket within a couple of seconds. A phone that
+stops reading is disconnected rather than queued for, and simply reconnects.
+
 ### For app developers
 
 The API is described by an OpenAPI 3.1 file served at
@@ -470,6 +503,15 @@ can be generated from. Media URLs in responses are paths; fetch them with the
 same `Authorization: Bearer` header as everything else — there are no signed
 URLs to leak into logs. Adding a field is a compatible change; anything else
 moves to `/app/v2`.
+
+The WebSocket's messages are in the same file (`LiveMessage` and the `Live*`
+schemas): a `hello` with every device as `DeviceDetail`, then `state` (only the
+entities that changed), `device` (a summary, when it went online or offline),
+`device_removed` and `timeline` (a card to insert or replace by `id`, with the
+ids it `replaces`). Open the socket before fetching the timeline and merge by
+`id`. It closes with `4001` when the session ends (sign in again), `4008` when
+the app read too slowly (reconnect) and `1001` on shutdown. Writes answer
+`delivered`: `mqtt`, `queued` or `local`.
 
 ## T4 litter-level calibration
 

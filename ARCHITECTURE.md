@@ -43,6 +43,7 @@ petkit_local/
 ├── ha/            categories.py device category -> entities · discovery.py EntityDef -> payload
 │                  publisher.py (the one HA-broker connection, outbound)
 │                  command_router.py + commands.py (inbound: HA write -> device command)
+│                  schedules.py (what a valid schedule is; the panel's and the app's writes)
 │                  learn.py (proxy mode: settings the real cloud tells a device)
 │                  timezone_sync.py (re-pushes a locale-derived UTC offset across DST)
 │                  state_doc.py (the document every value_path is read from, for HA's readers)
@@ -59,6 +60,7 @@ petkit_local/
 │                  server.py the application + ROUTES · middleware.py the access policy
 │                  auth.py password (scrypt), hashed session tokens, trusted proxies
 │                  throttle.py failed-login lockout, client address · serializers.py every shape
+│                  live.py the WebSocket feed (one hub subscription, diffed, fanned out)
 │                  handlers/ · openapi.yaml the contract, tested against ROUTES
 ├── patchers/      on-device patches: cacert · mqtt · cloud · camera · ssh
 │                  firmware (ESP32: a whole image rebuilt, not a file on a device)
@@ -74,7 +76,10 @@ question and is answered in `ha/categories.py`. Only `main/` imports `web` at ru
 `TYPE_CHECKING`-only import, so nothing outside `main` depends on the panel existing.
 `app_api` imports nothing from `web` or `http` (a test holds it): it reads the same stores and
 helpers the panel reads — `events/`, `ai/pets.py`, `ha/categories.py`, `ha/state_doc.py`,
-`media/serving.py` — so the two answer alike without one depending on the other. The panel's
+`media/serving.py` — and writes through the ones Home Assistant writes through
+(`ha/commands.py`, `ha/command_router.py::deliver_command`, `ha/schedules.py`), so the two answer
+alike without one depending on the other. The `EventHub` it is fed from is handed in by `main/`
+and typed `Any` there. The panel's
 Phone app access card is the one place `web` reaches into `app_api`, to administer its account.
 
 ## The app API
@@ -87,6 +92,9 @@ phone --HTTPS--> your tunnel / reverse proxy --HTTP--> app_api/server.py (port 8
                                                              @credentials      -> /auth/login (throttled)
                                                              otherwise         -> Bearer session, else 401
                                                              └─> handlers/ -> serializers.py
+writes:  handlers/controls.py, feeding.py -> ha/commands.py, ha/schedules.py
+                                          -> ha/command_router.deliver_command (MQTT, else queue)
+/ws:     EventHub --(device id marked dirty)--> live.LiveFeed: re-read, diff, fan out per socket
 ```
 
 A separate application on a separate port, not a sub-app of the panel: a reverse proxy pointed at
@@ -94,6 +102,11 @@ it can reach `/app/v1` and nothing else, whatever a path is spelled like. The JS
 built field by field in `serializers.py`, never the panel's internal dicts, so the panel can change
 without breaking a released app; `openapi.yaml` describes exactly those shapes and exactly the
 routes in `server.ROUTES`.
+
+The WebSocket never trusts the hub's events as state — they are log lines — only as a hint of
+WHICH device to re-read; what a phone is sent is the diff of the serialized device against what was
+last sent, at most once per second per device, plus a 30-second sweep for the changes nothing
+narrates (the offline watchdog). One `LiveFeed` serves every socket; it runs only while one is open.
 
 ## The two transports
 
