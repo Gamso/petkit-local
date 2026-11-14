@@ -877,10 +877,20 @@ class EventStore:
         owner means by "today". Counting from UTC midnight instead credits a
         00:30 visit on a UTC+2 install to the previous day, and the sensor
         reads low every morning until the offset has passed.
+
+        Counts the VISIT-SUMMARY event types, as `device_visit_count_today`
+        does and for its reason: one visit stores several rows under the
+        toilet kind, and any of them that names the pet (a `pet_in` or a code
+        "9" carrying an identity, or one `bind_pet_ref` attributed afterwards)
+        would be counted as a visit of its own and could be read as the last
+        one. The types are asked for every model at once, because a pet is not
+        tied to one box; the kind stays in the filter because a bare code is
+        only meaningful within its category.
         """
         now = now if now is not None else time.time()
         day_start = local_day_start(now)
-        visit = (Event.pet_id == pet_id, Event.event_kind == codes.KIND_TOILET)
+        visit = (Event.pet_id == pet_id, Event.event_kind == codes.KIND_TOILET,
+                 Event.event_type.in_(codes.visit_summary_event_types(None)))
 
         async with self._read() as session:
             latest_row = await session.scalar(
