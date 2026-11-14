@@ -45,7 +45,7 @@ PetKit device ──HTTP───► petkit-local ──MQTT discovery──► 
 | `offline_timeout` | `180` | Seconds without contact before a device is shown unavailable. |
 | `mqtt_tls` | `true` | Add a TLS listener to the device-facing broker (self-signed, generated on first start). |
 | `mqtt_tls_port` | `443` | Port for that listener. Change this and the matching port mapping together if your device dials a different one. |
-| `mqtt_strict_auth` | `false` | Enforce the Aliyun HMAC signature. Off by default so a signature nuance cannot lock a device out. |
+| `mqtt_strict_auth` | `false` | Enforce the Aliyun HMAC signature, and refuse any client that is not a known device. Off by default so a signature nuance cannot lock a device out. |
 | `esp32_http_only` | `true` | Keep the T3, T4 and D4 on the HTTP heartbeat. They cannot use this broker unless reflashed, and need one DNS record for this — see *Networking*. Turn it off only for a reflashed device whose own broker name is pointed here. |
 
 Fresh Element Gemini D4S firmware 1.198 was tested with the default
