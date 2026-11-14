@@ -19,6 +19,7 @@ from petkit_local.devices import defaults
 from petkit_local.devices.base import TIMEZONE_PUSHED_KEY, Device
 from petkit_local.devices.state_parsers import apply_consumable_state
 from petkit_local.events import codes
+from petkit_local.events.normalize import apply_feed_plan_state
 from petkit_local.ha.categories import get_entities_for_device
 from petkit_local.ha.commands import (
     ALL_ACTIONS, LOCAL_DEFAULTS, Refused, handle_ha_command, multi_config_texts,
@@ -76,6 +77,7 @@ def _state_doc(d: Device) -> dict[str, Any]:
     has no device input to trigger it.
     """
     apply_consumable_state(d)
+    apply_feed_plan_state(d)
     settings = d.config.get("settings") or {}
     enabled = d.enabled_capabilities()
     return {

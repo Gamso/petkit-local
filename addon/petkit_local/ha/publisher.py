@@ -35,7 +35,7 @@ from petkit_local.ha.entities.ble import get_ble_entities
 from petkit_local.ha.entities.pet import PET_SENSORS
 from petkit_local.ha.discovery import STATUS_TOPIC, build_discovery_payload, discovery_topic
 from petkit_local.devices.state_parsers import apply_consumable_state
-from petkit_local.events.normalize import MQTT_ENVELOPE_KEYS
+from petkit_local.events.normalize import MQTT_ENVELOPE_KEYS, apply_feed_plan_state
 from petkit_local.ha.commands import LOCAL_DEFAULTS, multi_config_texts
 from petkit_local.utils.jsonio import read_bytes
 
@@ -572,6 +572,9 @@ class HAPublisher:
     until the next contact even though the date is sitting in config.
         """
         apply_consumable_state(device)
+        # Today's planned portions, for the same reason: they follow the
+        # weekday and the stored schedule, and no report announces either.
+        apply_feed_plan_state(device)
         state = device.state or {}
         # Derived here for the same reason the consumable countdown is: it
         # depends on things no state report carries — the device's IP, whether it
