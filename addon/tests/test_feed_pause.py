@@ -217,7 +217,7 @@ async def test_the_panel_toggles_the_same_switch_and_saves_without_resuming():
                             "capture_dir": "/nope"},
                            bridge)
     async with TestClient(TestServer(app)) as c:
-        r = await c.post("/api/devices/1/command", data=json.dumps(
+        r = await c.post("/api/devices/1/command", json=(
             {"entity": FEED_SCHEDULE_SWITCH, "value": "OFF"}))
         assert r.status == 200 and (await r.json())["ok"]
         assert d.feed_schedule_active is False
@@ -231,7 +231,7 @@ async def test_the_panel_toggles_the_same_switch_and_saves_without_resuming():
         assert target["active"] is False
 
         # Saving the plan from the editor stores it and still withholds it.
-        r = await c.post("/api/devices/1/schedule", data=json.dumps(
+        r = await c.post("/api/devices/1/schedule", json=(
             {"target": "feed_schedule", "value": {"schedule": [
                 {"re": "1,7", "it": [{"id": "n_3600", "t": 3600, "a1": 1, "a2": 1}]}]}}))
         assert r.status == 200
