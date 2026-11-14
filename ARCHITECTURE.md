@@ -23,6 +23,7 @@ petkit_local/
 ├── config.py      every tunable, from /data/options.json + Supervisor + CLI + panel
 ├── http/          the cloud a device believes it is talking to
 │   ├── server.py      route table, and the catch-all that must stay last
+│   ├── appkeys.py     the app[...] / request[...] contract (device API + bucket)
 │   ├── handlers/      one module per endpoint
 │   ├── middleware/    device identity, proxy forwarding, request logging
 │   ├── redact/        what a cloud reply is allowed to contain
