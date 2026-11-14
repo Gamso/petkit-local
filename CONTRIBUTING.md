@@ -62,8 +62,8 @@ ruff check petkit_local/ tests/
 which are multi-megabyte and not in the repo. Populate `addon/tests/firmware/`
 first; the test module says what it expects. Without the flag those tests skip.
 
-The suite needs no device, no broker and no network. CI runs it on Python 3.11 and
-3.12, imports every module so a runtime-only one cannot break unnoticed, and builds
+The suite needs no device, no broker and no network. CI runs it on Python 3.14, the
+version the image ships, imports every module so a runtime-only one cannot break unnoticed, and builds
 the container image for amd64, arm64 and armv7, because a passing test suite says
 nothing about whether the image builds.
 
