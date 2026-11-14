@@ -212,7 +212,8 @@ async def handle_event_report(request: web.Request) -> web.Response:
     # Only for a new row: a retry of a stored event would count the same visit
     # or meal again.
     if is_new:
-        apply_derived_state(device, row["event_type"], content or {})
+        apply_derived_state(device, row["event_type"], content or {},
+                            event_time=form.get("timestamp"))
     registry.mark_dirty()
 
     hub = request.app.get("event_hub")

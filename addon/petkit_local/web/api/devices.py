@@ -334,7 +334,10 @@ async def api_send_command(request: web.Request) -> web.Response:
             return web.json_response(
                 {"error": f"{action} is not an action this device has"}, status=400)
         if ent is None:
-            suffix, envelope = fn(d)
+            try:
+                suffix, envelope = fn(d)
+            except Refused as exc:
+                return web.json_response({"error": str(exc)}, status=400)
         else:
             try:
                 result = handle_ha_command(d, ent, "")

@@ -472,6 +472,22 @@ async def test_command_sender_queues_without_bridge():
         await c.close()
 
 
+@pytest.mark.parametrize("model", ["t4", "t5"])
+async def test_finish_litter_calibration_refusal_is_a_client_error(model):
+    registry = DeviceRegistry()
+    device = registry.get_or_create(petkit_id=1, device_type=model)
+    app, _, _ = _panel(reg=registry)
+    client = await _mk_client(app)
+    try:
+        response = await client.post("/api/devices/1/command",
+                                     json={"action": "finish_litter_calibration"})
+        assert response.status == 400
+        assert "error" in await response.json()
+        assert not device.command_queue
+    finally:
+        await client.close()
+
+
 async def test_t6_bag_reset_is_destructive_and_queues_native_service():
     reg = DeviceRegistry()
     reg.get_or_create(petkit_id=1, device_type="t6", serial_number="SN6")

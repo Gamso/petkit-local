@@ -168,6 +168,16 @@ def _litter_end(code: int) -> Command:
     return ("end", _envelope("thing.service.end", {"end_action": code}))
 
 
+def _finish_t4_litter_calibration(device: Device) -> Command:
+    """Confirm the current MAX fill after the owner has double-pressed OK."""
+    if device.device_type.lower() != "t4":
+        raise Refused("Litter level calibration is verified only for T4")
+    if (not device.online or device.state.get("workingState") != -1
+            or device.state.get("petInTime") != 0):
+        raise Refused("Wait until the device is online, idle and no cat is inside")
+    return _litter_start(codes.T4_LITTER_CALIBRATION_ACTION)
+
+
 #: One button press is five internal steps. A single step (70 encoder counts)
 #: is nearly imperceptible at 480px, so the panel/HA press repeats the helper
 #: rather than exposing a second "big step" button. The flip is always one shot.
@@ -270,6 +280,7 @@ SHARED_ACTIONS = {
 }
 
 LITTER_ACTIONS = {
+    "finish_litter_calibration": _finish_t4_litter_calibration,
     # reference-confirmed (localkit PetkitPuraMax dispatchSync codes)
     "cleaning_start": lambda device: _litter_start(0),
     "dump_litter": lambda device: _litter_start(1),

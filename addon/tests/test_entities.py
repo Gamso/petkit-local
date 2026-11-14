@@ -74,7 +74,8 @@ EXPECTED_ENTITY_COUNTS = {
     # do-not-disturb, vomit detection, WiFi status light), +1 for Drain, +3 for
     # the three do-not-disturb windows. The seven are cleared from HA, not just
     # left unannounced (`CategorySpec.model_retired`).
-    "t3": 47, "t4": 47, "t5": 83, "t6": 99, "t7": 83,
+    # t4 +1: Finish Litter Calibration, the only model it is verified on.
+    "t3": 47, "t4": 48, "t5": 83, "t6": 99, "t7": 83,
     # d4s +4 on 2026-10-08: a live D4S feeds with `amount1`/`amount2`, so it
     # gets the dual-hopper feed buttons and portion numbers (upstream PR #43).
     # d4 -6 on 2026-10-24: six entities no D4 report fills; retired from HA.

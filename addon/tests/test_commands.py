@@ -391,7 +391,11 @@ def test_a_command_id_stays_within_signed_int32():
             # T6-only, and the envelope is a run_cmd string rather than an `id`
             # command; those actions are covered by the PTZ tests below.
             continue
-        result = make(device)
+        target = device
+        if name == "finish_litter_calibration":
+            target = Device(device_type="t4", petkit_id=2, online=True)
+            target.state = {"workingState": -1, "petInTime": 0}
+        result = make(target)
         if result is None:
             continue
         _suffix, envelope = result
