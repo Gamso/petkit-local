@@ -391,6 +391,19 @@ def _extract_ip(body: dict[str, Any], state: dict[str, Any]) -> None:
         state["ip"] = ip
 
 
+def reported_ip(body: Any) -> str:
+    """The LAN address this one report carries, or `""` if it carries none.
+
+    What `_extract_ip` would store, without storing it: `devices/addresses.py`
+    needs to know what a report CLAIMED, and `device.state["ip"]` cannot say —
+    it keeps the last value long after reports stop carrying one.
+    """
+    found: dict[str, Any] = {}
+    if isinstance(body, dict):
+        _extract_ip(body, found)
+    return found.get("ip", "")
+
+
 def _extract_wifi_rssi(body: dict[str, Any], state: dict[str, Any]) -> None:
     """Pull signal strength out of `wifi`, which spells it `rsq` or `rssi`.
 

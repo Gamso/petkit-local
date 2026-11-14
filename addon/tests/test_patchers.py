@@ -234,6 +234,32 @@ def test_talk_patcher_is_registered():
     assert ALL_PATCHERS["talk"]["files"] == ["pktalk_sink.sh"]
 
 
+def test_the_talk_sink_loads_pktool_on_the_axera_models_too():
+    """The YumShare Dual-Hopper 2 (Axera) keeps pktool's libssl in /soc/lib; the
+    stock init exports /soc/usr/lib:/soc/lib:/app/bin:/app/lib:/alg. Without
+    those the sink's pktool died at load and no talk audio ever played."""
+    from petkit_local.patchers.common import TALK_SINK_SCRIPT
+
+    line = [ln for ln in TALK_SINK_SCRIPT.splitlines() if "pktool play_aac" in ln][0]
+    path = line.split("LD_LIBRARY_PATH=", 1)[1].split()[0].split(":")
+    assert path[0] == "/app/bin", "libbase.so first, as on the MIPS D4SH"
+    for d in ("/soc/usr/lib", "/soc/lib", "/alg"):
+        assert d in path, f"{d} missing: pktool cannot load on the Axera models"
+
+
+def test_the_talk_sink_never_blocks_on_opening_its_pipe():
+    """`cat > $F` blocked in open() until media read the pipe, and on the Axera
+    models pktool's exit interrupted that wait ("Interrupted system call") --
+    the script fell through and the device closed the connection unheard."""
+    from petkit_local.patchers.common import TALK_SINK_SCRIPT
+
+    lines = [ln.strip() for ln in TALK_SINK_SCRIPT.splitlines()]
+    assert "exec 3<>$F" in lines, "the pipe is opened read+write up front"
+    assert lines.index("exec 3<>$F") < next(i for i, ln in enumerate(lines) if "pktool play_aac" in ln)
+    assert "cat >&3" in lines and "cat > $F" not in lines
+    assert lines.index("cat >&3") < lines.index("exec 3>&-"), "closing fd 3 is media's EOF"
+
+
 def test_talk_sink_file_installed_in_store():
     """The sink script is a real file in the patch store (not a /tmp heredoc), so
     it must resolve to a store path and thus be deleted on removal."""

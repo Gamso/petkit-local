@@ -33,7 +33,7 @@ from petkit_local.ha.categories import get_entities_for_device, get_retired_enti
 from petkit_local.ha.command_router import CommandRouter
 from petkit_local.ha.entities.ble import get_ble_entities
 from petkit_local.ha.entities.pet import PET_SENSORS
-from petkit_local.ha.discovery import build_discovery_payload, discovery_topic
+from petkit_local.ha.discovery import STATUS_TOPIC, build_discovery_payload, discovery_topic
 from petkit_local.devices.state_parsers import apply_consumable_state
 from petkit_local.events.normalize import MQTT_ENVELOPE_KEYS, apply_feed_plan_state
 from petkit_local.ha.commands import LOCAL_DEFAULTS, multi_config_texts
@@ -65,6 +65,10 @@ def device_is_stale(device: Device, now: float, timeout: int) -> bool:
     if last_seen <= 0:
         return False
     return (now - last_seen) > timeout
+
+
+#: How long shutdown waits for the broker to take the final `offline`.
+STOP_PUBLISH_TIMEOUT_SECONDS = 3.0
 
 
 class HAPublisher:
@@ -163,11 +167,19 @@ class HAPublisher:
                     username=self._user or None,
                     password=self._password or None,
                     identifier="petkit-local",
+                    # A crash, a kill or a lost network sends no DISCONNECT, so
+                    # only the broker can say we are gone. `stop()` covers the
+                    # clean exit, where a will is by definition not published.
+                    will=aiomqtt.Will(STATUS_TOPIC, "offline", qos=1, retain=True),
                 ) as client:
                     self._client = client
                     self._connected = True
                     fails = 0
                     log.info("Connected to HA MQTT broker at %s:%d", self._host, self._port)
+
+                    # Before discovery: every entity requires this topic to
+                    # read online, and the will may have left it at offline.
+                    await self._emit(STATUS_TOPIC, "online", retain=True)
 
                     await self._publish_all_discovery()
 
@@ -190,6 +202,24 @@ class HAPublisher:
                                 "Check the ha_mqtt_host/user/pass options.",
                                 self._host, self._port, e, delay)
                 await asyncio.sleep(delay)
+
+    async def stop(self) -> None:
+        """Tell HA the add-on is going away. Call before cancelling `start()`.
+
+        A clean DISCONNECT suppresses the last will, so without this a normal
+        stop or restart left every entity looking live on retained state. Never
+        raises and never waits long: it runs during shutdown, and a broker that
+        is already gone must not hold the process open.
+        """
+        client = self._client
+        if not client or not self._connected:
+            return
+        try:
+            await asyncio.wait_for(
+                client.publish(STATUS_TOPIC, "offline", qos=1, retain=True),
+                STOP_PUBLISH_TIMEOUT_SECONDS)
+        except Exception as e:  # noqa: BLE001
+            log.warning("Could not tell HA the add-on is stopping (%s)", e)
 
     async def _publish_all_discovery(self) -> None:
         """Re-announce every known device and BLE accessory after a connect.

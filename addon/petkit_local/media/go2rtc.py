@@ -39,6 +39,8 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import ipaddress
+import json
 import logging
 import os
 import shutil
@@ -46,9 +48,13 @@ import socket
 import time
 from typing import TYPE_CHECKING, Any
 
+from urllib.parse import urlparse
+
 import aiohttp
 
+from petkit_local.media.turn import STUN_URL
 from petkit_local.patchers.camera import PROBE_PATH, main_stream_path, stream_urls
+from petkit_local.patchers.common import TALK_TCP_PORT
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from petkit_local.devices.base import Device
@@ -59,19 +65,114 @@ log = logging.getLogger(__name__)
 #: Where go2rtc listens. RTSP is the only one anything else talks to, and under
 #: the Supervisor it does not need a host port at all — Home Assistant reaches
 #: add-ons by hostname on the internal network. The API is bound to loopback
-#: because nothing outside this container has any business calling it, and
-#: WebRTC is off entirely: an RTSP source does not need it, and its UDP
-#: behaviour behind container NAT is a problem we would be buying for nothing.
+#: because nothing outside this container has any business calling it directly;
+#: the panel's `web/api/stream.py` proxies the streaming subset of it to the
+#: browser. WebRTC is off by default and never turns itself on: it is a
+#: second listener, on every interface, and somebody has to have asked for it
+#: — by publishing 8555 under the Supervisor, by `--webrtc-candidate`
+#: elsewhere, or with `go2rtc_webrtc_candidates`.
 RTSP_PORT = 8554
-API_ADDR = "127.0.0.1:1984"
+API_PORT = 1984
+API_ADDR = f"127.0.0.1:{API_PORT}"
+#: The basic-auth user when the API is published on the host (render_config).
+API_USERNAME = "petkit"
+#: What a PUBLISHED API answers, and nothing else is even registered (go2rtc's
+#: `allow_paths`): the root page the WebRTC Camera integration HEADs to check
+#: the address, the stream list this module polls, and the endpoints a viewer
+#: plays through. Left out on purpose: `/api/config` and `/api/restart`, which
+#: together rewrite this very file and re-read it — an `exec:` source of the
+#: caller's choosing, i.e. a shell in this container for whoever holds the
+#: password — plus `/api/exit`, the log and every discovery helper. Checked
+#: against go2rtc 1.9.14: with this list those answer 404, without it 200.
+API_PUBLIC_PATHS = (
+    "/", "/api", "/api/streams", "/api/ws", "/api/webrtc",
+    "/api/frame.jpeg", "/api/frame.mp4", "/api/stream.mp4", "/api/stream.mjpeg",
+    "/api/hls/playlist.m3u8", "/api/hls/init.mp4",
+    "/api/hls/segment.m4s", "/api/hls/segment.ts",
+)
+WEBRTC_PORT = 8555
+#: `host_candidate` value that asks for the container's own LAN address
+#: (`lan_ip`) instead of naming one: the macvlan / host-network install.
+AUTO_CANDIDATE = "auto"
+#: What a browser sends over WebRTC and go2rtc hands an `exec:` sink as is:
+#: raw A-law at 8 kHz. Browsers offer Opus, PCMA and PCMU; go2rtc writes the
+#: RTP payload unchanged to the command's stdin, so the sink is told which.
+BACKCHANNEL_AUDIO = "pcma/8000"
+
+
+def lan_ip(toward: str) -> str:
+    """The container's own address on the route to `toward` (a LAN device IP).
+
+    Used as the WebRTC ICE host candidate: on a macvlan / host-network install
+    this is the address the browser (same LAN) can reach WebRTC media on. We
+    probe toward a DEVICE, not a public IP, on purpose: the container's default
+    route is the docker bridge (172.x, not LAN-reachable), while a route to a
+    camera on 192.168.x.y goes out the macvlan interface and so reports the
+    macvlan source address. The connect() sends nothing — it only asks the
+    kernel which source address that route would use.
+    """
+    if not toward:
+        return ""
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        s.connect((toward, 9))
+        ip = s.getsockname()[0]
+    except OSError:
+        return ""
+    finally:
+        s.close()
+    # A bridge-NAT (172.16/12) or loopback/link-local source is not reachable
+    # from the LAN, so it is no better than nothing for a candidate.
+    return "" if ip.startswith(("172.", "127.", "169.254.")) else ip
+
+
+def is_ipv4(value: Any) -> bool:
+    """Whether `value` is a dotted IPv4 literal and nothing more.
+
+    `device.state["ip"]` is not ours: a raw state report is merged into
+    `device.state` as sent, so a device can put any string there. That string
+    ends up inside a command line (`backchannel_source`), where a space is a
+    new ffmpeg argument and an output file of the sender's choosing.
+    """
+    try:
+        return isinstance(value, str) and str(ipaddress.IPv4Address(value)) == value
+    except ValueError:
+        return False
+
+
+def backchannel_source(ip: str) -> str:
+    """The go2rtc `exec:` producer that carries WebRTC talk to a device.
+
+    go2rtc starts the command when a viewer opens a microphone track and
+    pipes the far-end audio to its stdin as raw A-law/8000. ffmpeg (in the
+    image) transcodes it to the 16 kHz mono ADTS-AAC the firmware's `media`
+    decodes and sends it to the sink the Two-Way Talk patcher installed --
+    the same path `web/api/talk.py` drives from the panel's own microphone
+    WebSocket, with the same low-latency flags: a talk is only as good as
+    its delay. go2rtc ends the command when the microphone track closes.
+    """
+    return (
+        "exec:ffmpeg -hide_banner -nostats -loglevel warning -fflags nobuffer "
+        "-flags low_delay -f alaw -ar 8000 -ac 1 -i pipe:0 "
+        "-ar 16000 -ac 1 -c:a aac -b:a 48k -rw_timeout 5000000 "
+        f"-f adts tcp://{ip}:{TALK_TCP_PORT}#backchannel=1#audio={BACKCHANNEL_AUDIO}"
+    )
 
 #: How often the supervisor reconciles. Same shape and the same reasoning as
 #: `mqtt/upstream.py`: the panel's only contract is that it mutates shared
 #: state, so this is polled rather than subscribed to.
 SUPERVISE_INTERVAL_SECONDS = 30.0
 
-#: How long a probe result is trusted. Long on purpose — see `probe_stream`.
+#: How long a POSITIVE probe result is trusted. Long on purpose — see
+#: `probe_stream`.
 PROBE_TTL_SECONDS = 600.0
+
+#: How long a NEGATIVE one is. A camera that answered "no stream" is usually
+#: one that is rebooting -- every patcher ends in a reboot -- and trusting that
+#: for ten minutes left the stream, the camera in Home Assistant and two-way
+#: talk gone for ten minutes after each patch. One connection attempt a minute
+#: is cheap; being wrong for ten minutes is not.
+PROBE_RETRY_SECONDS = 60.0
 
 #: The first bytes of an FLV file. An open port is NOT evidence of a stream, so
 #: this signature is what the probe actually requires.
@@ -165,27 +266,105 @@ async def probe_stream(ip: str, timeout: float = PROBE_TIMEOUT) -> bool:
     return head == FLV_SIGNATURE
 
 
-def render_config(streams: dict[str, str], log_path: str) -> str:
+def render_config(streams: dict[str, str], log_path: str,
+                  webrtc_candidate: str = "",
+                  backchannels: dict[str, str] | None = None,
+                  api_password: str = "", api_public: bool = False,
+                  extra_candidates: list[str] | None = None) -> str:
     """The go2rtc YAML for `streams`, as `{name: source url}`.
 
-    Hand-rendered rather than via PyYAML: it is a fixed six-line document with
-    one generated section, the values are URLs we built ourselves, and adding a
+    Hand-rendered rather than via PyYAML: it is a fixed short document with one
+    generated section, the values are URLs we built ourselves, and adding a
     serialiser dependency for it would be the larger change.
+
+    WebRTC stays off unless `webrtc_candidate` (a LAN-reachable `host` or
+    `host:port`) or an extra candidate is given: the browser needs an ICE
+    candidate it can reach. With one, go2rtc listens on WEBRTC_PORT and
+    advertises exactly that — the browser then gets sub-second WebRTC instead
+    of buffered MSE. It also asks a public STUN server (Cloudflare's) for its
+    own address from then on, which is the one thing here that leaves the LAN.
+
+    `extra_candidates` (the `go2rtc_webrtc_candidates` option) follow the LAN
+    candidate verbatim, in go2rtc's own syntax: `stun:8565` announces the
+    public address STUN reports with that port, a hostname or address does
+    the same without asking. They are what lets a browser OFF the LAN reach
+    WebRTC once the router forwards the port; the STUN `ice_servers` entry
+    alone does not, because the reflexive candidate it yields carries whatever
+    random port the router mapped for the STUN exchange. Order matters to the
+    browser (first wins), so the LAN candidate stays first.
+
+    `backchannels` names the streams whose device has the talk sink
+    (`{stream name: device ip}`); each gets a third, on-demand producer that
+    carries the viewer's microphone to the device (`backchannel_source`).
+
+    With `api_public` and a password the API listens on every interface
+    behind basic auth, for a consumer outside the container -- the WebRTC
+    Camera integration in Home Assistant. go2rtc exempts loopback from that
+    auth (`local_auth` stays off), so the panel's proxy keeps working as is.
+    Without a password the API stays on loopback whatever `api_public` says.
+    Published, it answers `API_PUBLIC_PATHS` only — see there for what that
+    keeps away from whoever holds the password.
     """
+    candidates: list[str] = []
+    if webrtc_candidate:
+        candidates.append(webrtc_candidate if ":" in webrtc_candidate
+                          else f"{webrtc_candidate}:{WEBRTC_PORT}")
+    for c in extra_candidates or []:
+        if c and c not in candidates:
+            candidates.append(c)
+    if candidates:
+        webrtc_lines = [
+            "webrtc:",
+            f"  listen: ':{WEBRTC_PORT}'",
+            "  candidates:",
+            # Quoted: the extra ones are an option's text, taken verbatim.
+            *(f"    - {json.dumps(c)}" for c in candidates),
+            # A STUN server so go2rtc also offers a reflexive candidate — its
+            # home public address. Off the LAN the browser reaches it via a
+            # Cloudflare TURN relay (see media/turn.py); on the LAN the host
+            # candidate above wins and this is simply unused. Static and
+            # unauthenticated, so nothing to rotate.
+            "  ice_servers:",
+            f"    - urls: [{STUN_URL!r}]",
+        ]
+    else:
+        webrtc_lines = ["webrtc:", "  listen: ''"]
+    if api_public and api_password:
+        api_lines = [
+            "api:",
+            f"  listen: ':{API_PORT}'",
+            f"  username: {json.dumps(API_USERNAME)}",
+            f"  password: {json.dumps(api_password)}",
+            f"  allow_paths: {json.dumps(list(API_PUBLIC_PATHS))}",
+        ]
+    else:
+        api_lines = ["api:", f"  listen: {API_ADDR!r}"]
     lines = [
         "# Generated by petkit-local. Edits are overwritten.",
-        "api:",
-        f"  listen: {API_ADDR!r}",
+        *api_lines,
         "rtsp:",
         f"  listen: ':{RTSP_PORT}'",
-        "webrtc:",
-        "  listen: ''",
+        *webrtc_lines,
         "log:",
         f"  output: {log_path!r}",
         "streams:",
     ]
     for name, source in sorted(streams.items()):
-        lines.append(f"  {name}: {source}")
+        # Two producers per stream. The device FLV carries H.264 + AAC — fine
+        # for RTSP and MSE, but WebRTC cannot carry AAC, so a WebRTC viewer
+        # would get a silent stream. The second producer runs ffmpeg (already in
+        # the image) to transcode this stream's audio to Opus, the codec WebRTC
+        # does carry. `ffmpeg:{name}` reads go2rtc's OWN stream, not the device
+        # again, so it adds no second connection to the one tserver reliably
+        # allows — and go2rtc only starts it while a consumer wants Opus.
+        lines.append(f"  {name}:")
+        lines.append(f"    - {source}")
+        lines.append(f"    - ffmpeg:{name}#audio=opus")
+        sink_ip = (backchannels or {}).get(name)
+        if sink_ip:
+            # JSON is valid YAML for a one-line string, and the exec line has
+            # spaces, colons and a `#` that YAML would otherwise read into.
+            lines.append(f"    - {json.dumps(backchannel_source(sink_ip))}")
     if not streams:
         lines.append("  {}")
     return "\n".join(lines) + "\n"
@@ -209,7 +388,9 @@ class Go2rtc:
     """
 
     def __init__(self, registry: DeviceRegistry, *, data_dir: str,
-                 on_change: Any | None = None) -> None:
+                 on_change: Any | None = None, host_candidate: str = "",
+                 api_password: str = "", api_public: bool = False,
+                 extra_candidates: list[str] | None = None) -> None:
         """
         Args:
             on_change: Awaited after the child starts or stops, so whatever
@@ -220,13 +401,24 @@ class Go2rtc:
         """
         self._registry = registry
         self._on_change = on_change
+        #: The WebRTC candidate to advertise (`config.webrtc_candidate`): the
+        #: host and its published port, or AUTO_CANDIDATE for the container's
+        #: own LAN address. Empty leaves WebRTC off.
+        self._host_candidate = host_candidate
+        self._api_password = api_password
+        self._api_public = api_public
+        #: `go2rtc_webrtc_candidates`, announced after the LAN candidate.
+        self._extra_candidates = list(extra_candidates or [])
         self._config_path = os.path.join(data_dir, "go2rtc.yaml")
         self._log_path = os.path.join(data_dir, "go2rtc.log")
         self._proc: asyncio.subprocess.Process | None = None
         self._rendered = ""
-        #: petkit_id -> (monotonic deadline, verdict). Probing costs one of the
-        #: device's connections, and tserver only reliably has one.
-        self._probes: dict[int, tuple[float, bool]] = {}
+        #: petkit_id -> (monotonic deadline, verdict, ip probed). Probing costs
+        #: one of the device's connections, and tserver only reliably has one.
+        #: The ip is part of the entry: a verdict about one address says
+        #: nothing about another, and the address seeded from `last_ip` at
+        #: startup may be stale.
+        self._probes: dict[int, tuple[float, bool, str]] = {}
 
     @property
     def running(self) -> bool:
@@ -248,6 +440,23 @@ class Go2rtc:
             if ip and device.state.get(STREAM_AVAILABLE):
                 streams[stream_name(device)] = f"http://{ip}/{main_stream_path(device)}"
         return streams
+
+    def desired_backchannels(self) -> dict[str, str]:
+        """`{stream name: device ip}` for every served camera with the talk sink.
+
+        The sink is what the Two-Way Talk patcher installs, so only a device
+        with that patcher active gets a backchannel producer: on any other the
+        exec would connect to nothing, and go2rtc would log a dead command per
+        microphone click. And only an address that is one (`is_ipv4`): this
+        value is written into a command line.
+        """
+        out = {}
+        for device in self._registry.all():
+            ip = (device.state or {}).get("ip", "")
+            if (is_ipv4(ip) and device.state.get(STREAM_AVAILABLE)
+                    and "talk" in (device.config.get("active_patchers") or [])):
+                out[stream_name(device)] = ip
+        return out
 
     def wanted(self) -> bool:
         """Whether go2rtc should be running: it exists and has a camera to serve."""
@@ -294,11 +503,12 @@ class Go2rtc:
                 device.state.pop(STREAM_AVAILABLE, None)
                 self._probes.pop(device.petkit_id, None)
                 continue
-            deadline, _ = self._probes.get(device.petkit_id, (0.0, False))
-            if deadline > now:
+            deadline, _, probed_ip = self._probes.get(device.petkit_id, (0.0, False, ""))
+            if deadline > now and probed_ip == ip:
                 continue
             available = await probe_stream(ip)
-            self._probes[device.petkit_id] = (now + PROBE_TTL_SECONDS, available)
+            ttl = PROBE_TTL_SECONDS if available else PROBE_RETRY_SECONDS
+            self._probes[device.petkit_id] = (now + ttl, available, ip)
             if available:
                 device.state[STREAM_AVAILABLE] = True
             else:
@@ -335,7 +545,25 @@ class Go2rtc:
             await self.stop()
             return
 
-        config = render_config(self.desired_streams(), self._log_path)
+        streams = self.desired_streams()
+        candidate = self._host_candidate
+        if candidate == AUTO_CANDIDATE:
+            # Our own LAN address, found by probing the route toward a camera
+            # (see lan_ip). Any device IP does — they share the LAN. Only when
+            # asked: WebRTC is a listener on every interface, and a container
+            # that happens to sit on the LAN must not open one by itself.
+            device_ip = ""
+            for url in streams.values():
+                device_ip = urlparse(url).hostname or ""
+                if device_ip:
+                    break
+            candidate = lan_ip(device_ip)
+        config = render_config(streams, self._log_path,
+                               webrtc_candidate=candidate,
+                               backchannels=self.desired_backchannels(),
+                               api_password=self._api_password,
+                               api_public=self._api_public,
+                               extra_candidates=self._extra_candidates)
         if self.running and config == self._rendered:
             return
 

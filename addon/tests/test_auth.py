@@ -468,3 +468,96 @@ def test_packet_hook_is_named_for_amqtts_event():
 
     attr = f"on_{MQTTEvents.PACKET_RECEIVED}"
     assert iscoroutinefunction(getattr(AliyunAuthPlugin, attr))
+
+
+# --- who is the internal bridge ---
+
+def _stranger(client_id="x", username="", password=""):
+    class _Session:
+        pass
+
+    s = _Session()
+    s.client_id, s.username, s.password = client_id, username, password
+    return s
+
+
+async def test_a_non_device_client_id_is_refused_when_strict():
+    """The bridge exemption used to be keyed on the id's SHAPE, so any LAN host
+    connecting as `x` was "internal": free to subscribe `#` and publish
+    commands with strict auth on."""
+    plugin, _, _ = _plugin_with_device()
+    plugin.set_strict(True)
+    assert await plugin.authenticate(session=_stranger("x")) is False
+    # Copying the bridge's client id and username is not enough either.
+    assert await plugin.authenticate(
+        session=_stranger("petkit-local-bridge", "petkit-local-bridge", "guess")) is False
+
+
+async def test_the_bridge_is_admitted_on_its_secret_even_when_strict():
+    from petkit_local.mqtt.auth import internal_credentials
+
+    plugin, dev, _ = _plugin_with_device()
+    plugin.set_strict(True)
+    dev.mqtt_connected = False
+    username, password = internal_credentials()
+    assert len(password) >= 32
+    assert await plugin.authenticate(
+        session=_stranger("petkit-local-bridge", username, password)) is True
+    assert dev.mqtt_connected is False        # it is not a device
+
+
+async def test_a_non_device_client_is_still_let_in_when_not_strict_but_reported():
+    """Fail-open is the documented default (SECURITY.md); what changes is that
+    a stranger is no longer silently filed under "internal"."""
+    from petkit_local.mqtt.auth import internal_credentials
+    from petkit_local.web.hub import EventHub
+
+    plugin, _, _ = _plugin_with_device()
+    hub = EventHub()
+    plugin.set_hub(hub)
+    assert await plugin.authenticate(session=_stranger("x")) is True
+    assert any(e["kind"] == "connect" and "x" in e["summary"] for e in hub.recent())
+
+    # The bridge itself is not reported as an attempt.
+    before = len(hub.recent())
+    assert await plugin.authenticate(
+        session=_stranger("petkit-local-bridge", *internal_credentials())) is True
+    assert len(hub.recent()) == before
+
+
+async def test_an_uppercase_signature_still_matches_under_strict():
+    """The T5 sends UPPERCASE hex; the constant-time compare must keep that."""
+    plugin, dev, client_id = _plugin_with_device()
+    plugin.set_strict(True)
+    s = _authenticated_session(plugin, dev, client_id)
+    s.password = s.password.upper()
+    assert await plugin.authenticate(session=s) is True
+    s.password = "é" + s.password[1:]          # non-ASCII must not raise
+    assert await plugin.authenticate(session=s) is False
+
+
+async def test_a_real_strict_broker_refuses_a_stranger_and_admits_the_bridge(tmp_path):
+    import socket
+
+    import aiomqtt
+    import pytest
+
+    from petkit_local.mqtt.auth import internal_credentials
+    from petkit_local.mqtt.broker import start_broker
+
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        port = sock.getsockname()[1]
+    reg = DeviceRegistry()
+    reg.get_or_create(100, "t5", serial_number="SN100")
+    broker = await start_broker(port, reg, strict_auth=True, data_dir=str(tmp_path))
+    try:
+        with pytest.raises(aiomqtt.MqttError):
+            async with aiomqtt.Client("127.0.0.1", port, identifier="x") as client:
+                await client.subscribe("#")
+        username, password = internal_credentials()
+        async with aiomqtt.Client("127.0.0.1", port, identifier="petkit-local-bridge",
+                                  username=username, password=password) as client:
+            await client.subscribe("#")
+    finally:
+        await broker.shutdown()
