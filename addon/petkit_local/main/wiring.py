@@ -19,6 +19,9 @@ from petkit_local import ptz
 from petkit_local.ai.pets import PetRegistry
 from petkit_local.app_api.auth import FILENAME as APP_AUTH_FILENAME
 from petkit_local.app_api.auth import AppAuth
+from petkit_local.app_api.notify.notifier import Notifier
+from petkit_local.app_api.notify.settings import FILENAME as NTFY_FILENAME
+from petkit_local.app_api.notify.settings import NtfyConfig
 from petkit_local.config import Config
 from petkit_local.devices.ble import BLERegistry
 from petkit_local.devices.registry import DeviceRegistry
@@ -73,6 +76,7 @@ class Services:
     cert_path: str
     ha_addon: bool
     no_mqtt: bool
+    notifier: Notifier | None = None
 
 
 async def _republish_camera_state(ha_publisher: HAPublisher | None,
@@ -278,6 +282,9 @@ def build_services(config: Config, args: argparse.Namespace) -> Services:
     # The phone app API's account: read here, served by its own listener and
     # administered from the panel, which is why both are handed this object.
     app_auth = AppAuth(f"{config.data_dir}/{APP_AUTH_FILENAME}")
+    # Push notifications to the phone: fed by the hub, configured from the panel.
+    notifier = Notifier(NtfyConfig(f"{config.data_dir}/{NTFY_FILENAME}"), registry,
+                        pet_registry=pet_registry, hub=hub)
 
     return Services(
         config=config,
@@ -293,6 +300,7 @@ def build_services(config: Config, args: argparse.Namespace) -> Services:
         upstream_mqtt=upstream_mqtt,
         go2rtc=go2rtc,
         app_auth=app_auth,
+        notifier=notifier,
         app_config=app_config,
         media_root=media_root,
         cert_path=cert_path,

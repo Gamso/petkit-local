@@ -46,7 +46,9 @@ from petkit_local.devices.registry import DeviceRegistry
 from petkit_local.events.store import EventStore
 from petkit_local.http import appkeys as device_keys
 from petkit_local.http.server import create_app
+from petkit_local.web.appkeys import NOTIFIER
 from petkit_local.web.hub import EventHub
+from petkit_local.web.panel import create_panel_app
 
 TOKEN = "tk_s3cretT0kenValueNobodyMaySee"
 
@@ -584,3 +586,60 @@ async def test_enabling_needs_a_server_and_generates_a_topic(tmp_path):
         await config.update({"token": "has space"})
     with pytest.raises(SettingsRejected):
         await config.update({"kinds": {"nope": True}})
+
+
+# --- the panel --------------------------------------------------------------------
+
+@pytest.fixture
+async def panel(tmp_path):
+    registry = DeviceRegistry()
+    app = create_panel_app(registry, None, EventHub(), {})
+    notifier = Notifier(NtfyConfig(tmp_path / FILENAME), registry)
+    app[NOTIFIER] = notifier
+    client = TestClient(TestServer(app))
+    await client.start_server()
+    yield client, notifier
+    await client.close()
+    await notifier.close()
+
+
+async def test_the_panel_never_returns_the_token(panel, ntfy):
+    client, notifier = panel
+    server = await ntfy.start()
+    r = await client.post("/api/app-notify", json={"server": server, "token": TOKEN,
+                                                   "enabled": True,
+                                                   "kinds": {KIND_OFFLINE: False}})
+    assert r.status == 200
+    text = await r.text()
+    body = json.loads(text)
+    assert TOKEN not in text and body["token_set"] is True
+    assert body["token_masked"].endswith(TOKEN[-4:])
+    assert body["enabled"] is True and body["topic"]
+    assert {k["kind"]: k["enabled"] for k in body["kinds"]}[KIND_OFFLINE] is False
+    assert TOKEN not in await (await client.get("/api/app-notify")).text()
+
+    # Leaving the token out keeps it; the test button uses it.
+    r = await client.post("/api/app-notify", json={"server": server})
+    assert (await r.json())["token_set"] is True
+    r = await client.post("/api/app-notify/test", json={})
+    assert (await r.json()) == {"ok": True, "error": None}
+    assert ntfy.requests[0]["headers"]["Authorization"] == f"Bearer {TOKEN}"
+
+    old = body["topic"]
+    r = await client.post("/api/app-notify/topic", json={})
+    assert (await r.json())["topic"] != old
+
+    r = await client.post("/api/app-notify", json={"server": "https://u:p@x"})
+    assert r.status == 400
+    r = await client.post("/api/app-notify", json={"token": ""})
+    assert (await r.json())["token_set"] is False
+
+
+async def test_the_panel_without_a_notifier_says_so():
+    app = create_panel_app(DeviceRegistry(), None, EventHub(), {})
+    client = TestClient(TestServer(app))
+    await client.start_server()
+    try:
+        assert (await client.get("/api/app-notify")).status == 503
+    finally:
+        await client.close()

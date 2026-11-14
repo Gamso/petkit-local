@@ -257,6 +257,8 @@ async def start_background(services: Services, app_instance: web.Application) ->
     # goes for the broker, which is why the panel is only started (below)
     # once the broker is up.
     panel[panel_keys.GO2RTC] = go2rtc
+    if services.notifier is not None:
+        panel[panel_keys.NOTIFIER] = services.notifier
 
     # Local S3/OSS bucket — accepts uploads from the device's cloud
     # process. Raw uploads (AES-encrypted, cryptically named) land in a
@@ -394,6 +396,10 @@ async def start_background(services: Services, app_instance: web.Application) ->
              " (HA Ingress)" if services.ha_addon else "")
 
     await _start_app_api(services, app_instance)
+    # Phone notifications through ntfy. Idle until enabled in the panel; it
+    # only listens to the hub, and only ever calls the configured ntfy server.
+    if services.notifier is not None:
+        _spawn(app_instance, "ntfy-notifier", services.notifier.run())
 
     # A device holds a fixed UTC offset and knows nothing of DST, so when its
     # zone changes offset somebody has to tell it (see ha/timezone_sync.py).
