@@ -59,6 +59,9 @@ testpaths = ["tests"]
 # what lets pytest-asyncio run them (and the async fixtures in conftest.py)
 # without every test file importing pytest.
 asyncio_mode = "auto"
+# Explicit, because pytest-asyncio warns while it is unset. Function scope is
+# what it already defaulted to: every async test and fixture gets its own loop.
+asyncio_default_fixture_loop_scope = "function"
 markers = [
     "firmware: tests against real device firmware (skipped without --firmware)",
 ]
