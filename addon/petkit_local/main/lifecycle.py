@@ -376,6 +376,11 @@ async def cleanup_background(services: Services, app_instance: web.Application) 
 
     await wait_for_media_tasks()
 
+    # While its connection is still up: cancelling the publisher task below
+    # disconnects cleanly, and a clean disconnect publishes no last will.
+    if services.ha_publisher:
+        await services.ha_publisher.stop()
+
     await _stop_tasks(app_instance[BACKGROUND_TASKS])
     app_instance[BACKGROUND_TASKS].clear()
 
