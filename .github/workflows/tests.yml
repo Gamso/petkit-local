@@ -28,18 +28,14 @@ defaults:
 jobs:
   test:
     runs-on: ubuntu-latest
-    strategy:
-      # A 3.11-only breakage must not cancel the 3.12 job, and vice versa.
-      fail-fast: false
-      matrix:
-        # 3.11 is the floor declared in pyproject.toml, 3.12 is what the
-        # add-on image actually ships (Dockerfile: python:3.12-alpine on 64-bit).
-        python-version: ["3.11", "3.12"]
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
-          python-version: ${{ matrix.python-version }}
+          # One version, the one the add-on image ships (Dockerfile:
+          # python:3.14) and the floor pyproject.toml declares. Testing a
+          # second one would only matter if something ran on it.
+          python-version: "3.14"
           cache: pip
           # setup-python resolves this from the repo root, not from
           # defaults.run.working-directory.
@@ -75,7 +71,7 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
-          python-version: "3.12"
+          python-version: "3.14"
       # Narrow on purpose (see [tool.ruff.lint] in pyproject.toml): a gate
       # against real defects, not a style enforcer. Four unused imports reached
       # main before this existed, because the only check anyone ran locally was

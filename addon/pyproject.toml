@@ -7,7 +7,7 @@ name = "petkit-local"
 version = "2.2.2"
 description = "Local cloud replacement for PetKit litter boxes, feeders, fountains and purifiers"
 readme = "README.md"
-requires-python = ">=3.11"
+requires-python = ">=3.14"
 license = { text = "GPL-3.0-or-later" }
 dependencies = [
     # 3.14 is the first with `web.RequestKey` (`http/appkeys.py`).
@@ -79,7 +79,7 @@ markers = [
 
 [tool.ruff]
 line-length = 100
-target-version = "py311"
+target-version = "py314"
 
 [tool.ruff.lint]
 # Deliberately narrow. This is a lint gate against real defects — an unused

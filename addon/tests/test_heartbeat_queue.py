@@ -97,7 +97,7 @@ def test_a_button_that_is_a_settings_write_is_kept_too():
     is setting the same value."""
     device = _feeder()
     suffix, envelope = next(cmd for cmd in map(_built_or_none, ALL_ACTIONS.values(),
-                                               [device] * len(ALL_ACTIONS))
+                                               [device] * len(ALL_ACTIONS), strict=True)
                             if cmd and cmd[0] == "property/set")
     device.queue_command(envelope, suffix)
     _age(envelope, 24 * 3600)
