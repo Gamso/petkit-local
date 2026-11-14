@@ -118,7 +118,9 @@ async def test_panel_to_heartbeat_and_real_completion_survive_restart(
         assert len(await event_store.all_events()) == 2
         await registry.flush()
         restarted = DeviceRegistry(tmp_path / "devices.json").get(1)
-        assert restarted.state == {} and not restarted.online
+        # Only the LAN address survives a restart (`Device.to_dict` persists
+        # `last_ip`); no telemetry does.
+        assert set(restarted.state) <= {"ip"} and not restarted.online
         apply_state_snapshot(restarted, capture["events"][-1]["state"])
         assert restarted.state["workingState"] == -1
         assert restarted.state["sandPercent"] == 100
