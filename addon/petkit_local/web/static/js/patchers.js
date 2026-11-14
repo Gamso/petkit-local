@@ -27,6 +27,13 @@ async function loadPatchers() {
     if (!ip || ip === '?')
       html +=
         '<p class="badge warn">Device IP unknown — wait for a state_report before patching.</p>';
+    else {
+      // The one input to a patcher nobody typed: files are fetched from here.
+      html += `<p class="mut">Patchers fetch from the device at <b>${esc(ip)}</b>.</p>`;
+      if (p.device_ip_problem)
+        html += `<p class="badge warn">Not trusting ${esc(ip)}: ${esc(p.device_ip_problem)}. Apply and Remove will ask you for the device's address.</p>`;
+    }
+    ipProblems[dev.id] = p.device_ip_problem || '';
     for (const [pid, pt] of Object.entries(p.patchers || {})) {
       // Real newlines in the description are rendered by `white-space:pre-line`;
       // only the literal two-character sequence "\n" becomes a <br>. Splitting
@@ -145,6 +152,21 @@ onAction('apply-patch', el =>
 onAction('remove-patch', el =>
   removePatch(Number(el.dataset.id), el.dataset.patcher, el.dataset.name),
 );
+// Why each device's recorded address is not trusted, from the last status
+// load; empty when it is.
+const ipProblems = {};
+// The address to patch at when the recorded one is not trusted: asked of the
+// operator, never guessed. `undefined` = use the recorded one, `null` = cancel.
+function confirmedAddress(id) {
+  if (!ipProblems[id]) return undefined;
+  return (
+    prompt(
+      'The address on record for this device is not trusted: ' +
+        ipProblems[id] +
+        ".\n\nA patcher installs what it downloads from the device's address. Look it up on your router and enter it to go ahead:",
+    ) || null
+  );
+}
 async function applyPatch(id, patcher, name) {
   if (
     !confirm(
@@ -154,6 +176,8 @@ async function applyPatch(id, patcher, name) {
     )
   )
     return;
+  const deviceIp = confirmedAddress(id);
+  if (deviceIp === null) return;
   const lg = document.getElementById('plog_' + id + '_' + patcher);
   if (lg) {
     lg.style.display = 'block';
@@ -166,6 +190,7 @@ async function applyPatch(id, patcher, name) {
     body: JSON.stringify({
       patcher,
       action: 'apply',
+      device_ip: deviceIp,
       pubkey:
         (document.querySelector(`.ssh-pubkey[data-patcher="${patcher}"][data-dev="${id}"]`) || {})
           .value || '',
@@ -178,6 +203,8 @@ async function applyPatch(id, patcher, name) {
 }
 async function removePatch(id, patcher, name) {
   if (!confirm('Remove "' + name + '" from this device?\n\nThe device will reboot.')) return;
+  const deviceIp = confirmedAddress(id);
+  if (deviceIp === null) return;
   const lg = document.getElementById('plog_' + id + '_' + patcher);
   if (lg) {
     lg.style.display = 'block';
@@ -186,7 +213,7 @@ async function removePatch(id, patcher, name) {
   const r = await api('devices/' + id + '/patcher', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ patcher, action: 'remove' }),
+    body: JSON.stringify({ patcher, action: 'remove', device_ip: deviceIp }),
   });
   if (!r.ok) {
     toast('Error: ' + (r.error || 'failed'));
