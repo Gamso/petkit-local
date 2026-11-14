@@ -8,11 +8,10 @@ reverse proxy be pointed at this one without exposing either of the others —
 `tests/test_app_api.py` holds that line from both sides.
 
 `ROUTES` is the table; `openapi.yaml` describes exactly these entries, and a
-test fails the moment the two differ. Extension points for the later phases:
+test fails the moment the two differ. Writes (phase 2) are ordinary rows:
+every route needs a session unless marked otherwise, so a write is
+authenticated by default. Extension points for the later phases:
 
-* phase 2 (writes) — add `POST`/`PUT`/`DELETE` rows here and their handlers in
-  `handlers/`; every route needs a session unless marked otherwise, so a new
-  write is authenticated by default;
 * phase 3 (WebSocket) — a `GET /app/v1/ws` row; the bearer check runs on the
   upgrade request like any other, so a socket opens only with a session;
 * phase 4 (ntfy) — no route here: a publisher fed by the `EventHub`, with its
@@ -23,14 +22,17 @@ test fails the moment the two differ. Extension points for the later phases:
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from aiohttp import web
 
 from petkit_local.app_api.appkeys import (
-    AUTH, DATA_DIR, EVENT_STORE, MEDIA_ROOT, PET_REGISTRY, REGISTRY, THROTTLE,
+    AUTH, COMMAND_SINK, DATA_DIR, EVENT_STORE, HA_PUBLISHER, HUB, MEDIA_ROOT,
+    PET_REGISTRY, REGISTRY, THROTTLE,
 )
-from petkit_local.app_api.handlers import auth, devices, media, meta, pets, timeline
+from petkit_local.app_api.handlers import (
+    auth, controls, devices, feeding, media, meta, pets, timeline,
+)
 from petkit_local.app_api.middleware import app_api_middleware
 from petkit_local.app_api.throttle import LoginThrottle
 
@@ -39,10 +41,12 @@ if TYPE_CHECKING:
     from petkit_local.app_api.auth import AppAuth
     from petkit_local.devices.registry import DeviceRegistry
     from petkit_local.events.store import EventStore
+    from petkit_local.ha.publisher import HAPublisher
+    from petkit_local.mqtt.bridge import MQTTBridge
 
 PREFIX = "/app/v1"
 
-#: Nothing the app sends in phase 1 is larger than a login body.
+#: The largest thing the app sends is a feeding plan, a few kilobytes at most.
 MAX_BODY = 64 * 1024
 
 Handler = Callable[[web.Request], Awaitable[web.StreamResponse]]
@@ -58,6 +62,13 @@ ROUTES: tuple[tuple[str, str, Handler], ...] = (
     ("POST", "/auth/password", auth.change_password),
     ("GET", "/devices", devices.list_devices),
     ("GET", "/devices/{id}", devices.device_detail),
+    ("POST", "/devices/{id}/actions/{action}", controls.run_action),
+    ("PUT", "/devices/{id}/entities/{key}", controls.set_entity),
+    ("GET", "/devices/{id}/schedule", feeding.get_schedule),
+    ("PUT", "/devices/{id}/schedule", feeding.put_schedule),
+    ("GET", "/devices/{id}/deferred-feeds", feeding.list_deferred_feeds),
+    ("POST", "/devices/{id}/deferred-feeds", feeding.add_deferred_feed),
+    ("DELETE", "/devices/{id}/deferred-feeds/{feed_id}", feeding.delete_deferred_feed),
     ("GET", "/timeline", timeline.timeline),
     ("GET", "/timeline/{event_id}", timeline.timeline_event),
     ("GET", "/media/thumb/{path:.*}", media.media_thumbnail),
@@ -72,11 +83,16 @@ def create_app_api(app_auth: AppAuth, registry: DeviceRegistry, *,
                    event_store: EventStore | None = None,
                    pet_registry: PetRegistry | None = None,
                    media_root: str = "", data_dir: str = "",
-                   throttle: LoginThrottle | None = None) -> web.Application:
+                   throttle: LoginThrottle | None = None,
+                   command_sink: MQTTBridge | None = None,
+                   ha_publisher: HAPublisher | None = None,
+                   hub: Any = None) -> web.Application:
     """Build the app API application.
 
     Everything after `registry` is optional so a test can build one without
     the full stack; a handler whose collaborator is missing answers 503.
+    Without a `command_sink` every write is queued for the device's heartbeat;
+    without a `hub` (the panel's `EventHub`) nothing is narrated.
     """
     app = web.Application(client_max_size=MAX_BODY, middlewares=[app_api_middleware])
     app[AUTH] = app_auth
@@ -86,7 +102,11 @@ def create_app_api(app_auth: AppAuth, registry: DeviceRegistry, *,
     app[PET_REGISTRY] = pet_registry
     app[MEDIA_ROOT] = media_root
     app[DATA_DIR] = data_dir
+    app[COMMAND_SINK] = command_sink
+    app[HA_PUBLISHER] = ha_publisher
+    app[HUB] = hub
     for method, path, handler in ROUTES:
         # `add_get` would also register HEAD; the OpenAPI file lists GET only.
         app.router.add_route(method, PREFIX + path, handler)
     return app
+

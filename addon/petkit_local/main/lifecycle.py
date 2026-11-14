@@ -149,7 +149,9 @@ async def _start_app_api(services: Services, app_instance: web.Application) -> N
     app = create_app_api(services.app_auth, services.registry,
                          event_store=services.event_store,
                          pet_registry=services.pet_registry,
-                         media_root=services.media_root, data_dir=config.data_dir)
+                         media_root=services.media_root, data_dir=config.data_dir,
+                         command_sink=services.mqtt_bridge,
+                         ha_publisher=services.ha_publisher, hub=services.hub)
     runner = web.AppRunner(app, shutdown_timeout=SHUTDOWN_DRAIN)
     await runner.setup()
     try:
