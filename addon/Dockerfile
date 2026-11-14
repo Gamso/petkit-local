@@ -43,7 +43,13 @@ FROM base-${TARGETARCH}
 
 WORKDIR /opt/petkit-local
 
-COPY requirements.txt .
+# The LOCK, not requirements.txt. requirements.txt holds ranges, and a range
+# resolves to whatever PyPI has on the day of the build: 2.3.0 picked up amqtt
+# 0.12.2, whose changed internals killed the broker at start. The lock pins every
+# transitive package with the hash of each wheel AND sdist (armv7 compiles
+# several from source), and `--require-hashes --no-deps` refuses anything that
+# is not in it. CONTRIBUTING.md says how to regenerate it.
+COPY requirements.lock .
 
 # ffmpeg: stream-copy remux of the device's raw .ts clips to .mp4 (see
 # media/transcode.py). Missing ffmpeg degrades gracefully (clips stay as .ts),
@@ -71,11 +77,11 @@ COPY requirements.txt .
 RUN set -eux; \
     if command -v apk >/dev/null 2>&1; then \
         apk add --no-cache ffmpeg; \
-        pip install --no-cache-dir -r requirements.txt; \
+        pip install --no-cache-dir --require-hashes --no-deps -r requirements.lock; \
     else \
         apt-get update; \
         apt-get install -y --no-install-recommends ffmpeg gcc g++ libc6-dev libffi-dev; \
-        pip install --no-cache-dir -r requirements.txt; \
+        pip install --no-cache-dir --require-hashes --no-deps -r requirements.lock; \
         apt-get purge -y gcc g++ libc6-dev libffi-dev; \
         apt-get autoremove -y; \
         rm -rf /var/lib/apt/lists/*; \
