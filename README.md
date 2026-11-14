@@ -265,7 +265,7 @@ look; use one of the two above for anything you rely on.
 
 ```sh
 cd addon
-pip install -r requirements.txt
+pip install --require-hashes --no-deps -r requirements.lock   # the exact versions the image runs
 python -m petkit_local.main \
     --port 8080 \
     --api-url "http://<your-host>:8080/6/" \
