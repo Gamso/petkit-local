@@ -561,3 +561,38 @@ async def test_a_real_strict_broker_refuses_a_stranger_and_admits_the_bridge(tmp
             await client.subscribe("#")
     finally:
         await broker.shutdown()
+
+
+async def test_the_broker_starts_with_its_tls_listener_and_completes_a_handshake(tmp_path):
+    """The TLS listener is on in every real install (`--mqtt-tls`), and the
+    broker once died on every start with it: the hook wrapping amqtt's
+    `_create_ssl_context` called it unbound after amqtt 0.12 made it an
+    instance method. No test started a TLS broker, so only a real start
+    showed it. This one starts it and shakes hands with it."""
+    import asyncio
+    import socket
+    import ssl
+
+    from petkit_local.mqtt.broker import start_broker
+
+    def _free_port() -> int:
+        with socket.socket() as sock:
+            sock.bind(("127.0.0.1", 0))
+            return sock.getsockname()[1]
+
+    port, tls_port = _free_port(), _free_port()
+    broker = await start_broker(port, DeviceRegistry(), tls=True, tls_port=tls_port,
+                                certfile=str(tmp_path / "certs" / "broker.crt"),
+                                keyfile=str(tmp_path / "certs" / "broker.key"),
+                                data_dir=str(tmp_path))
+    try:
+        client = ssl.create_default_context()
+        client.check_hostname = False
+        client.verify_mode = ssl.CERT_NONE
+        reader, writer = await asyncio.wait_for(
+            asyncio.open_connection("127.0.0.1", tls_port, ssl=client), timeout=10)
+        assert writer.get_extra_info("ssl_object") is not None
+        writer.close()
+        await writer.wait_closed()
+    finally:
+        await broker.shutdown()
