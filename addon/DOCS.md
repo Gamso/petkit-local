@@ -471,6 +471,62 @@ same `Authorization: Bearer` header as everything else — there are no signed
 URLs to leak into logs. Adding a field is a compatible change; anything else
 moves to `/app/v2`.
 
+### Live video
+
+A camera's live view reaches the app through the same port and the same
+tunnel, so nothing else needs mapping: go2rtc's own port (1984) stays closed.
+It works for a camera whose stream the panel already shows (the camera patch is
+applied and go2rtc is serving it). Two ways, both behind the same token, both
+limited to the camera named in the request:
+
+- **Fragmented MP4 over a WebSocket** — `/app/v1/devices/{id}/live`. go2rtc's
+  "MSE" stream, relayed. Expect **a few hundred milliseconds to about a
+  second** of delay, plus whatever the camera itself adds (not measured on
+  these cameras). The first picture waits for the camera's next keyframe.
+  WebRTC is not used from outside: its video travels over UDP, which a
+  Cloudflare tunnel does not carry.
+- **HLS** — `/app/v1/devices/{id}/live/hls/playlist.m3u8`, the fallback for a
+  connection where the WebSocket keeps dropping. **Several seconds** of delay,
+  the player buffering whole segments.
+
+**At most 2 viewers per camera and 4 in all**, WebSocket and HLS together.
+Each viewer is a separate copy of the video through your tunnel and upload,
+and a camera has one connection to give (go2rtc shares it). One phone holds at
+most one view of a camera: opening it again replaces the older view. A viewer
+that arrives a few seconds after the previous one left may be told the stream
+could not be opened — the camera needs a few seconds between connections — and
+should simply retry.
+
+**Check your tunnel provider's terms before watching through it.** Cloudflare's
+terms for its CDN plans restrict serving video and other large files unless it
+goes through a product sold for it, and a tunnel's traffic crosses that same
+network. A live view to your own phone is small next to what that rule is
+about, but it is video: read the current terms for your plan, keep the caps,
+and watch on the LAN (the panel) when you are home. Other providers have terms
+of their own.
+
+For app developers (the full message flow and close codes are in the OpenAPI
+file):
+
+- **HLS with Media3/ExoPlayer** is the shortest path: an `HlsMediaSource` on
+  `playlist.m3u8`, with the bearer header set once through
+  `DefaultHttpDataSource.Factory().setDefaultRequestProperties(...)`, which
+  every playlist and segment request then carries. Every URI in the playlists
+  is relative to that route.
+- **The WebSocket** needs the bearer header on its upgrade request, and a
+  browser's `WebSocket` cannot send one — so go2rtc's `video-stream.js`, which
+  opens its own socket, cannot be pointed at it as is. In a WebView (Android's
+  supports Media Source Extensions), open the socket natively with OkHttp,
+  which can send the header, and hand each message to the page — through a
+  `WebMessagePort` (androidx.webkit, array-buffer messages) — where a short MSE
+  script creates a `SourceBuffer` with the type from the first text message
+  and appends every binary one in order (the MSE half of go2rtc's
+  `video-rtc.js` is a model). Natively, a Media3 `DataSource` fed from the same
+  OkHttp socket can play the stream as fragmented MP4, with no WebView, for
+  more work.
+- On close code `1013` (the phone did not keep up) switch to HLS; on `4401`
+  sign in again; on `1011` or an `error` message retry after a few seconds.
+
 ## T4 litter-level calibration
 
 On the Pura Max (T4), leveling the litter and confirming that it is full are

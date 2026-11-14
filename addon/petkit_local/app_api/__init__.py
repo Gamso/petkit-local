@@ -11,12 +11,13 @@ authenticate), every request here is authenticated by petkit-local itself.
                     trusted proxies, persisted to `{data_dir}/app_api.json`
     throttle.py     failed-login lockouts, and which client address a request is charged to
     serializers.py  every JSON shape returned, explicit, so the panel can change freely
-    handlers/       one module per area: meta, auth, devices, timeline, media, pets
+    handlers/       one module per area: meta, auth, devices, timeline, media, pets, live
+    live.py         live video: go2rtc's fMP4 WebSocket and HLS relayed, viewer caps
     openapi.yaml    the contract the app's client is generated from (tested against ROUTES)
 
 Layering: this package reads the same stores, registries and helpers the panel
 reads (`events/`, `ai/pets.py`, `ha/categories.py`, `ha/state_doc.py`,
-`media/serving.py`) and imports nothing from `web/` or `http/`. Only `main/`
-builds it, and the panel reaches `AppAuth` only through the object
+`media/serving.py`, `media/go2rtc.py`) and imports nothing from `web/` or
+`http/`. Only `main/` builds it, and the panel reaches `AppAuth` only through the object
 `main/lifecycle.py` hands it.
 """

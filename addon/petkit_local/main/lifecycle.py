@@ -19,6 +19,7 @@ from aiohttp import web
 
 from sqlalchemy.exc import SQLAlchemyError
 
+from petkit_local.app_api import appkeys as app_keys
 from petkit_local.app_api.server import create_app_api
 from petkit_local.devices.state_parsers import reports_used_times
 from petkit_local.events.ingest import _MODULE_TYPE_TO_CATEGORY, backfill_event_rows
@@ -149,7 +150,8 @@ async def _start_app_api(services: Services, app_instance: web.Application) -> N
     app = create_app_api(services.app_auth, services.registry,
                          event_store=services.event_store,
                          pet_registry=services.pet_registry,
-                         media_root=services.media_root, data_dir=config.data_dir)
+                         media_root=services.media_root, data_dir=config.data_dir,
+                         go2rtc=services.go2rtc)
     runner = web.AppRunner(app, shutdown_timeout=SHUTDOWN_DRAIN)
     await runner.setup()
     try:
@@ -453,6 +455,11 @@ async def cleanup_background(services: Services, app_instance: web.Application) 
     # to Aliyun.
     if upstream_mqtt:
         await upstream_mqtt.stop()
+
+    # Before go2rtc goes: a phone watching live is then told the server is
+    # stopping (1001), not that its stream ended and is worth retrying.
+    if device_keys.APP_API_RUNNER in app_instance:
+        await app_instance[device_keys.APP_API_RUNNER].app[app_keys.LIVE].close_all()
 
     # Belt and braces: `supervise()` kills the child on its own cancellation,
     # but a supervisor that died earlier would have left it running, and an

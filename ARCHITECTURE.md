@@ -95,6 +95,12 @@ built field by field in `serializers.py`, never the panel's internal dicts, so t
 without breaking a released app; `openapi.yaml` describes exactly those shapes and exactly the
 routes in `server.ROUTES`.
 
+Live video (`app_api/live.py`) is the one place the app API talks to another process: it relays
+go2rtc's fMP4 WebSocket and HLS from loopback, for the stream of the device in the path only —
+the name is resolved server-side from `Go2rtc.desired_streams`, because go2rtc dials any `src` it
+does not know as a source URL. Viewers are capped per camera and in total, and a relay ends with
+its session.
+
 ## The two transports
 
 A device speaks **either** HTTP **or** MQTT — not both, and not one for requests and the other for

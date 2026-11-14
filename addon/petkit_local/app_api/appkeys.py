@@ -17,6 +17,10 @@ key                     what it holds                                set by
 `PET_REGISTRY`          `PetRegistry`, or None                       create_app_api
 `MEDIA_ROOT`            the friendly media tree ("" serves nothing)  create_app_api
 `DATA_DIR`              where thumbnails and face photos live        create_app_api
+`GO2RTC`                the camera sidecar (`media/go2rtc.py`), or   create_app_api
+                        None: which streams exist, whether it runs
+`LIVE`                  `LiveSessions` — live viewers, their caps    create_app_api
+                        and relays (`app_api/live.py`)
 ======================  ===========================================  ==========
 
 `SESSION` is set on each request by the auth middleware once a bearer token
@@ -31,9 +35,11 @@ from aiohttp import web
 if TYPE_CHECKING:
     from petkit_local.ai.pets import PetRegistry
     from petkit_local.app_api.auth import AppAuth, AppSession
+    from petkit_local.app_api.live import LiveSessions
     from petkit_local.app_api.throttle import LoginThrottle
     from petkit_local.devices.registry import DeviceRegistry
     from petkit_local.events.store import EventStore
+    from petkit_local.media.go2rtc import Go2rtc
 
 AUTH: web.AppKey[AppAuth] = web.AppKey("app_auth")
 THROTTLE: web.AppKey[LoginThrottle] = web.AppKey("app_throttle")
@@ -42,6 +48,8 @@ EVENT_STORE: web.AppKey[EventStore | None] = web.AppKey("app_event_store")
 PET_REGISTRY: web.AppKey[PetRegistry | None] = web.AppKey("app_pet_registry")
 MEDIA_ROOT: web.AppKey[str] = web.AppKey("app_media_root")
 DATA_DIR: web.AppKey[str] = web.AppKey("app_data_dir")
+GO2RTC: web.AppKey[Go2rtc | None] = web.AppKey("app_go2rtc")
+LIVE: web.AppKey[LiveSessions] = web.AppKey("app_live")
 
 #: The session the bearer token belongs to.
 SESSION: web.RequestKey[AppSession] = web.RequestKey("app_session")

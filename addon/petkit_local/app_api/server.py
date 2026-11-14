@@ -17,8 +17,9 @@ test fails the moment the two differ. Extension points for the later phases:
   upgrade request like any other, so a socket opens only with a session;
 * phase 4 (ntfy) — no route here: a publisher fed by the `EventHub`, with its
   settings in the panel;
-* phase 5 (live video) — a `GET /app/v1/devices/{id}/live` row proxying that
-  device's go2rtc stream name only.
+* phase 5 (live video) — `GET /app/v1/devices/{id}/live` (WebSocket, fMP4) and
+  `.../live/hls/{file}`, proxying that device's go2rtc stream only
+  (`app_api/live.py`).
 """
 from __future__ import annotations
 
@@ -28,9 +29,10 @@ from typing import TYPE_CHECKING
 from aiohttp import web
 
 from petkit_local.app_api.appkeys import (
-    AUTH, DATA_DIR, EVENT_STORE, MEDIA_ROOT, PET_REGISTRY, REGISTRY, THROTTLE,
+    AUTH, DATA_DIR, EVENT_STORE, GO2RTC, LIVE, MEDIA_ROOT, PET_REGISTRY, REGISTRY, THROTTLE,
 )
-from petkit_local.app_api.handlers import auth, devices, media, meta, pets, timeline
+from petkit_local.app_api.handlers import auth, devices, live, media, meta, pets, timeline
+from petkit_local.app_api.live import LiveSessions
 from petkit_local.app_api.middleware import app_api_middleware
 from petkit_local.app_api.throttle import LoginThrottle
 
@@ -39,6 +41,7 @@ if TYPE_CHECKING:
     from petkit_local.app_api.auth import AppAuth
     from petkit_local.devices.registry import DeviceRegistry
     from petkit_local.events.store import EventStore
+    from petkit_local.media.go2rtc import Go2rtc
 
 PREFIX = "/app/v1"
 
@@ -58,6 +61,8 @@ ROUTES: tuple[tuple[str, str, Handler], ...] = (
     ("POST", "/auth/password", auth.change_password),
     ("GET", "/devices", devices.list_devices),
     ("GET", "/devices/{id}", devices.device_detail),
+    ("GET", "/devices/{id}/live", live.live),
+    ("GET", "/devices/{id}/live/hls/{file}", live.live_hls),
     ("GET", "/timeline", timeline.timeline),
     ("GET", "/timeline/{event_id}", timeline.timeline_event),
     ("GET", "/media/thumb/{path:.*}", media.media_thumbnail),
@@ -72,7 +77,9 @@ def create_app_api(app_auth: AppAuth, registry: DeviceRegistry, *,
                    event_store: EventStore | None = None,
                    pet_registry: PetRegistry | None = None,
                    media_root: str = "", data_dir: str = "",
-                   throttle: LoginThrottle | None = None) -> web.Application:
+                   throttle: LoginThrottle | None = None,
+                   go2rtc: Go2rtc | None = None,
+                   live_sessions: LiveSessions | None = None) -> web.Application:
     """Build the app API application.
 
     Everything after `registry` is optional so a test can build one without
@@ -86,6 +93,10 @@ def create_app_api(app_auth: AppAuth, registry: DeviceRegistry, *,
     app[PET_REGISTRY] = pet_registry
     app[MEDIA_ROOT] = media_root
     app[DATA_DIR] = data_dir
+    app[GO2RTC] = go2rtc
+    app[LIVE] = live_sessions if live_sessions is not None else LiveSessions()
+    # Ends every live relay as shutdown begins, so none holds the bounded drain.
+    app.on_shutdown.append(app[LIVE].close_all)
     for method, path, handler in ROUTES:
         # `add_get` would also register HEAD; the OpenAPI file lists GET only.
         app.router.add_route(method, PREFIX + path, handler)
