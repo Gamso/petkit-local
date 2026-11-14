@@ -1,7 +1,7 @@
 name: prune-packages
 
-# `dev` moves on every push to main and leaves the version it used to point at
-# behind, untagged. Those accumulate quietly. This deletes them.
+# `dev` moves on every manual run of `publish` and leaves the version it used to
+# point at behind, untagged. Those accumulate quietly. This deletes them.
 #
 # THE HAZARD THIS IS BUILT AROUND: a multi-architecture image is a manifest list
 # whose per-platform children are themselves untagged versions. "Delete every

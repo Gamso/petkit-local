@@ -286,6 +286,61 @@ def test_ssl_is_imported_once_and_the_logger_is_module_named():
     assert main_module.log.name == "petkit_local.main"
 
 
+# --- bounded shutdown ------------------------------------------------------
+
+
+async def test_a_runner_does_not_wait_out_a_connection_that_never_ends():
+    """The panel's live-log WebSocket lives as long as the browser tab does.
+
+    aiohttp's default gives such a handler 60 s to finish, and the Supervisor
+    kills the container 10 s after SIGTERM, so one open tab turned every
+    restart into an exit 137. aiohttp spends the timeout twice on a handler
+    that is still running, hence the factor of two.
+    """
+    import time
+
+    from aiohttp import ClientSession
+
+    from petkit_local.main.lifecycle import SHUTDOWN_DRAIN
+
+    async def live_log(request: web.Request) -> web.WebSocketResponse:
+        ws = web.WebSocketResponse()
+        await ws.prepare(request)
+        async for _ in ws:
+            pass
+        return ws
+
+    app = web.Application()
+    app.router.add_get("/ws", live_log)
+    runner = web.AppRunner(app, shutdown_timeout=SHUTDOWN_DRAIN)
+    await runner.setup()
+    await web.TCPSite(runner, "127.0.0.1", 0).start()
+    port = runner.addresses[0][1]
+
+    async with ClientSession() as session:
+        await session.ws_connect(f"http://127.0.0.1:{port}/ws")
+        started = time.monotonic()
+        await runner.cleanup()
+        took = time.monotonic() - started
+
+    assert took <= 2 * SHUTDOWN_DRAIN + 0.5
+    # Three runners, each at its worst, and room left inside the ten seconds
+    # for the broker, the background tasks and the event store.
+    assert 3 * 2 * SHUTDOWN_DRAIN <= 6.0
+
+
+def test_every_runner_is_built_with_the_bounded_drain():
+    """A runner added later without it brings the 60 s default back."""
+    source = LIFECYCLE_PY.read_text()
+    runners = re.findall(r"web\.AppRunner\((.*)\)", source)
+    assert len(runners) == 2
+    assert all("shutdown_timeout=SHUTDOWN_DRAIN" in args for args in runners)
+    # The device-facing app is drained by `run_app` itself, before
+    # `cleanup_background` has run at all.
+    run_app = MAIN_PY.read_text().split("web.run_app(", 1)[1]
+    assert "shutdown_timeout=SHUTDOWN_DRAIN" in run_app
+
+
 # --- proxy session ---------------------------------------------------------
 
 

@@ -60,6 +60,7 @@ EXPECTED_ENTITY_COUNTS = {
     # their two times, volume, voice language, and the same two power buttons.
     # t6 +6 on 2026-08-12: the bagging mechanism it reports in every
     # property post and nothing here read. No other litter box has it.
+    # t6 +1 on 2026-10-30: reset the verified NFC bag counter.
     # Every litter box +1 on 2026-10-23: `last_pet`, the pet the last visit
     # was credited to.
     #
@@ -69,18 +70,20 @@ EXPECTED_ENTITY_COUNTS = {
     # do-not-disturb, vomit detection, WiFi status light), +1 for Drain, +3 for
     # the three do-not-disturb windows. The seven are cleared from HA, not just
     # left unannounced (`CategorySpec.model_retired`).
-    "t3": 47, "t4": 47, "t5": 83, "t6": 90, "t7": 83,
+    "t3": 47, "t4": 47, "t5": 83, "t6": 91, "t7": 83,
     # d4s +4 on 2026-10-08: a live D4S feeds with `amount1`/`amount2`, so it
     # gets the dual-hopper feed buttons and portion numbers (upstream PR #43).
     # d4 -6 on 2026-10-24: six entities no D4 report fills; retired from HA.
     # d4 +1 the same day: Battery Voltage, from the `batV` every report carries.
-    "feeder": 25, "feedermini": 25, "d3": 25, "d4": 20, "d4s": 29,
+    # Every feeder +1: the Feeding Schedule Active switch, which pauses the
+    # recurring meals without deleting them.
+    "feeder": 26, "feedermini": 26, "d3": 26, "d4": 21, "d4s": 30,
     # 2026-08-12: replaced `enable_feed_video` button with individual switches
     # (feed_picture, eat_video, voice_prompt, voice_disturb_mode, disturb_mode)
     # and added selected_sound number + play_sound button. Net +6.
     # d4h -4 on 2026-10-23: Device Status and the D4SH's three IR readings,
     # none of which a D4H reports (upstream issue #36); retired from HA.
-    "d4h": 53, "d4sh": 61,
+    "d4h": 54, "d4sh": 62,
     # w7h +5: the deep clean and pump-reset buttons, and the deep-clean
     # stage, last-run and result sensors.
     "w4": 24, "w5": 24, "ctw2": 24, "ctw3": 24, "w7h": 86,

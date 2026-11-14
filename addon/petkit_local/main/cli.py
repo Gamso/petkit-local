@@ -45,6 +45,11 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--bucket-endpoint", default=None,
                         help="Media bucket base URL the device is told to use "
                              "(default: https://<api-url host>:<bucket-port>)")
+    parser.add_argument("--webrtc-candidate", default=None, metavar="HOST[:PORT]|auto",
+                        help="Turn on WebRTC out of the bundled go2rtc (off by default) and "
+                             "advertise this address to browsers: the host and the port 8555 "
+                             "is published on, or 'auto' for the container's own LAN address "
+                             "(host network, macvlan). Under --ha-addon, map 8555 instead.")
     parser.add_argument("--debug", action="store_true", help="Enable debug logging")
     parser.add_argument("--ha-addon", action="store_true", help="Self-configure from /data/options.json + Supervisor (HA add-on mode)")
     return parser
@@ -103,6 +108,8 @@ def build_config(args: argparse.Namespace) -> Config:
             config.bucket_port = args.bucket_port
         if args.bucket_endpoint is not None:
             config.bucket_endpoint = args.bucket_endpoint
+        if args.webrtc_candidate is not None:
+            config.webrtc_candidate = args.webrtc_candidate.strip()
         if args.debug:
             config.log_level = "DEBUG"
 
