@@ -10,7 +10,9 @@ into `never_fail_middleware`, which turns it into an empty success.
 So each test here builds both apps the way `main/wiring.py` and
 `main/lifecycle.py` do, from a real `Config`, and drives the real handler.
 """
+import io
 import logging
+import wave
 
 import aiohttp
 import pytest
@@ -20,11 +22,27 @@ from petkit_local.config import Config
 from petkit_local.devices.ble import BLERegistry
 from petkit_local.devices.registry import DeviceRegistry
 from petkit_local.http.server import create_app
+from petkit_local.media.transcode import have_ffmpeg
 from petkit_local.web.hub import EventHub
 from petkit_local.web.panel import create_panel_app
 
 HDR = {"X-Device": "id=100&sn=SN100"}
 BUCKET = "https://192.168.1.5:9000"
+
+
+# An upload is transcoded to ADTS before it is stored (`media/sounds.py`), so
+# the sound tests need real audio and ffmpeg.
+needs_ffmpeg = pytest.mark.skipif(not have_ffmpeg(), reason="ffmpeg is not installed")
+
+
+def _wav(seconds=1.0, rate=16000):
+    buf = io.BytesIO()
+    with wave.open(buf, "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(rate)
+        w.writeframes(bytes(int(seconds * rate) * 2))
+    return buf.getvalue()
 
 
 class FakeBridge:
@@ -74,14 +92,16 @@ async def apps(tmp_path):
         await panel.close()
 
 
-async def _upload(panel, name="meow.mp3", data=b"ID3-not-really-audio"):
+async def _upload(panel, name="meow.wav", data=None):
     form = aiohttp.FormData()
-    form.add_field("file", data, filename=name, content_type="audio/mpeg")
+    form.add_field("file", data if data is not None else _wav(),
+                   filename=name, content_type="audio/wav")
     r = await panel.post("/api/devices/100/sounds", data=form)
     assert r.status == 200, await r.text()
     return (await r.json())["sound"]
 
 
+@needs_ffmpeg
 async def test_a_device_polling_dev_sound_get_is_told_about_an_uploaded_sound(apps, caplog):
     """The device app has no `cfg`. Reading it raised KeyError on every poll
     once a bucket endpoint was set — an ERROR traceback each time, and an
@@ -92,10 +112,13 @@ async def test_a_device_polling_dev_sound_get_is_told_about_an_uploaded_sound(ap
     with caplog.at_level(logging.ERROR):
         body = await (await device.post("/6/d4sh/dev_sound_get", headers=HDR)).json()
     assert [r for r in caplog.records if r.levelno >= logging.ERROR] == []
+    # Served from the API port over plain HTTP, not the bucket
+    # (`handlers/stubs.py::handle_sound_get`).
     assert body["result"] == [{
-        "id": sound["id"], "name": "meow", "duration": 0,
-        "url": f"{BUCKET}/sounds/100/{sound['filename']}",
+        "id": sound["id"], "name": "meow", "duration": sound["duration"],
+        "url": str(device.make_url(f"/sounds/100/{sound['filename']}")),
         "digest": sound["digest"], "size": sound["size"],
+        "gmtCreate": str(sound["uploaded_at"] * 1000),
     }]
 
 
@@ -107,17 +130,18 @@ async def test_dev_sound_get_with_nothing_uploaded_is_an_empty_list_not_an_error
     assert body == {"result": []}
 
 
-async def test_an_upload_pushes_the_sound_list_to_the_device(apps):
-    """The push was gated on `app.get("event_hub")`, which the panel never has."""
+@needs_ffmpeg
+async def test_an_upload_pushes_no_sound_list_to_the_device(apps):
+    """The push was gated on `app.get("event_hub")`, which the panel never has.
+    It is gone altogether now: the device fetches the list itself, and the
+    firmware's `soundList` handler reads entries as uncheckedly as
+    `dev_sound_get` does (`web/api/sounds.py::api_sounds_upload`)."""
     device, panel, feeder, hub, publisher = apps
-    sound = await _upload(panel)
-    queued = [c for c in feeder.command_queue if c.get("_service_suffix") == "property/set"]
-    assert len(queued) == 1
-    pushed = queued[0]["params"]["soundList"]
-    assert [s["id"] for s in pushed] == [sound["id"]]
-    assert pushed[0]["url"].startswith(BUCKET + "/sounds/100/")
+    await _upload(panel)
+    assert [c for c in feeder.command_queue if c.get("_service_suffix") == "property/set"] == []
 
 
+@needs_ffmpeg
 async def test_play_and_select_reach_the_device(apps):
     """Both answered 400 "no event hub" on every press."""
     device, panel, feeder, hub, publisher = apps

@@ -26,6 +26,7 @@ from petkit_local.ha.timezone_sync import timezone_sync_loop
 from petkit_local.http.bucket import create_bucket_app
 from petkit_local.http.handlers.upload_file_info import wait_for_pending as wait_for_media_tasks
 from petkit_local.media.retention import RetentionSweeper
+from petkit_local.media.sounds import migrate_sounds
 from petkit_local.media.stitch import EpisodeStitcher
 from petkit_local.mqtt.broker import ensure_self_signed, start_broker
 from petkit_local.web.panel import create_panel_app
@@ -323,6 +324,11 @@ async def start_background(services: Services, app_instance: web.Application) ->
     stitcher = EpisodeStitcher(event_store, registry, media_root,
                                work_dir=f"{media_root}/.raw", hub=hub)
     _spawn(app_instance, "episode-stitcher", stitcher.run())
+
+    # Sounds uploaded before they were transcoded sit on disk as received,
+    # which the feeder downloads and cannot play. Converted once, in the
+    # background: nothing about a device's start waits on ffmpeg.
+    _spawn(app_instance, "sound-conversion", migrate_sounds(config.data_dir))
 
     if not services.no_mqtt:
         broker = await start_broker(
