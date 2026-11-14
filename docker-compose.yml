@@ -99,6 +99,14 @@ services:
       # - "8555:8555/tcp"
       # - "8555:8555/udp"
 
+      # The phone app API: /app/v1 only, nothing of the panel or the device
+      # API. It authenticates every request itself, with a password you set in
+      # the panel (Setup -> Phone app access), and refuses everything until
+      # then. Publish it only for the reverse proxy or tunnel that the phone
+      # reaches it through -- bound to 127.0.0.1 if that proxy runs here.
+      # Never expose the panel or port 80 instead. See DOCS.md, "The phone app".
+      # - "127.0.0.1:8097:8097"
+
       # 1883 (plain MQTT) is deliberately NOT published. It is the internal
       # listener the bridge uses, and publishing it would clash with a broker
       # you already run.

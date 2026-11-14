@@ -42,11 +42,12 @@ key                        what it holds                                 set by
 `MQTT_BROKER`              the embedded amqtt broker                     main/lifecycle.py
 `PANEL_RUNNER`             the panel's `AppRunner`                       main/lifecycle.py
 `BUCKET_RUNNER`            the bucket's `AppRunner`                      main/lifecycle.py
+`APP_API_RUNNER`           the app API's `AppRunner`, when it bound      main/lifecycle.py
 =========================  ============================================  ==============
 
 Every handler reads all but `REGISTRY` and `CONFIG` with `.get` and degrades
 without them, so a test app built by `create_app` alone still answers.
-`main/lifecycle.py` writes its three keys from the device app's own
+`main/lifecycle.py` writes its four keys from the device app's own
 `on_startup` hook, which runs before `AppRunner.setup()` freezes that app.
 
 Bucket (`create_bucket_app`): `MEDIA_ROOT`, `LOG_ROOT`, `DATA_DIR`, and the two
@@ -101,6 +102,7 @@ BACKGROUND_TASKS: web.AppKey[list[asyncio.Task[Any]]] = web.AppKey("background_t
 MQTT_BROKER: web.AppKey[Broker] = web.AppKey("mqtt_broker")
 PANEL_RUNNER: web.AppKey[web.AppRunner] = web.AppKey("panel_runner")
 BUCKET_RUNNER: web.AppKey[web.AppRunner] = web.AppKey("bucket_runner")
+APP_API_RUNNER: web.AppKey[web.AppRunner] = web.AppKey("app_api_runner")
 
 # --- bucket ------------------------------------------------------------------
 

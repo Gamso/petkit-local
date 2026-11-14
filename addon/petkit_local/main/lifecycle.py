@@ -19,6 +19,7 @@ from aiohttp import web
 
 from sqlalchemy.exc import SQLAlchemyError
 
+from petkit_local.app_api.server import create_app_api
 from petkit_local.devices.state_parsers import reports_used_times
 from petkit_local.events.ingest import _MODULE_TYPE_TO_CATEGORY, backfill_event_rows
 from petkit_local.events.normalize import seed_feed_state, visit_day_key
@@ -40,11 +41,11 @@ log = logging.getLogger(__name__)
 
 #: How long each aiohttp runner may wait for open connections at shutdown.
 #: The Supervisor sends SIGTERM and kills the container 10 s later, and
-#: there are three runners plus the broker to stop inside that budget.
+#: there are four runners plus the broker to stop inside that budget.
 #: aiohttp spends this TWICE on a connection whose handler is still running —
 #: once waiting for it to finish, once more after asking it to stop, and only
 #: then cancels it (measured on 3.14: a 1 s timeout holds `cleanup()` for 2 s).
-#: So the worst case is two seconds a runner and six for the three.
+#: So the worst case is two seconds a runner and eight for the four.
 SHUTDOWN_DRAIN = 1.0
 
 
@@ -136,6 +137,34 @@ async def _seed_feed_state(registry: Any, event_store: Any) -> None:
                  device.device_type, device.petkit_id, len(feeds))
 
 
+async def _start_app_api(services: Services, app_instance: web.Application) -> None:
+    """Serve the phone app API (`app_api/`) on `app_port`.
+
+    Its own application on its own port, so a reverse proxy pointed here
+    reaches `/app/v1` and nothing else. A port that cannot be bound is logged
+    and skipped rather than raised: the app API is an optional surface, and
+    taking the devices' local cloud down over it would be the wrong trade.
+    """
+    config = services.config
+    app = create_app_api(services.app_auth, services.registry,
+                         event_store=services.event_store,
+                         pet_registry=services.pet_registry,
+                         media_root=services.media_root, data_dir=config.data_dir)
+    runner = web.AppRunner(app, shutdown_timeout=SHUTDOWN_DRAIN)
+    await runner.setup()
+    try:
+        await web.TCPSite(runner, "0.0.0.0", config.app_port).start()
+    except OSError as e:
+        log.error("App API could not listen on port %d (%s); the phone app will not "
+                  "connect. Everything else runs.", config.app_port, e)
+        await runner.cleanup()
+        return
+    app_instance[device_keys.APP_API_RUNNER] = runner
+    log.info("App API on port %d%s", config.app_port,
+             "" if services.app_auth.password_set
+             else " (closed until a password is set in the panel)")
+
+
 async def start_background(services: Services, app_instance: web.Application) -> None:
     """aiohttp on_startup hook: open the store, then spawn every service.
 
@@ -210,13 +239,16 @@ async def start_background(services: Services, app_instance: web.Application) ->
         # The panel reports WHY device logs cannot be collected, and an
         # unsplittable (or absent) bucket address is one of the two reasons.
         "bucket_endpoint": config.bucket_endpoint,
+        # Shown on the Phone app access card, which tells the owner what to map.
+        "app_port": config.app_port,
     }
     # Pass the SAME app_config dict the device-facing handlers read, so the
     # panel can flip runtime settings (proxy, capture) live with no restart.
     panel = create_panel_app(registry, ble_registry, hub, panel_config,
                              mqtt_bridge, live_config=app_config,
                              event_store=event_store, retention_config=retention_config,
-                             pet_registry=pet_registry, ha_publisher=ha_publisher)
+                             pet_registry=pet_registry, ha_publisher=ha_publisher,
+                             app_auth=services.app_auth)
     # The panel asks the sidecar for each device's RTSP URL. Set here rather
     # than passed to `create_panel_app`, so every test that builds a panel
     # does not have to know about a camera sidecar it never uses — but
@@ -361,6 +393,8 @@ async def start_background(services: Services, app_instance: web.Application) ->
     log.info("Web panel on port %d%s", config.web_port,
              " (HA Ingress)" if services.ha_addon else "")
 
+    await _start_app_api(services, app_instance)
+
     # A device holds a fixed UTC offset and knows nothing of DST, so when its
     # zone changes offset somebody has to tell it (see ha/timezone_sync.py).
     # Not inside the `no_mqtt` block: a device on HTTP gets the same push
@@ -388,7 +422,7 @@ async def cleanup_background(services: Services, app_instance: web.Application) 
        Proxy mode's upstream MQTT connections are closed right after, by
        hand: the supervisor task in that list SPAWNED them, so cancelling it
        leaves the connections themselves open.
-    3. Broker, then the panel/bucket runners. `AppRunner.cleanup()` fires
+    3. Broker, then the bucket, app API and panel runners. `AppRunner.cleanup()` fires
        each sub-app's own `on_cleanup`, which is what drains the panel's
        patcher tasks (`web/panel.py::cancel_background_tasks`).
     4. Registries flush last among the writers: their final `stop()` must
@@ -431,6 +465,9 @@ async def cleanup_background(services: Services, app_instance: web.Application) 
 
     if device_keys.BUCKET_RUNNER in app_instance:
         await app_instance[device_keys.BUCKET_RUNNER].cleanup()
+
+    if device_keys.APP_API_RUNNER in app_instance:
+        await app_instance[device_keys.APP_API_RUNNER].cleanup()
 
     if device_keys.PANEL_RUNNER in app_instance:
         await app_instance[device_keys.PANEL_RUNNER].cleanup()

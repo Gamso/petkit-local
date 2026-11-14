@@ -42,6 +42,9 @@ def _build_parser() -> argparse.ArgumentParser:
     # line.
     parser.add_argument("--web-port", type=int, default=None, help="Web panel port (default 8099)")
     parser.add_argument("--bucket-port", type=int, default=None, help="Media upload bucket port (default 9000)")
+    parser.add_argument("--app-port", type=int, default=None,
+                        help="Phone app API port (default 8097). Authenticated by its own "
+                             "password, set in the panel; refuses everything until then")
     parser.add_argument("--bucket-endpoint", default=None,
                         help="Media bucket base URL the device is told to use "
                              "(default: https://<api-url host>:<bucket-port>)")
@@ -106,6 +109,8 @@ def build_config(args: argparse.Namespace) -> Config:
             config.web_port = args.web_port
         if args.bucket_port is not None:
             config.bucket_port = args.bucket_port
+        if args.app_port is not None:
+            config.app_port = args.app_port
         if args.bucket_endpoint is not None:
             config.bucket_endpoint = args.bucket_endpoint
         if args.webrtc_candidate is not None:

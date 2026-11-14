@@ -22,6 +22,8 @@ control:
   which run as long-lived background tasks and report progress via the hub.
 * **Pets** — CRUD and reference face photos for on-device recognition
   (`api_pets_*`).
+* **Phone app access** — the app API's password, signed-in phones and trusted
+  proxies (`api_app_*`); the app API itself is `app_api/`, on its own port.
 * **Provisioning** — the Web Bluetooth page is pure frontend; it talks to the
   device directly from the browser, so there is no route for it here.
 
@@ -35,14 +37,16 @@ Which module owns what
 `devices.py`    the device list, the device detail and everything it inlines,
                 the manual command sender, the per-device toggles
 `schedules.py`  the schedule editors' one write endpoint and its validators
-`media.py`      serving the friendly media tree, thumbnails, and the role ->
-                slot mapping the Timeline renders from
+`media.py`      serving the friendly media tree and its thumbnails (the
+                resolution and role -> slot logic is `media/serving.py`,
+                shared with the app API)
 `timeline.py`   the grouped day view and one event's stored detail
 `stream.py`     the go2rtc stream proxy and the Cloudflare TURN mint behind a
                 live view
 `pets.py`       pet CRUD, reference face photos, and the cloud import
 `ble.py`        the BLE accessories: pairing, commands, cloud import
 `patchers.py`   applying and removing the on-device binary patches
+`app_access.py` the app API's password, sessions and trusted proxies
 `logs.py`       the live event ring and WebSocket, the capture browser and the
                 uploaded device logs
 

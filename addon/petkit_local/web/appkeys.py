@@ -7,7 +7,7 @@ which is exactly the kind of thing that drifts silently — a misspelt read is a
 `KeyError` at request time and a misspelt `.get` is a `None` that reads as "not
 wired".
 
-Two of the thirteen keys are set from OUTSIDE the constructor, appear in no
+Two of the fourteen keys are set from OUTSIDE the constructor, appear in no
 signature, and are the reason this file lists all of them rather than only what
 `create_panel_app` writes.
 
@@ -31,6 +31,8 @@ key                  what it holds                               set by
 `retention_config`   `RetentionConfig`, or None                  create_panel_app
 `pet_registry`       `PetRegistry`, or None                      create_panel_app
 `ha_publisher`       `HAPublisher`, or None (`--no-ha`)          create_panel_app
+`app_auth`           `AppAuth` — the app API's password and          create_panel_app
+                     sessions, or None when it is not running
 `background_tasks`   the strong references to in-flight          create_panel_app
                      background tasks (see `_spawn_background`)
 `mqtt_broker`        the embedded amqtt broker, for the          main/lifecycle.py
@@ -69,6 +71,7 @@ if TYPE_CHECKING:
     from amqtt.broker import Broker
 
     from petkit_local.ai.pets import PetRegistry
+    from petkit_local.app_api.auth import AppAuth
     from petkit_local.devices.ble import BLERegistry
     from petkit_local.devices.registry import DeviceRegistry
     from petkit_local.events.store import EventStore
@@ -88,6 +91,7 @@ EVENT_STORE: web.AppKey[EventStore | None] = web.AppKey("event_store")
 RETENTION_CONFIG: web.AppKey[RetentionConfig | None] = web.AppKey("retention_config")
 PET_REGISTRY: web.AppKey[PetRegistry | None] = web.AppKey("pet_registry")
 HA_PUBLISHER: web.AppKey[HAPublisher | None] = web.AppKey("ha_publisher")
+APP_AUTH: web.AppKey[AppAuth | None] = web.AppKey("app_auth")
 
 # The strong references to in-flight background tasks (see _spawn_background).
 # A set here; the device app's key of the same name holds a list.

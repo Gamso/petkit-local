@@ -41,6 +41,7 @@ ports:
   8555/tcp: null
   8555/udp: null
   1984/tcp: null
+  8097/tcp: null
   9000/tcp: 9000
 ports_description:
   80/tcp: "PetKit device API (plain HTTP). A remap is honoured — the host port is put in the address devices are handed — but prefer host 80 anyway: a device redirected by DNS dials 80 with nowhere to tell it otherwise, and an ESP32 model provisioned with another port reaches Wi-Fi and then fails to reach the server."
@@ -51,6 +52,7 @@ ports_description:
   8555/udp: "Optional: WebRTC media from the bundled go2rtc, for sub-second live view and talk in a browser or the Companion app (WebRTC Camera integration). Map it together with 8555/tcp to any free host port; 8555 itself is taken on a host that runs Frigate, and Home Assistant's own go2rtc uses 18555. Unmapped, WebRTC stays off."
   8555/tcp: "WebRTC media over TCP, the fallback for a browser that cannot use UDP (card mode webrtc/tcp). Map it together with 8555/udp."
   1984/tcp: "Optional: go2rtc's HTTP API for the WebRTC Camera integration (HACS), which is what puts a microphone button on the Home Assistant camera card. Served only when go2rtc_api_password is set, behind basic auth (user petkit, plain HTTP): whoever has the password can watch, listen and talk through every camera and add streams. See the documentation."
+  8097/tcp: "Optional: the phone app API (/app/v1 only, nothing of the panel or the device API). Authenticated by its own password, set in the panel under Setup -> Phone app access; refuses everything until then. Map it for your reverse proxy or tunnel to reach, and expose only this port - never the panel or 80."
   9000/tcp: "Local S3/OSS bucket — device uploads photos/videos/events here instead of PetKit cloud. Files appear in HA media browser."
 # Use the Supervisor MQTT service if it's available (Mosquitto add-on), but
 # don't require it — many people run an external broker or none at all.

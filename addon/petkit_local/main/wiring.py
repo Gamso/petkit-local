@@ -17,6 +17,8 @@ from aiohttp import web
 
 from petkit_local import ptz
 from petkit_local.ai.pets import PetRegistry
+from petkit_local.app_api.auth import FILENAME as APP_AUTH_FILENAME
+from petkit_local.app_api.auth import AppAuth
 from petkit_local.config import Config
 from petkit_local.devices.ble import BLERegistry
 from petkit_local.devices.registry import DeviceRegistry
@@ -65,6 +67,7 @@ class Services:
     mqtt_bridge: MQTTBridge | None
     upstream_mqtt: UpstreamMQTT | None
     go2rtc: Go2rtc
+    app_auth: AppAuth
     app_config: dict[str, Any]
     media_root: str
     cert_path: str
@@ -272,6 +275,10 @@ def build_services(config: Config, args: argparse.Namespace) -> Services:
 
     cert_path = config.mqtt_cert or f"{config.data_dir}/certs/broker.crt"
 
+    # The phone app API's account: read here, served by its own listener and
+    # administered from the panel, which is why both are handed this object.
+    app_auth = AppAuth(f"{config.data_dir}/{APP_AUTH_FILENAME}")
+
     return Services(
         config=config,
         app=app,
@@ -285,6 +292,7 @@ def build_services(config: Config, args: argparse.Namespace) -> Services:
         mqtt_bridge=mqtt_bridge,
         upstream_mqtt=upstream_mqtt,
         go2rtc=go2rtc,
+        app_auth=app_auth,
         app_config=app_config,
         media_root=media_root,
         cert_path=cert_path,

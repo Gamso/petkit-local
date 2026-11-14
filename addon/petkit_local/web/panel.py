@@ -49,6 +49,9 @@ from aiohttp import web
 
 from petkit_local.utils.paths import UnsafePathError, safe_join
 
+from petkit_local.web.api.app_access import (
+    api_app_access, api_app_password, api_app_sessions, api_app_trusted_proxies,
+)
 from petkit_local.web.api.ble import (
     api_ble_accessories, api_ble_command, api_ble_delete, api_ble_import, api_ble_poll,
 )
@@ -80,12 +83,13 @@ from petkit_local.web.api.talk import api_talk
 from petkit_local.web.api.timeline import api_event_detail, api_timeline
 from petkit_local.web.origin import same_origin_writes
 from petkit_local.web.appkeys import (
-    BACKGROUND_TASKS, BLE_REGISTRY, BRIDGE, CFG, EVENT_STORE, HA_PUBLISHER, HUB,
+    APP_AUTH, BACKGROUND_TASKS, BLE_REGISTRY, BRIDGE, CFG, EVENT_STORE, HA_PUBLISHER, HUB,
     LIVE_CONFIG, PET_REGISTRY, REGISTRY, RETENTION_CONFIG,
 )
 
 if TYPE_CHECKING:
     from petkit_local.ai.pets import PetRegistry
+    from petkit_local.app_api.auth import AppAuth
     from petkit_local.devices.ble import BLERegistry
     from petkit_local.devices.registry import DeviceRegistry
     from petkit_local.events.store import EventStore
@@ -144,7 +148,8 @@ def create_panel_app(registry: DeviceRegistry, ble_registry: BLERegistry | None,
                      event_store: EventStore | None = None,
                      retention_config: RetentionConfig | None = None,
                      pet_registry: PetRegistry | None = None,
-                     ha_publisher: HAPublisher | None = None) -> web.Application:
+                     ha_publisher: HAPublisher | None = None,
+                     app_auth: AppAuth | None = None) -> web.Application:
     """Build the panel application, wiring every collaborator into `app[...]`.
 
     Everything after `panel_config` is optional so tests (and a degraded
@@ -180,6 +185,9 @@ def create_panel_app(registry: DeviceRegistry, ble_registry: BLERegistry | None,
     app[RETENTION_CONFIG] = retention_config
     app[PET_REGISTRY] = pet_registry
     app[HA_PUBLISHER] = ha_publisher
+    # The app API's account. The panel sets its password and revokes its
+    # sessions; the app API itself is a separate application on its own port.
+    app[APP_AUTH] = app_auth
     app[BACKGROUND_TASKS] = set()
     # AppRunner.cleanup() fires on_cleanup, so main.py's existing
     # `panel_runner.cleanup()` already drains these — no change needed there.
@@ -255,6 +263,13 @@ def create_panel_app(registry: DeviceRegistry, ble_registry: BLERegistry | None,
     app.router.add_get("/api/blocked", api_blocked)
     app.router.add_get("/api/retention", api_retention)
     app.router.add_post("/api/retention", api_retention)
+    # --- phone app access (the app API's account; the API is on app_port) ---
+    app.router.add_get("/api/app-access", api_app_access)
+    app.router.add_post("/api/app-access/password", api_app_password)
+    app.router.add_delete("/api/app-access/password", api_app_password)
+    app.router.add_delete("/api/app-access/sessions", api_app_sessions)
+    app.router.add_delete("/api/app-access/sessions/{session_id}", api_app_sessions)
+    app.router.add_post("/api/app-access/trusted-proxies", api_app_trusted_proxies)
 
     # --- live log (ring buffer poll + WebSocket stream) ---
     app.router.add_get("/api/events", api_events)

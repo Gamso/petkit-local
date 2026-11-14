@@ -402,6 +402,12 @@ class Config:
     # certificate in front of this port instead.
     web_port: int = 8099
 
+    # The phone app's API (`app_api/`): its own listener, so a reverse proxy can
+    # be pointed at it and at nothing else. Unlike the panel it authenticates
+    # every request itself, and it refuses every one until a password is set
+    # in the panel. Unmapped by default under the add-on, like the panel.
+    app_port: int = 8097
+
     @property
     def capture_dir(self) -> str:
         """Where `utils/capture.py` appends its JSONL files."""
