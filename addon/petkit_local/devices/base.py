@@ -9,6 +9,7 @@ and the per-category seed data those bodies fall back on in
 from __future__ import annotations
 
 import json
+import logging
 import time
 from dataclasses import dataclass, field
 from typing import Any
@@ -126,6 +127,18 @@ def aliyun_broker_name(product_key: str) -> str:
     return f"{product_key}.iot-as-mqtt.eu-central-1.aliyuncs.com"
 
 
+log = logging.getLogger(__name__)
+
+#: Private marker `Device.queue_command` puts on a queued command dict: the
+#: `time.monotonic()` at which it was asked for. Never sent to a device.
+QUEUED_AT_KEY = "_queued_at"
+
+#: The most commands one device may have waiting. Far above anything a person
+#: or a scene produces at once (a device has a few dozen settable entities),
+#: and small enough that a retrying automation cannot grow it for days.
+MAX_QUEUED_COMMANDS = 64
+
+
 @dataclass
 class Device:
     """One registered PetKit device: its identity, credentials and live state.
@@ -183,6 +196,10 @@ class Device:
     #: the liveness check sees only silence and calls a perfectly healthy device
     #: offline (`ha/publisher.py::device_is_stale`).
     last_mqtt: float = 0.0
+    #: Every LAN address recently named for this device, `{kind: {ip: when}}` —
+    #: see `devices/addresses.py`. `state["ip"]` is one unauthenticated claim;
+    #: this is what the patchers check it against before fetching from it.
+    addresses_seen: dict[str, dict[str, float]] = field(default_factory=dict)
     #: Topic filters in force for this device's current MQTT session — the ones
     #: it asked for, plus the ones subscribed on its behalf
     #: (`mqtt/auth.py::_server_subscribe`, which is the only source for a T5:
@@ -239,6 +256,26 @@ class Device:
     def is_feeder(self) -> bool:
         """Whether this is a feeder, which selects the feeder settings block."""
         return self.device_type in DEVICE_TYPES_FEEDER
+
+    @property
+    def feed_schedule_active(self) -> bool:
+        """Whether a feeder is served its recurring meals, or they are paused.
+
+        A pause is ours alone: the firmware has no "schedule enabled" field a
+        server can write, only the plan itself, so pausing means answering
+        with a plan that has no meals in it while the real one stays stored.
+        That makes this the single question every place that hands a device
+        its plan has to ask -- `dev_feed_get` over either transport and both
+        `property.set{feed}` pushes -- because one that forgets hands the
+        meals straight back.
+
+        Kept under `config["local"]` with the other values that are our intent
+        and never a device setting; absent means nobody has paused anything.
+        """
+        local = self.config.get("local")
+        if not isinstance(local, dict):
+            return True
+        return to_bool(local.get("feedScheduleActive"), True)
 
     @property
     def is_water_fountain(self) -> bool:
@@ -399,6 +436,40 @@ class Device:
         """
         return real_host or self.aliyun_mqtt_host
 
+    def queue_command(self, cmd: Any, service_suffix: str = "") -> None:
+        """Queue a command for the next heartbeat, remembering when it was asked.
+
+        The stamp is what lets `http/handlers/heartbeat.py::still_wanted` tell
+        a command the device is collecting on its next poll from one that sat
+        here for a day while it was unplugged. Callers that append to
+        `command_queue` directly (the patchers, a firmware job's trigger) queue
+        unstamped entries, which are delivered whenever the device returns.
+
+        Args:
+            service_suffix: The `thing/service/{suffix}` the envelope was built
+                for; recorded for the heartbeat's translation.
+        """
+        if isinstance(cmd, dict):
+            if service_suffix:
+                cmd["_service_suffix"] = service_suffix
+            # Monotonic: only ever compared within this process (the queue is
+            # not persisted), and a wall clock stepped by NTP must not age a
+            # command it did not wait for.
+            cmd[QUEUED_AT_KEY] = time.monotonic()
+        self.command_queue.append(cmd)
+        # Nothing drains the queue of a device that never comes back, so an
+        # automation retrying against it would grow this without bound.
+        while len(self.command_queue) > MAX_QUEUED_COMMANDS:
+            stamped = [c for c in self.command_queue
+                       if isinstance(c, dict) and QUEUED_AT_KEY in c]
+            if not stamped:
+                break
+            oldest = stamped[0]
+            self.command_queue[:] = [c for c in self.command_queue if c is not oldest]
+            log.warning("Device %d: command queue is full (%d), dropping the oldest "
+                        "undelivered command: %s", self.petkit_id, MAX_QUEUED_COMMANDS,
+                        oldest.get("_service_suffix") or oldest.get("method") or "?")
+
     def pop_commands(self) -> list[Any]:
         """Drain the queue and return everything in it, oldest first.
 
@@ -410,13 +481,18 @@ class Device:
         self.command_queue.clear()
         return cmds
 
+    @property
+    def last_ip(self) -> str:
+        """The LAN address as it is persisted -- see `to_dict`."""
+        return str(self.state.get("ip") or "")
+
     def to_dict(self) -> dict[str, Any]:
         """The persisted form: identity, MQTT credentials and `config` only.
 
         Live state (`state`, `command_queue`, the liveness timestamps and flags)
         is deliberately excluded — it is re-derived from the device's next
         contact, and persisting it would resurrect a stale "online" after a
-        restart.
+        restart. One exception, `last_ip`, is explained where it is written.
         """
         return {
             "device_type": self.device_type,
@@ -434,6 +510,16 @@ class Device:
             "api_secret": self.api_secret,
             "config": self.config,
             "created_at": self.created_at,
+            # The one piece of live state that does survive, as a HINT rather
+            # than a fact: the LAN address gates the stream probe, the Patchers
+            # tab and two-way talk, and a YumShare Dual-Hopper reports it only
+            # with a full state report, which it sends rarely. After a restart
+            # the add-on used to sit without an IP for as long as that took --
+            # half an hour was observed -- with no stream, no camera in Home
+            # Assistant and no talk. `media/go2rtc.py::probe_stream` verifies
+            # the address before anything is advertised, so a stale one costs a
+            # five-second probe and nothing else.
+            "last_ip": self.last_ip,
         }
 
     @classmethod
@@ -461,4 +547,9 @@ class Device:
         d.api_secret = data.get("api_secret", d.api_secret)
         d.config = data.get("config", {})
         d.created_at = data.get("created_at", d.created_at)
+        last_ip = str(data.get("last_ip") or "")
+        # Only a plausible IPv4 literal is seeded (see `to_dict`): the value
+        # came from `request.remote` in some paths and could be anything.
+        if last_ip.count(".") == 3 and all(p.isdigit() and int(p) < 256 for p in last_ip.split(".")):
+            d.state["ip"] = last_ip
         return d

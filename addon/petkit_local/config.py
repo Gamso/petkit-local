@@ -14,7 +14,7 @@ import json
 import logging
 import os
 import urllib.request
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
@@ -84,6 +84,12 @@ def _opt_bool(opts: dict[str, Any], key: str, default: bool) -> bool:
     return value
 
 
+#: go2rtc's ports (see `media/go2rtc.py`), named here so the loader can read
+#: their host mapping without importing the sidecar.
+WEBRTC_PORT = 8555
+GO2RTC_API_PORT = 1984
+
+
 def _supervisor_host_ip() -> str | None:
     """The HA host's LAN IPv4 on its primary interface, via the Supervisor API.
 
@@ -143,6 +149,27 @@ def _supervisor_port_map() -> dict[str, Any]:
                     "(%s); assuming the ports config.yaml asks for", e)
         return {}
     return network if isinstance(network, dict) else {}
+
+
+def parse_str_list(raw: Any, option: str) -> list[str]:
+    """A list-of-strings option, blanks dropped, anything else logged away.
+
+    Never raises, like every other option: a wrong shape degrades to "nothing
+    configured" rather than keeping the add-on from serving the devices.
+    """
+    if not raw:
+        return []
+    if isinstance(raw, str):
+        raw = [raw]
+    if not isinstance(raw, list):
+        log.warning("Option %s is not a list; ignoring it", option)
+        return []
+    out = []
+    for item in raw:
+        s = str(item).strip() if item is not None else ""
+        if s and s not in out:
+            out.append(s)
+    return out
 
 
 def _published_port(ports: dict[str, Any], container_port: int) -> int | None:
@@ -255,6 +282,29 @@ class Config:
     api_url: str = ""
     data_dir: str = "/data"
     log_level: str = "INFO"
+
+    #: WebRTC out of the camera sidecar (`media/go2rtc.py`): the `host:port` a
+    #: browser on the LAN reaches go2rtc's WebRTC listener on. Behind the
+    #: Supervisor's bridge NAT that is the HA host's IP and the host port
+    #: 8555 is published on (config.yaml maps TCP and UDP); empty leaves
+    #: WebRTC off unless the container has a LAN address of its own (macvlan,
+    #: see `media/go2rtc.py::lan_ip`), and then only when this says `auto`
+    #: (`--webrtc-candidate`): nothing here turns WebRTC on by itself.
+    webrtc_candidate: str = ""
+    #: Basic-auth password for go2rtc's HTTP API when it is published on the
+    #: host (1984/tcp mapped), so an external consumer -- the WebRTC Camera
+    #: integration in Home Assistant -- can use the streams and the talk
+    #: backchannel. Empty keeps the API on loopback whatever is mapped: an
+    #: unauthenticated API hands every camera, and its microphone, to the LAN.
+    go2rtc_api_password: str = ""
+    go2rtc_api_published: bool = False
+    #: Further WebRTC candidates go2rtc announces AFTER the host one, verbatim
+    #: in go2rtc's own syntax (`stun:8565` = "my public address, this port";
+    #: `home.example.org:8565`; `203.0.113.5:8565`). What makes WebRTC -- and
+    #: with it audio and talk -- work from outside the LAN, once the router
+    #: forwards that port to the host. Without them only the LAN candidate is
+    #: announced, which is exactly the behaviour before this option existed.
+    go2rtc_webrtc_candidates: list[str] = field(default_factory=list)
 
     bucket_port: int = 9000
     #: Where the device is told to upload its photos and video. Empty means
@@ -488,6 +538,24 @@ class Config:
         # and all — it is the escape hatch for anything the mapping cannot say.
         host_ip = _supervisor_host_ip()
         ports = _supervisor_port_map()
+
+        # WebRTC out of go2rtc needs a candidate the browser can reach. In the
+        # Supervisor's bridge network that is the host's IP and the host port
+        # 8555 is published on (UDP is the path that matters; config.yaml maps
+        # TCP alongside for the `webrtc/tcp` fallback).
+        webrtc_port = _published_port(ports, WEBRTC_PORT)
+        if host_ip and webrtc_port is not None:
+            c.webrtc_candidate = f"{host_ip}:{webrtc_port}"
+        c.go2rtc_api_password = str(opts.get("go2rtc_api_password") or "").strip()
+        api_mapped = _published_port(ports, GO2RTC_API_PORT) is not None
+        if api_mapped and not c.go2rtc_api_password:
+            log.warning("Container port %d/tcp is published but go2rtc_api_password is "
+                        "empty, so go2rtc's API stays on loopback: it hands out every "
+                        "camera and is never exposed without a password",
+                        GO2RTC_API_PORT)
+        c.go2rtc_api_published = api_mapped and bool(c.go2rtc_api_password)
+        c.go2rtc_webrtc_candidates = parse_str_list(opts.get("go2rtc_webrtc_candidates"),
+                                                    "go2rtc_webrtc_candidates")
 
         api_opt = (opts.get("api_url") or "").strip()
         if not api_opt or ".local" in api_opt:

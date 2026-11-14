@@ -21,7 +21,7 @@ from petkit_local.devices.state_parsers import apply_consumable_state
 from petkit_local.events import codes
 from petkit_local.ha.categories import get_entities_for_device
 from petkit_local.ha.commands import (
-    ALL_ACTIONS, Refused, handle_ha_command, multi_config_texts,
+    ALL_ACTIONS, LOCAL_DEFAULTS, Refused, handle_ha_command, multi_config_texts,
 )
 from petkit_local.ha.timezone_sync import push_timezone
 from petkit_local.media.go2rtc import stream_urls_with_rtsp
@@ -33,6 +33,7 @@ from petkit_local.utils.dicts import dig_path
 from petkit_local.web.api._common import (
     _deliver, _device_log_reason, _device_or_404, _json_body,
 )
+from petkit_local.web.appkeys import HA_PUBLISHER, HUB
 
 log = logging.getLogger(__name__)
 
@@ -60,7 +61,7 @@ if TYPE_CHECKING:
 #     until somebody runs Refill.
 DESTRUCTIVE_ACTIONS = {
     "dump_litter", "maintenance_start", "reset_n50", "reset_n60", "reset_desiccant",
-    "fountain_drain",
+    "fountain_drain", "reset_bagbox",
 }
 
 
@@ -80,6 +81,9 @@ def _state_doc(d: Device) -> dict[str, Any]:
         "schedule": d.config.get("schedule", []),
         "feed_schedule": d.config.get("feed_schedule", {}),
         "capabilities": {ct: (ct in enabled) for ct in d.CAPABILITY_TYPES},
+        # Without it every `local.` control reads empty here while HA shows
+        # its value -- and the paused-plan switch would read as off.
+        "local": {**LOCAL_DEFAULTS, **(d.config.get("local") or {})},
         "multi_config": multi_config_texts(d),
     }
 
@@ -502,7 +506,7 @@ async def api_device_delete(request: web.Request) -> web.Response:
     d = _device_or_404(request)
     did = d.petkit_id
 
-    publisher = request.app.get("publisher")
+    publisher = request.app.get(HA_PUBLISHER)
     if publisher:
         await publisher.unpublish_discovery(d)
 
@@ -514,7 +518,7 @@ async def api_device_delete(request: web.Request) -> web.Response:
 
     reg.remove(did)
 
-    hub = request.app.get("event_hub")
+    hub = request.app.get(HUB)
     if hub:
         hub.forget_device(did)
 

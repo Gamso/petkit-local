@@ -114,6 +114,15 @@ class EntityDef:
         return self.value_path.split(".")[-1]
 
 
+#: Whether the ADD-ON is running, as opposed to one device being reachable.
+#: Retained `online` while `ha/publisher.py` holds its broker session, and
+#: `offline` by that session's last will or a clean shutdown. Every entity
+#: needs both this and its own availability topic: a per-device topic is
+#: retained too, and with nobody left to update it, a stopped add-on left
+#: every one of them reading `online` for good.
+STATUS_TOPIC = "petkit-local/status"
+
+
 def command_topic_for(device_id: int, entity: EntityDef) -> str:
     """Per-entity command topic.
 
@@ -152,7 +161,8 @@ def build_discovery_payload(
     Returns:
         A dict always carrying `name`, `unique_id`, `object_id`, `device`
         (identifiers/name/manufacturer/model/serial_number) and `availability`
-        (topic + online/offline payloads). Read-only components additionally
+        (the device's own topic and the add-on's `STATUS_TOPIC`, both of which
+        must read online). Read-only components additionally
         carry `state_topic` + `value_template` — except `event`, whose payload
         must reach HA's event platform as raw JSON (see the branch below);
         settable ones carry `command_topic` plus their component-specific keys
@@ -178,11 +188,21 @@ def build_discovery_payload(
             "model": device_type.upper(),
             "serial_number": serial_number,
         },
-        "availability": {
-            "topic": availability_topic or f"petkit-local/{device_id}/availability",
-            "payload_available": "online",
-            "payload_not_available": "offline",
-        },
+        "availability": [
+            {
+                "topic": availability_topic or f"petkit-local/{device_id}/availability",
+                "payload_available": "online",
+                "payload_not_available": "offline",
+            },
+            {
+                "topic": STATUS_TOPIC,
+                "payload_available": "online",
+                "payload_not_available": "offline",
+            },
+        ],
+        # HA's default is `latest`, under which whichever topic spoke last
+        # decides alone — a device heartbeat would then outvote a dead add-on.
+        "availability_mode": "all",
     }
 
     if entity.device_class:
