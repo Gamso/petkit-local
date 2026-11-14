@@ -149,6 +149,9 @@ class Exchange:
     #: `redact.cloud_error`. Carried separately from `status` because it arrives
     #: with HTTP 200.
     error: dict | None = None
+    #: The reply could not be decoded, so redaction never read it and `body` is
+    #: the upstream's bytes verbatim — see `redact.RedactionResult.unreadable`.
+    unreadable: bool = False
 
     @property
     def blocked(self) -> list[Redaction]:
@@ -161,9 +164,10 @@ class Exchange:
 
         False for a transport-level failure AND for a 200 that carries a refusal
         — the two are the same thing from the device's point of view, and both
-        mean the caller should serve its own answer instead.
+        mean the caller should serve its own answer instead. False too for a
+        reply redaction could not read: relaying that is relaying it unredacted.
         """
-        return 200 <= self.status < 300 and self.error is None
+        return 200 <= self.status < 300 and self.error is None and not self.unreadable
 
     def to_response(self) -> web.Response:
         """The redacted reply, as something aiohttp can send to the device."""
@@ -386,7 +390,8 @@ async def forward(
 
     log.info("PROXY %s %s -> %s [%d]%s%s", request.method, request.path, target_url,
              resp.status,
-             f" error:{error.get('code')}" if error else "",
+             f" error:{error.get('code')}" if error
+             else " unreadable" if redacted.unreadable else "",
              f" redacted:{','.join(r.rule for r in redacted.records)}" if redacted.records else "")
 
     return Exchange(
@@ -398,6 +403,7 @@ async def forward(
         records=redacted.records,
         captured=redacted.captured,
         error=error,
+        unreadable=redacted.unreadable,
     )
 
 
@@ -420,7 +426,7 @@ async def proxy_request(
 
     Returns:
         The redacted upstream response, or a 502 carrying ``{"result": {},
-        "error": ...}`` when it could not be reached — an empty result rather
+        "error": ...}`` when it could not be reached or its reply could not be read — an empty result rather
         than a bare error body, so firmware that only looks at `result` sees the
         same shape it always does.
     """
@@ -435,6 +441,9 @@ async def proxy_request(
     exchange = await forward(request, body=body, upstream=base, policy=policy)
     if exchange is None:
         return web.json_response({"result": {}, "error": "upstream unreachable"}, status=502)
+    if exchange.unreadable:
+        return web.json_response({"result": {}, "error": "upstream reply unreadable"},
+                                 status=502)
     return exchange.to_response()
 
 

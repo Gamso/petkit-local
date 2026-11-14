@@ -382,6 +382,26 @@ def test_merge_refuses_shapes_it_cannot_join(left, right):
     assert merge_json_result_lists(left, right) is None
 
 
+async def test_proxy_request_refuses_a_reply_it_could_not_read():
+    """The legacy entry point has no local answer to fall back on, so an
+    unreadable reply becomes its "nothing from upstream" answer."""
+    async def cloud(request):
+        return web.Response(body=b'{"result": {"user_cmd": {"run_cmd": "id"}}}x')
+
+    up, base = await _upstream(cloud)
+    client = await _proxying_client(base, [])
+    try:
+        r = await client.post("/6/t5/dev_device_info", data=b"a")
+        raw = await r.read()
+        assert r.status == 502
+        assert b"run_cmd" not in raw
+        assert json.loads(raw)["result"] == {}
+    finally:
+        await close_proxy_session(client.app)
+        await client.close()
+        await up.close()
+
+
 # --- the upstream's certificate ----------------------------------------------
 
 def test_every_preset_is_verified():

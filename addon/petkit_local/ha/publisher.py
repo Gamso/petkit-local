@@ -35,11 +35,12 @@ from petkit_local.ha.entities.ble import get_ble_entities
 from petkit_local.ha.entities.pet import PET_SENSORS
 from petkit_local.ha.discovery import STATUS_TOPIC, build_discovery_payload, discovery_topic
 from petkit_local.devices.state_parsers import apply_consumable_state
-from petkit_local.events.normalize import MQTT_ENVELOPE_KEYS
+from petkit_local.events.normalize import MQTT_ENVELOPE_KEYS, apply_feed_plan_state
 from petkit_local.ha.commands import LOCAL_DEFAULTS, multi_config_texts
 from petkit_local.utils.jsonio import read_bytes
 
 if TYPE_CHECKING:
+    from petkit_local.ai.pets import PetRegistry
     from petkit_local.devices.ble import BLEDevice, BLERegistry
     from petkit_local.events.store import EventStore
     from petkit_local.mqtt.bridge import MQTTBridge
@@ -117,6 +118,8 @@ class HAPublisher:
         self._client = None
         self._connected = False
         self._commands = CommandRouter(self, registry, ble_registry)
+        self._pets: PetRegistry | None = None
+        self._pet_store: EventStore | None = None
 
     @property
     def connected(self) -> bool:
@@ -133,6 +136,12 @@ class HAPublisher:
     def set_command_sink(self, sink: MQTTBridge) -> None:
         """Wire the MQTT bridge so HA setting changes reach the device in real time."""
         self._commands.set_command_sink(sink)
+
+    def set_pet_source(self, pets: PetRegistry, store: EventStore) -> None:
+        """Wire the pet registry and event store, so every pet can be replayed
+        on (re)connect without waiting for one of its events."""
+        self._pets = pets
+        self._pet_store = store
 
     async def start(self) -> None:
         """Connect to the HA broker and serve commands, reconnecting forever.
@@ -235,6 +244,25 @@ class HAPublisher:
             for ble_dev in self._ble_registry.all():
                 await self.publish_ble_discovery(ble_dev)
                 await self.publish_ble_state(ble_dev)
+        await self.publish_all_pets()
+
+    async def publish_all_pets(self) -> None:
+        """Re-announce every pet and republish its state.
+
+        A pet's state is otherwise published only when one of its events
+        lands, so after a restart -- or a broker that lost its retained
+        messages -- every pet sensor read `unknown` until the cat next used
+        the box. Never raises: a store hiccup here must not trip the reconnect
+        backoff `start()` applies to exceptions.
+        """
+        if self._pets is None or self._pet_store is None:
+            return
+        try:
+            for pet in await self._pets.all():
+                await self.publish_pet_discovery(pet)
+                await self.publish_pet_state(pet, self._pet_store)
+        except Exception:
+            log.warning("Republishing the pets failed", exc_info=True)
 
     async def availability_watchdog(self, timeout: int, interval: float | None = None) -> None:
         """Periodically flip stale devices to offline in HA. Runs forever.
@@ -486,6 +514,7 @@ class HAPublisher:
                 "lastVisit": last_visit_iso,
                 "visitsToday": stats.get("visits_today", 0),
                 "lastVisitWeight": stats.get("last_visit_weight"),
+                "weight": stats.get("weight"),
                 "lastVisitDuration": stats.get("last_visit_duration"),
                 "lastDeviceUsed": last_device_used,
             }
@@ -572,6 +601,9 @@ class HAPublisher:
     until the next contact even though the date is sitting in config.
         """
         apply_consumable_state(device)
+        # Today's planned portions, for the same reason: they follow the
+        # weekday and the stored schedule, and no report announces either.
+        apply_feed_plan_state(device)
         state = device.state or {}
         # Derived here for the same reason the consumable countdown is: it
         # depends on things no state report carries — the device's IP, whether it

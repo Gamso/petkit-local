@@ -182,7 +182,9 @@ async def proxy_middleware(request: web.Request, handler: Handler) -> web.Stream
        observed on real hardware, a `dev_serverinfo` with no server list puts the
        device into a boot loop every ~2.4s. The status, the error and the body
        are all still recorded — observing the refusal is the point, showing it to
-       the device is not.
+       the device is not. A 2xx whose body is not JSON is the third case: no
+       redaction rule can read it and firmware's parser is more forgiving than
+       ours, so it is never relayed (`Exchange.unreadable`).
     6. Anything else is answered with the redacted upstream reply. A heartbeat
        that got this far was idle, so merging is a no-op on our side and simply
        lets the cloud's commands through.
@@ -279,7 +281,8 @@ async def proxy_middleware(request: web.Request, handler: Handler) -> web.Stream
         if not exchange.usable:
             log.info("PROXY: upstream gave nothing usable for %s (status %d%s), "
                      "serving locally", request.path, exchange.status,
-                     f", error {exchange.error.get('code')}" if exchange.error else "")
+                     f", error {exchange.error.get('code')}" if exchange.error
+                     else ", body is not JSON" if exchange.unreadable else "")
             return local
 
         if request.path.rstrip("/").rsplit("/", 1)[-1] == "dev_device_info":
@@ -319,6 +322,7 @@ def _note_outcome(request: web.Request, exchange) -> None:
     error = exchange.error or {}
     outcome = ("ok" if exchange.usable
                else f"error_{error.get('code')}" if error
+               else "unreadable" if exchange.unreadable and 200 <= exchange.status < 300
                else f"http_{exchange.status}")
 
     request[PROXY_OUTCOME] = {
