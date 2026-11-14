@@ -188,6 +188,10 @@ class Device:
     #: the liveness check sees only silence and calls a perfectly healthy device
     #: offline (`ha/publisher.py::device_is_stale`).
     last_mqtt: float = 0.0
+    #: Every LAN address recently named for this device, `{kind: {ip: when}}` —
+    #: see `devices/addresses.py`. `state["ip"]` is one unauthenticated claim;
+    #: this is what the patchers check it against before fetching from it.
+    addresses_seen: dict[str, dict[str, float]] = field(default_factory=dict)
     #: Topic filters in force for this device's current MQTT session — the ones
     #: it asked for, plus the ones subscribed on its behalf
     #: (`mqtt/auth.py::_server_subscribe`, which is the only source for a T5:

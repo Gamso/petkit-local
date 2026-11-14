@@ -35,9 +35,11 @@ import urllib.parse
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
 
+from petkit_local.devices import addresses
 from petkit_local.devices.state_parsers import (apply_consumable_state,
                                                 normalize_property_params,
                                                 parse_state_report,
+                                                reported_ip,
                                                 reports_used_times)
 from petkit_local.events import codes, decode
 from petkit_local.utils.coerce import to_float, to_int
@@ -456,6 +458,7 @@ def apply_state_snapshot(device: Device, state: Any) -> bool:
     device.state.update(state)  # raw, for the panel's Debug info and the echoes
     device.state.update(parse_state_report(device.device_type, state))
     device.state.update(normalize_property_params(device.device_type, state))
+    addresses.note(device, addresses.CLAIMED, reported_ip(state))
     if derived_used_times is not None:
         device.state["usedTimes"] = derived_used_times
     apply_consumable_state(device)

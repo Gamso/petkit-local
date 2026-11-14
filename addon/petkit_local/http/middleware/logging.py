@@ -16,6 +16,7 @@ import time
 
 from aiohttp import web
 
+from petkit_local.devices import addresses
 from petkit_local.http.handlers._common import device_id, request_device
 from petkit_local.http.middleware import API_PREFIX, PROXY_OUTCOME, Handler
 from petkit_local.utils.capture import capture_record
@@ -122,6 +123,9 @@ async def logging_middleware(request: web.Request, handler: Handler) -> web.Stre
         device = request_device(request)
         if device is not None:
             device.last_seen = time.time()
+            # Where this request really came from, as opposed to the address a
+            # report says the device has — see `devices/addresses.py`.
+            addresses.note(device, addresses.PEER, request.remote)
             # The `type` spelling the firmware itself puts in `X-Device`, kept
             # verbatim. It is one of the five fields hashed into that header's
             # `sign`, so signing a request AS this device needs the device's own
