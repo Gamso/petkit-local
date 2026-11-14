@@ -63,9 +63,12 @@ which are multi-megabyte and not in the repo. Populate `addon/tests/firmware/`
 first; the test module says what it expects. Without the flag those tests skip.
 
 The suite needs no device, no broker and no network. CI runs it on Python 3.14, the
-version the image ships, imports every module so a runtime-only one cannot break unnoticed, and builds
-the container image for amd64, arm64 and armv7, because a passing test suite says
-nothing about whether the image builds.
+version the image ships, and imports every module so a runtime-only one cannot break
+unnoticed. A pull request that changes `addon/Dockerfile`, `addon/requirements.txt` or
+`addon/pyproject.toml` also builds the container image for amd64, arm64 and armv7
+(`build-image.yml`), because a passing test suite says nothing about whether the
+image builds; a change to the code alone cannot break that build, so it is not
+paid for. A `v*` tag builds all three again before anything is published.
 
 The panel's JavaScript and CSS are prettier-formatted, and CI checks it:
 

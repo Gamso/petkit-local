@@ -65,41 +65,6 @@ jobs:
       - name: Run test suite
         run: pytest -q
 
-  # The image has to BUILD on every architecture config.yaml advertises, and
-  # nobody here owns 32-bit ARM hardware to find out on. Nothing else catches
-  # this: the Python suite above passes happily while the image is unbuildable,
-  # which is exactly what shipped — armv7 was listed as supported while
-  # `cryptography` had no musllinux armv7 wheel, so it would have failed on
-  # first install for every one of those users.
-  #
-  # QEMU makes it slow but it only has to be correct. armv7 is the whole point:
-  # it takes the Debian branch of the Dockerfile and is the only arch that
-  # compiles psutil and pyyaml from source.
-  #
-  # Pull requests only: on main the same three builds run in `publish.yml`, and
-  # a failure there fails the push just as loudly. Running both would pay for
-  # the slow one twice.
-  build:
-    if: github.event_name == 'pull_request'
-    runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        platform: [linux/amd64, linux/arm64, linux/arm/v7]
-    steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
-      # Emulation for the two ARM targets. Free on amd64, so not conditional.
-      - uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3.7.0
-      # TARGETARCH is a BuildKit built-in and the legacy builder leaves it
-      # empty, so the per-arch base selection needs buildx to work at all.
-      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
-      - name: Build the add-on image
-        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
-        with:
-          context: ./addon
-          platforms: ${{ matrix.platform }}
-          push: false
-
   lint:
     runs-on: ubuntu-latest
     steps:

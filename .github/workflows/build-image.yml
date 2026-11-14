@@ -1,0 +1,63 @@
+name: build-image
+
+permissions:
+  contents: read
+
+# The image has to BUILD on every architecture config.yaml advertises, and
+# nobody here owns 32-bit ARM hardware to find out on. Nothing else catches
+# this: the Python suite passes happily while the image is unbuildable, which
+# is exactly what shipped once — armv7 was listed as supported while
+# `cryptography` had no musllinux armv7 wheel, so it would have failed on
+# first install for every one of those users.
+#
+# QEMU makes it slow but it only has to be correct. armv7 is the whole point:
+# it takes the Debian branch of the Dockerfile and is the only arch that
+# compiles its dependencies from source.
+#
+# It runs only for a pull request that changes what the image is built from.
+# The Dockerfile installs ffmpeg and `requirements.txt`, fetches go2rtc, and
+# copies `pyproject.toml` and the package; it runs none of the code. A change
+# to Python or the panel alone produces the same layers with different files
+# copied in at the end, so it cannot fail here, and paying three QEMU builds
+# for it on every pull request bought nothing.
+#
+# A release is still covered whatever this skips: `publish.yml` builds all
+# three architectures on a `v*` tag and publishes nothing unless every one
+# succeeds. Run this by hand (Actions -> build-image -> Run workflow) to check
+# a branch anyway, e.g. after a base image moved.
+#
+# Third-party actions are pinned to a commit SHA, not a tag; see tests.yml.
+
+on:
+  pull_request:
+    paths:
+      - addon/Dockerfile
+      - addon/requirements.txt
+      - addon/pyproject.toml
+      - .github/workflows/build-image.yml
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        platform: [linux/amd64, linux/arm64, linux/arm/v7]
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      # Emulation for the two ARM targets. Free on amd64, so not conditional.
+      - uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3.7.0
+      # TARGETARCH is a BuildKit built-in and the legacy builder leaves it
+      # empty, so the per-arch base selection needs buildx to work at all.
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
+      - name: Build the add-on image
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
+        with:
+          context: ./addon
+          platforms: ${{ matrix.platform }}
+          push: false
