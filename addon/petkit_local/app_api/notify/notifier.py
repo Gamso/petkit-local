@@ -19,7 +19,15 @@ for that kind (`RATE_LIMITS`); and the queue has room. Publishing happens in a
 background worker, so a slow or dead ntfy server never holds up the hub, and
 nothing in this module can raise into the event path.
 
-Only ever the configured ntfy server is called. Never PetKit's cloud.
+Two sinks share those gates: the panel's ntfy topic (`enabled`, a server, a
+topic) and every phone that registered its own UnifiedPush endpoint with its
+session (`push.py`). The kind switches are the server's, and apply to both; a
+notification is classified and counted when at least one sink would take it.
+Dedupe and the rate limit are therefore shared too: a notification the topic
+would not have sent is not sent to a phone either.
+
+Only ever the configured ntfy server and the endpoints the phones registered
+are called. Never PetKit's cloud.
 """
 from __future__ import annotations
 
@@ -35,6 +43,9 @@ from urllib.parse import urlsplit
 import aiohttp
 
 from petkit_local.app_api.notify import rules
+from petkit_local.app_api.notify.failurelog import FAILURE_LOG_INTERVAL as FAILURE_LOG_INTERVAL
+from petkit_local.app_api.notify.failurelog import FailureLog
+from petkit_local.app_api.notify.push import PushSink
 from petkit_local.app_api.notify.rules import Notification
 from petkit_local.app_api.notify.settings import (
     KIND_CONSUMABLE, KIND_ERROR, KIND_FEED_FAILED, KIND_FEED_SERVED, KIND_FOOD_LOW,
@@ -66,8 +77,6 @@ DEDUPE_MEMORY = 4096
 MAX_DEVICES = 64
 #: One publish, connect to response.
 PUBLISH_TIMEOUT = 10.0
-#: How often a failure is written to the log; the ones in between are counted.
-FAILURE_LOG_INTERVAL = 300.0
 
 #: Hub kinds that never concern a device's state.
 _NOT_STATE = frozenset({"cmd", "patcher", "media", "devlog", "blocked", "redact"})
@@ -95,31 +104,12 @@ def encode_header(text: str) -> str:
     return "=?UTF-8?B?" + base64.b64encode(text.encode("utf-8")).decode("ascii") + "?="
 
 
-class _FailureLog:
-    """Logs a failure at most every `FAILURE_LOG_INTERVAL`, counting the rest."""
-
-    def __init__(self, clock: Callable[[], float]) -> None:
-        self._clock = clock
-        self._last = float("-inf")
-        self._suppressed = 0
-
-    def __call__(self, message: str) -> None:
-        now = self._clock()
-        if now - self._last < FAILURE_LOG_INTERVAL:
-            self._suppressed += 1
-            return
-        more = f" ({self._suppressed} more since the last report)" if self._suppressed else ""
-        log.warning("ntfy: %s%s", message, more)
-        self._last = now
-        self._suppressed = 0
-
-
 class Notifier:
     """Turns the hub's feed into ntfy notifications. See the module docstring."""
 
     def __init__(self, config: NtfyConfig, registry: Any, *, pet_registry: Any = None,
                  hub: Hub | None = None, clock: Callable[[], float] = time.monotonic,
-                 queue_size: int = QUEUE_SIZE) -> None:
+                 queue_size: int = QUEUE_SIZE, app_auth: Any = None) -> None:
         self._config = config
         self._registry = registry
         self._pets = pet_registry
@@ -133,11 +123,17 @@ class Notifier:
         self._holding: OrderedDict[Any, dict[str, float]] = OrderedDict()
         self._announced: dict[Any, set[str]] = {}
         self._session: aiohttp.ClientSession | None = None
-        self._failure = _FailureLog(clock)
+        self._failure = FailureLog(clock)
+        # The phones' own endpoints live with their sessions in `AppAuth`.
+        self._push = PushSink(app_auth, clock=clock) if app_auth is not None else None
 
     @property
     def config(self) -> NtfyConfig:
         return self._config
+
+    @property
+    def push(self) -> PushSink | None:
+        return self._push
 
     # --- lifecycle ------------------------------------------------------------
 
@@ -165,6 +161,8 @@ class Notifier:
             await self.close()
 
     async def close(self) -> None:
+        if self._push is not None:
+            await self._push.close()
         if self._session is not None:
             await self._session.close()
             self._session = None
@@ -247,8 +245,11 @@ class Notifier:
     def submit(self, notification: Notification) -> bool:
         """Queue `notification` if every gate lets it through; True if queued."""
         settings = self._config.settings
-        if not settings.ready or not settings.wants(notification.kind):
+        if not settings.wants(notification.kind):
             return False
+        if not (settings.ready or (self._push is not None
+                                   and self._push.wants(notification.kind))):
+            return False  # no sink would take it
         key = notification.dedupe_key
         if key:
             if key in self._seen:
@@ -285,11 +286,22 @@ class Notifier:
     # --- publishing -----------------------------------------------------------
 
     async def publish_forever(self) -> None:
-        """Drain the queue, one publish at a time, until cancelled."""
+        """Drain the queue until cancelled: pushes started, then one ntfy publish.
+
+        The pushes run as their own tasks (`PushSink.dispatch` returns at
+        once), so neither sink waits for the other.
+        """
         while True:
             notification = await self._queue.get()
             settings = self._config.settings
-            if settings.ready and settings.wants(notification.kind):
+            if not settings.wants(notification.kind):
+                continue
+            if self._push is not None:
+                try:
+                    self._push.dispatch(notification)
+                except Exception as e:  # noqa: BLE001 - one sink must not end the other
+                    self._failure(f"could not queue a push ({type(e).__name__})")
+            if settings.ready:
                 await self.publish(notification, settings)
 
     async def publish(self, notification: Notification,

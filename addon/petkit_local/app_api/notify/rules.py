@@ -18,6 +18,12 @@ Two sources, because the things an owner wants to hear about arrive two ways:
 Payloads stay minimal on purpose: a device's product name, a pet's name, what
 happened. No ids, no URLs, no token — a notification is shown on a lock screen
 and passes through the ntfy server.
+
+Each `Notification` also carries the stable keys the phone app's own push
+message is built from (`notify/push.py`): `code` — the event's `event_type` for
+an event, the `state` key for a condition, None for `offline` — `pet_id` and
+`ts`. Never the title or the message: the app writes those itself, in the
+phone's language.
 """
 from __future__ import annotations
 
@@ -62,6 +68,13 @@ class Notification:
     priority: int = PRIORITY_DEFAULT
     tags: tuple[str, ...] = ()
     dedupe_key: str | None = None
+    #: The stable key the app translates: an event's `event_type`, a state
+    #: condition's `state` key (`errorMsg` for the device's own fault text,
+    #: which is never sent), None when the kind says it all.
+    code: str | None = None
+    pet_id: int | None = None
+    #: When it happened (epoch seconds), when the row says; else when announced.
+    ts: float | None = None
 
 
 def device_name(device_type: str | None) -> str:
@@ -104,7 +117,9 @@ def from_event(row: Mapping[str, Any], pet_name: str | None = None) -> Notificat
         return None
     content = _content(row)
     device = device_name(device_type)
-    common = {"device_id": row.get("device_id"), "dedupe_key": row.get("event_uid") or None}
+    common = {"device_id": row.get("device_id"), "dedupe_key": row.get("event_uid") or None,
+              "code": event_type, "pet_id": to_int(row.get("pet_id"), None),
+              "ts": to_float(row.get("ts"), None)}
 
     if code.kind == codes.KIND_TOILET and code.role == codes.ROLE_VISIT_SUMMARY:
         bits = decode.summary_bits(event_type, content)
@@ -248,12 +263,12 @@ def active_conditions(device_id: Any, device_type: str | None,
         out[cond.key] = ActiveCondition(cond.hold, Notification(
             kind=cond.kind, device_id=device_id, title=cond.title,
             message=cond.message.format(device=name), priority=cond.priority,
-            tags=(cond.tag, cond.kind)))
+            tags=(cond.tag, cond.kind), code=cond.key))
     error = state.get(ERROR_KEY)
     if isinstance(error, str) and error.strip():
         text = error.strip()
         out[f"{ERROR_KEY}:{text}"] = ActiveCondition(ERROR_HOLD, Notification(
             kind=KIND_ERROR, device_id=device_id, title="Device error",
             message=_clip(f"{name}: {text}."), priority=PRIORITY_HIGH,
-            tags=("rotating_light", KIND_ERROR)))
+            tags=("rotating_light", KIND_ERROR), code=ERROR_KEY))
     return out

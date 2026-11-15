@@ -282,9 +282,10 @@ def build_services(config: Config, args: argparse.Namespace) -> Services:
     # The phone app API's account: read here, served by its own listener and
     # administered from the panel, which is why both are handed this object.
     app_auth = AppAuth(f"{config.data_dir}/{APP_AUTH_FILENAME}")
-    # Push notifications to the phone: fed by the hub, configured from the panel.
+    # Push notifications to the phone: fed by the hub, configured from the panel,
+    # and sent to the endpoints the phones registered with their sessions.
     notifier = Notifier(NtfyConfig(f"{config.data_dir}/{NTFY_FILENAME}"), registry,
-                        pet_registry=pet_registry, hub=hub)
+                        pet_registry=pet_registry, hub=hub, app_auth=app_auth)
 
     return Services(
         config=config,
