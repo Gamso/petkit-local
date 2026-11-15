@@ -42,6 +42,7 @@ tags:
   - name: pets
   - name: controls
   - name: feeding
+  - name: push
 
 paths:
   /info:
@@ -708,6 +709,82 @@ paths:
               schema: { $ref: "#/components/schemas/Error" }
         "401": { $ref: "#/components/responses/Unauthorized" }
 
+  /push:
+    put:
+      tags: [push]
+      operationId: registerPush
+      summary: Register (or replace) this session's UnifiedPush endpoint.
+      description: |
+        One endpoint per session, stored with it: logout, revocation from the panel,
+        a password change and 90 days without use remove it. Registering again
+        replaces it.
+
+        For every notification that passes the server's own gates (the per-kind
+        switches set in the panel, one notification per event, a per-device rate
+        limit), the server POSTs a `PushMessage` to every registered endpoint whose
+        `kinds` allow it: `Content-Type: application/json`, `TTL: 86400`, `Urgency:
+        high` for faults, failed meals and offline devices (`normal` otherwise), no
+        redirect followed, TLS verified, 10 s timeout. An endpoint that answers 404
+        or 410 three times in a row is unregistered (`session.push` in `/info`
+        becomes `null`: register again).
+
+        The message carries stable keys only — no title, no text, no URL, no token —
+        so the app writes the notification itself, in the phone's language. See
+        `PushMessage`.
+
+        The endpoint must be `https://` (plain `http://` only for a private address
+        or a local name such as `*.lan`), without credentials or a fragment, at most
+        2048 characters; a query is allowed. It may not point at the server itself,
+        loopback, or a link-local, multicast or reserved address. It is never sent
+        back: answers carry its host only.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/PushRegistrationRequest" }
+      responses:
+        "200":
+          description: Registered.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [push]
+                properties:
+                  push: { $ref: "#/components/schemas/PushRegistration" }
+        "400":
+          description: "`invalid_push_endpoint`, `bad_parameter` (kinds) or `bad_json`."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "415": { $ref: "#/components/responses/UnsupportedMediaType" }
+      callbacks:
+        pushMessage:
+          "{$request.body#/endpoint}":
+            post:
+              summary: One notification, POSTed by the server to the registered endpoint.
+              requestBody:
+                required: true
+                content:
+                  application/json:
+                    schema: { $ref: "#/components/schemas/PushMessage" }
+              responses:
+                "2XX": { description: Accepted by the push server. }
+                "404": { description: Gone; counted towards unregistering the endpoint. }
+                "410": { description: Gone; counted towards unregistering the endpoint. }
+    delete:
+      tags: [push]
+      operationId: unregisterPush
+      summary: Stop pushing to this session. Succeeds when none is registered too.
+      responses:
+        "200":
+          description: Unregistered.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Ok" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
 components:
   securitySchemes:
     bearer:
@@ -826,13 +903,88 @@ components:
 
     Session:
       type: object
-      required: [id, name, created, last_used, expires]
+      required: [id, name, created, last_used, expires, push]
       properties:
         id: { type: string, description: "Public id; the panel revokes by it." }
         name: { type: string, description: The `device_name` given at login. }
         created: { type: number }
         last_used: { type: number, description: Updated at most every 5 minutes. }
         expires: { type: number, description: "`last_used` + 90 days." }
+        push:
+          description: This session's push registration, `null` when there is none.
+          oneOf:
+            - { $ref: "#/components/schemas/PushRegistration" }
+            - { type: "null" }
+
+    PushRegistrationRequest:
+      type: object
+      required: [endpoint]
+      properties:
+        endpoint:
+          type: string
+          maxLength: 2048
+          description: The UnifiedPush endpoint the distributor gave the app.
+        kinds:
+          description: |
+            The `PushMessage.kind`s this phone wants; `null` or left out for every kind
+            switched on in the panel. Kinds this server does not know are ignored.
+          oneOf:
+            - type: array
+              maxItems: 32
+              items: { type: string }
+            - { type: "null" }
+
+    PushRegistration:
+      type: object
+      required: [host, kinds, registered]
+      properties:
+        host: { type: string, description: The endpoint's host. The endpoint itself is never returned. }
+        kinds:
+          description: The kinds kept (known ones, in the server's order), or `null` for every kind.
+          oneOf:
+            - type: array
+              items: { type: string }
+            - { type: "null" }
+        registered: { type: number }
+
+    PushMessage:
+      type: object
+      description: |
+        The body the server POSTs to a registered endpoint (see `PUT /push`); compact
+        JSON, a few hundred bytes at most. Stable keys only: build the notification
+        text from them. A new key may be added within `v` 1; ignore keys you do not
+        know. Nothing in it is secret.
+      required: [v, kind, device_id, pet_id, code, ts]
+      additionalProperties: false
+      properties:
+        v: { type: integer, const: 1 }
+        kind:
+          type: string
+          enum: [toilet, feed_served, feed_failed, error, food_low, consumable, offline]
+          description: |
+            `toilet` a litter-box visit; `feed_served` a meal dispensed (or skipped
+            because the bowl was not empty); `feed_failed` a meal that failed;
+            `error` a device fault; `food_low` a hopper empty; `consumable` a bin,
+            tray, filter, litter, water or deodorizer to see to; `offline` the device
+            stopped answering.
+        device_id: { type: [integer, "null"], description: "The device's `id`, as in `/devices`." }
+        pet_id:
+          type: [integer, "null"]
+          description: "The pet's `id`, as in `/pets`, when the event was attributed to one."
+        code:
+          type: [string, "null"]
+          maxLength: 64
+          description: |
+            What precisely happened, to be read with the device's `type`. For an event
+            (`toilet`, `feed_served`, `feed_failed`, `error`): the device's event code,
+            e.g. `"10"` for a litter-box visit — codes are per device category, so the
+            same code means different things on a litter box and a feeder. For a state
+            condition: the state key that triggered it — `foodLow`, `food1`, `food2`
+            (`food_low`); `boxFull`, `sandPercent`, `deodorantLeftDays`,
+            `sprayLeftDays`, `desiccantLeftDays`, `filterWarning`, `lackWarning`,
+            `stgFullState`, `liquidLack` (`consumable`); `errorMsg` (`error`, the
+            device's own fault text, which is not sent). `null` for `offline`.
+        ts: { type: integer, description: When it happened (Unix epoch seconds). }
 
     Info:
       type: object

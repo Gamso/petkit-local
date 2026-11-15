@@ -14,7 +14,9 @@ What is stored, and what deliberately is not:
 * each session only as the SHA-256 of its token. A token is 256 random bits, so
   a fast hash is enough: there is nothing to brute-force, and what the file
   must not hold is anything that could be replayed;
-* never the token itself, never the password, never a client address.
+* never the token itself, never the password, never a client address;
+* with a session, the UnifiedPush endpoint its phone registered (`push.py`), so
+  that whatever ends the session also ends the pushes to it.
 
 A session expires after `SESSION_IDLE_LIFETIME` without use, and each use
 slides that deadline — but `last_used` is written to disk at most once every
@@ -38,10 +40,11 @@ import secrets
 import time
 import unicodedata
 from collections.abc import Callable
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from petkit_local.app_api.push import PushRegistration
 from petkit_local.app_api.throttle import IPNetwork, parse_networks
 from petkit_local.utils.jsonio import atomic_write_text, read_json
 
@@ -138,15 +141,23 @@ class AppSession:
     name: str
     created: float
     last_used: float
+    push: PushRegistration | None = None
 
     @property
     def expires(self) -> float:
         return self.last_used + SESSION_IDLE_LIFETIME
 
     def public(self) -> dict[str, Any]:
-        """What the panel and the app may see: everything but the token hash."""
+        """What the panel and the app may see: not the token hash, not the endpoint."""
         return {"id": self.id, "name": self.name, "created": self.created,
-                "last_used": self.last_used, "expires": self.expires}
+                "last_used": self.last_used, "expires": self.expires,
+                "push": self.push.public() if self.push is not None else None}
+
+    def to_json(self) -> dict[str, Any]:
+        """The stored form, endpoint included (`app_api.json` is 0600)."""
+        return {"id": self.id, "token_hash": self.token_hash, "name": self.name,
+                "created": self.created, "last_used": self.last_used,
+                "push": self.push.to_json() if self.push is not None else None}
 
     @classmethod
     def from_json(cls, raw: Any) -> AppSession | None:
@@ -161,6 +172,8 @@ class AppSession:
             return None
         if len(session.token_hash) != 64 or not session.id:
             return None
+        if raw.get("push") is not None:
+            session.push = PushRegistration.from_json(raw["push"])
         return session
 
 
@@ -223,13 +236,17 @@ class AppAuth:
         return json.dumps({
             "version": 1,
             "password": self._password,
-            "sessions": [asdict(s) for s in self._sessions.values()],
+            "sessions": [s.to_json() for s in self._sessions.values()],
             "trusted_proxies": list(self._trusted),
         }, indent=2)
 
     async def _save(self) -> None:
         """Write the current state. The caller holds `_lock`."""
         await asyncio.to_thread(atomic_write_text, self._path, self._snapshot())
+
+    def now(self) -> float:
+        """The store's clock (a fake one under test)."""
+        return self._clock()
 
     # --- password -------------------------------------------------------
 
@@ -380,6 +397,55 @@ class AppAuth:
             revoked = self._drop_sessions(keep=None)
             await self._save()
         return revoked
+
+    # --- push registrations ---------------------------------------------
+
+    def _by_id(self, session_id: str) -> AppSession | None:
+        return next((s for s in self._sessions.values() if s.id == session_id), None)
+
+    async def set_push(self, session_id: str, registration: PushRegistration) -> bool:
+        """Register (or replace) a session's endpoint; False if the session is gone.
+
+        `registration` is already validated (`push.check_endpoint`).
+        """
+        async with self._lock:
+            session = self._by_id(session_id)
+            if session is None:
+                return False
+            session.push = registration
+            await self._save()
+        return True
+
+    async def clear_push(self, session_id: str, endpoint: str | None = None) -> bool:
+        """Unregister a session's endpoint; False if there was none to remove.
+
+        With `endpoint`, only if it is still that one: the notifier drops an
+        endpoint that answered "gone", and the phone may have registered a new
+        one in the meantime.
+        """
+        async with self._lock:
+            session = self._by_id(session_id)
+            if session is None or session.push is None:
+                return False
+            if endpoint is not None and session.push.endpoint != endpoint:
+                return False
+            session.push = None
+            await self._save()
+        return True
+
+    def push_targets(self) -> list[AppSession]:
+        """Live sessions with an endpoint registered — read at every delivery."""
+        if not self.password_set:
+            return []
+        return [s for s in self.sessions() if s.push is not None]
+
+    def push_current(self, session_id: str, endpoint: str) -> bool:
+        """Whether `endpoint` is still a live session's registration, right now."""
+        if not self.password_set:
+            return False
+        session = self._by_id(session_id)
+        return (session is not None and session.expires > self._clock()
+                and session.push is not None and session.push.endpoint == endpoint)
 
     # --- trusted proxies ------------------------------------------------
 

@@ -15,7 +15,8 @@ check runs on the upgrade request like any other — fed by `updates.UpdateFeed`
 Extension points for the later phases:
 
 * phase 4 (ntfy) — no route here: a publisher fed by the `EventHub`, with its
-  settings in the panel;
+  settings in the panel. `PUT`/`DELETE /app/v1/push` let a phone register its
+  own UnifiedPush endpoint with its session, a second sink of that publisher;
 * phase 5 (live video) — `GET /app/v1/devices/{id}/live` (WebSocket, fMP4) and
   `.../live/hls/{file}`, proxying that device's go2rtc stream only
   (`app_api/video.py`).
@@ -32,7 +33,8 @@ from petkit_local.app_api.appkeys import (
     REGISTRY, THROTTLE, UPDATE_FEED, VIDEO_SESSIONS,
 )
 from petkit_local.app_api.handlers import (
-    auth, controls, devices, feeding, media, meta, pets, timeline, updates, video,
+    auth, controls, devices, feeding, media, meta, pets, push, timeline, updates,
+    video,
 )
 from petkit_local.app_api.middleware import app_api_middleware
 from petkit_local.app_api.throttle import LoginThrottle
@@ -83,6 +85,8 @@ ROUTES: tuple[tuple[str, str, Handler], ...] = (
     ("GET", "/pets/{id}", pets.pet_detail),
     ("GET", "/pets/{id}/photo", pets.pet_photo),
     ("GET", "/ws", updates.updates),
+    ("PUT", "/push", push.register_push),
+    ("DELETE", "/push", push.unregister_push),
 )
 
 
