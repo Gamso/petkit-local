@@ -32,8 +32,8 @@ from typing import TYPE_CHECKING, Any
 from aiohttp import web
 
 from petkit_local.app_api.appkeys import (
-    AUTH, COMMAND_SINK, DATA_DIR, EVENT_STORE, GO2RTC, HA_PUBLISHER, HUB, MEDIA_ROOT,
-    NOTIFY_CHANNEL, PET_REGISTRY, REGISTRY, THROTTLE, UPDATE_FEED, VIDEO_SESSIONS,
+    AUTH, BLE_REGISTRY, COMMAND_SINK, DATA_DIR, EVENT_STORE, GO2RTC, HA_PUBLISHER, HUB,
+    MEDIA_ROOT, NOTIFY_CHANNEL, PET_REGISTRY, REGISTRY, THROTTLE, UPDATE_FEED, VIDEO_SESSIONS,
 )
 from petkit_local.app_api.handlers import (
     auth, controls, devices, feeding, media, meta, notifications, pets, push, timeline,
@@ -48,6 +48,7 @@ from petkit_local.app_api.video import VideoSessions
 if TYPE_CHECKING:
     from petkit_local.ai.pets import PetRegistry
     from petkit_local.app_api.auth import AppAuth
+    from petkit_local.devices.ble import BLERegistry
     from petkit_local.devices.registry import DeviceRegistry
     from petkit_local.events.store import EventStore
     from petkit_local.ha.publisher import HAPublisher
@@ -98,6 +99,7 @@ ROUTES: tuple[tuple[str, str, Handler], ...] = (
 
 
 def create_app_api(app_auth: AppAuth, registry: DeviceRegistry, *,
+                   ble_registry: BLERegistry | None = None,
                    event_store: EventStore | None = None,
                    pet_registry: PetRegistry | None = None,
                    media_root: str = "", data_dir: str = "",
@@ -114,13 +116,15 @@ def create_app_api(app_auth: AppAuth, registry: DeviceRegistry, *,
     the full stack; a handler whose collaborator is missing answers 503.
     Without a `command_sink` every write is queued for the device's heartbeat;
     without a `hub` (the panel's `EventHub`) the WebSocket still works, on its
-    periodic sweep alone. Without a `notify_channel` (the notifier's, which
+    periodic sweep alone. Without a `ble_registry` no Bluetooth accessory is
+    listed. Without a `notify_channel` (the notifier's, which
     is what feeds it) the notification socket opens and stays silent.
     """
     app = web.Application(client_max_size=MAX_BODY, middlewares=[app_api_middleware])
     app[AUTH] = app_auth
     app[THROTTLE] = throttle if throttle is not None else LoginThrottle()
     app[REGISTRY] = registry
+    app[BLE_REGISTRY] = ble_registry
     app[EVENT_STORE] = event_store
     app[PET_REGISTRY] = pet_registry
     app[MEDIA_ROOT] = media_root
@@ -129,7 +133,8 @@ def create_app_api(app_auth: AppAuth, registry: DeviceRegistry, *,
     app[HA_PUBLISHER] = ha_publisher
     app[HUB] = hub
     app[UPDATE_FEED] = UpdateFeed(app_auth, registry, hub, event_store=event_store,
-                                  pet_registry=pet_registry, media_root=media_root)
+                                  pet_registry=pet_registry, media_root=media_root,
+                                  ble_registry=ble_registry)
     app.on_shutdown.append(_close_update_sockets)
     app[GO2RTC] = go2rtc
     app[VIDEO_SESSIONS] = video_sessions if video_sessions is not None else VideoSessions()

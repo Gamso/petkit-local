@@ -486,6 +486,20 @@ A change reaches the device at once if it is connected over MQTT, otherwise on
 its next poll; the app is told which. Each one is in the panel's log, marked
 `app:`, and Home Assistant shows it straight away.
 
+### Bluetooth accessories
+
+A Bluetooth fountain (W5, W4, CTW2, CTW3) or Pura Air (K3) paired in the panel
+is a device of its own in the app, as it is in Home Assistant, with the same
+entities: a fountain's pump, filter and settings, a K3's liquid level and
+battery. Each one names the device that relays it, and that device lists its
+accessories — which is how a litter box's page knows it has a Pura Air whose
+cartridge level to show.
+
+An accessory is reached only through that device, and only while the device is
+connected over MQTT. A button or setting on it is therefore sent at once or
+refused: there is no poll to wait for. A K3's readings ride on its litter box's
+reports, so it has no "last seen" of its own, and nothing to press.
+
 ### Live updates
 
 While the app is open it holds one WebSocket, `/app/v1/ws`, authenticated by
@@ -514,6 +528,13 @@ ids it `replaces`). Open the socket before fetching the timeline and merge by
 the app read too slowly (reconnect) and `1001` on shutdown — the same codes as
 the live-video socket, so one handler covers both. Writes answer
 `delivered`: `mqtt`, `queued` or `local`.
+
+Bluetooth accessories are listed by `/devices`, `/devices/{id}` and the socket
+like any device, under their own id: `connection` is `ble`, `parent_id` names
+the device relaying them, and that device's `accessories` lists each as
+`{id, type, kind}` (a `purifier` there is a K3). Their actions and settings use
+the same routes and answer `409 accessory_unreachable` when the parent is not on
+MQTT; the feeding and live-video routes answer 404 for them.
 
 ### Live video
 

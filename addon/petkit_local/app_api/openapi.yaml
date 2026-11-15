@@ -25,6 +25,11 @@ info:
     `delivered`: `mqtt`, `queued`, or `local` when only petkit-local's own state
     changed. A device confirms a write in its next report, which `/ws` relays.
 
+    Bluetooth accessories (W5/W4/CTW2/CTW3 fountains, the K3 Pura Air) are devices
+    here too, under their own id, as in Home Assistant: `connection` is `ble`,
+    `parent_id` names the device relaying them, and that device lists them in
+    `accessories`. They have entities and actions, never a schedule or live video.
+
     Adding a field to a response is a compatible change; removing or renaming one
     is not and requires `/app/v2`.
 servers:
@@ -160,7 +165,7 @@ paths:
     get:
       tags: [devices]
       operationId: listDevices
-      summary: Every device, ordered by id.
+      summary: Every device, Bluetooth accessories included, ordered by id.
       responses:
         "200":
           description: OK
@@ -180,6 +185,10 @@ paths:
       tags: [devices]
       operationId: getDevice
       summary: One device with the current value of each of its entities.
+      description: |
+        A Bluetooth accessory answers here as well. A K3's entities are its
+        `k3_liquid` (the cartridge level, %) and `k3_battery`; it has no actions. A
+        fountain's are its pump, filter and settings, as Home Assistant shows them.
       parameters:
         - { $ref: "#/components/parameters/DeviceId" }
       responses:
@@ -206,6 +215,10 @@ paths:
         consumable or takes the device out of service — and is refused with 422
         `confirmation_required` unless the body is `{"confirm": true}`. Any other
         action needs no body.
+
+        On a Bluetooth accessory the press is relayed by its parent, which can only
+        do so while it holds an MQTT session: it is sent at once (`delivered` is
+        `mqtt`) or refused with 409 `accessory_unreachable`, never queued.
       parameters:
         - { $ref: "#/components/parameters/DeviceId" }
         - name: action
@@ -227,6 +240,7 @@ paths:
         "400": { $ref: "#/components/responses/BadRequest" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/AccessoryUnreachable" }
         "415": { $ref: "#/components/responses/UnsupportedMediaType" }
         "422": { $ref: "#/components/responses/Unprocessable" }
 
@@ -240,7 +254,8 @@ paths:
         number within `min`/`max` for `number`, one of `options` for `select`,
         `HH:MM` or `HH:MM:SS` for `time`, a string of at most 255 characters for
         `text`. The answer carries the entity with the value now stored; the
-        device's next report confirms or overwrites it.
+        device's next report confirms or overwrites it. A Bluetooth accessory's
+        setting is relayed by its parent, as an action is: sent now, or 409.
       parameters:
         - { $ref: "#/components/parameters/DeviceId" }
         - name: key
@@ -262,6 +277,7 @@ paths:
         "400": { $ref: "#/components/responses/BadRequest" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/AccessoryUnreachable" }
         "415": { $ref: "#/components/responses/UnsupportedMediaType" }
         "422": { $ref: "#/components/responses/Unprocessable" }
 
@@ -675,13 +691,14 @@ paths:
         can send headers on the upgrade). Every frame the server sends is one JSON
         text message, an `UpdateMessage` told apart by `type`:
 
-        * `hello` — first, once: every device as `DeviceDetail`. Start from it rather
-          than from an earlier `GET`, so nothing falls between the two.
+        * `hello` — first, once: every device as `DeviceDetail`, Bluetooth
+          accessories included. Start from it rather than from an earlier `GET`, so
+          nothing falls between the two.
         * `state` — a device's entities whose value changed, and only those. A device
           is looked at at most once a second, so a burst of reports is one message.
         * `device` — a device's summary when anything other than `last_seen` changed
-          (online or offline, transport, firmware), or when a new device appears
-          (fetch `/devices/{id}` for its entities).
+          (online or offline, transport, firmware, an accessory linked or unlinked),
+          or when a new device appears (fetch `/devices/{id}` for its entities).
         * `device_removed`.
         * `timeline` — a timeline card that is new or changed (its photos or video
           arrived, a cleaning attached). Replace any card with the same `id`, and
@@ -967,6 +984,14 @@ components:
       description: This address is locked out after wrong passwords.
       headers:
         Retry-After: { $ref: "#/components/headers/RetryAfter" }
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    AccessoryUnreachable:
+      description: |
+        `accessory_unreachable`: a Bluetooth accessory is reached only through the
+        device relaying it, while that device holds an MQTT session, and it does
+        not now (or no registered device relays it). Nothing was sent or queued.
       content:
         application/json:
           schema: { $ref: "#/components/schemas/Error" }
@@ -1258,19 +1283,58 @@ components:
 
     DeviceSummary:
       type: object
-      required: [id, type, model, kind, online, transport, last_seen, firmware, is_camera]
+      required: [id, type, model, kind, online, transport, last_seen, firmware, is_camera,
+                 connection, parent_id, accessories]
       properties:
         id: { type: integer }
-        type: { type: string, description: "Codename, e.g. `t5`, `d4sh`." }
+        type: { type: string, description: "Codename, e.g. `t5`, `d4sh`, `w5`, `k3`." }
         model: { type: string, description: "Commercial name; `Unknown` for an unlisted codename." }
         kind:
           type: string
           enum: [litter_box, feeder, fountain, purifier, other]
-        online: { type: boolean }
-        transport: { type: string, enum: [mqtt, http] }
-        last_seen: { type: [number, "null"], description: Latest contact over either transport. }
-        firmware: { type: [string, "null"] }
+        online:
+          type: boolean
+          description: For an accessory, whether the device relaying it is online.
+        transport:
+          type: string
+          enum: [mqtt, http]
+          description: For an accessory, its parent's (`http` when it has none).
+        last_seen:
+          type: [number, "null"]
+          description: |
+            Latest contact over either transport. For an accessory, when a frame from
+            it last decoded; always null for a K3, whose readings ride on its parent's
+            reports.
+        firmware: { type: [string, "null"], description: Null for an accessory. }
         is_camera: { type: boolean }
+        connection:
+          type: string
+          enum: [wifi, ble]
+          description: |
+            `ble` for an accessory with no network of its own, reached only through
+            the device in `parent_id`.
+        parent_id:
+          type: [integer, "null"]
+          description: |
+            The device relaying this accessory; null for a WiFi device, and for an
+            accessory linked to no registered device.
+        accessories:
+          type: array
+          description: |
+            The Bluetooth accessories this device relays; empty for an accessory. A
+            litter box with a `purifier` here has a Pura Air (K3) linked. The firmware
+            has one K3 slot, held by the first one listed.
+          items: { $ref: "#/components/schemas/AccessoryRef" }
+
+    AccessoryRef:
+      type: object
+      required: [id, type, kind]
+      properties:
+        id: { type: integer, description: "Its own id: `GET /devices/{id}` for its values." }
+        type: { type: string, description: "Codename: `w5`, `w4`, `ctw2`, `ctw3` or `k3`." }
+        kind:
+          type: string
+          enum: [fountain, purifier, other]
 
     DeviceDetail:
       allOf:
@@ -1308,8 +1372,9 @@ components:
       type: string
       enum: [mqtt, queued, local]
       description: |
-        `mqtt`: published to the device now. `queued`: the device is not on MQTT and
-        takes it on its next HTTP poll. `local`: only petkit-local's state changed.
+        `mqtt`: published to the device now (for a Bluetooth accessory, to the
+        device relaying it). `queued`: the device is not on MQTT and takes it on its
+        next HTTP poll. `local`: only petkit-local's state changed.
 
     WriteResult:
       type: object

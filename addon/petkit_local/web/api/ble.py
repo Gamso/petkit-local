@@ -380,7 +380,7 @@ def _ble_entity_value(entity: Any, payload: str) -> int | None:
         options = list(entity.options or [])
         if text in options:
             values = entity.option_values or list(range(len(options)))
-            # Twin of `ha/publisher.py::_ble_command_value` — `option_values`
+            # Twin of `ha/command_router.py::ble_command_value` — `option_values`
             # may be strings (the W7H's voice language) and an accessory frame
             # carries a byte, so this coerces rather than casting.
             return to_int(values[options.index(text)], None)

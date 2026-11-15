@@ -149,6 +149,7 @@ async def _start_app_api(services: Services, app_instance: web.Application) -> N
     """
     config = services.config
     app = create_app_api(services.app_auth, services.registry,
+                         ble_registry=services.ble_registry,
                          event_store=services.event_store,
                          pet_registry=services.pet_registry,
                          media_root=services.media_root, data_dir=config.data_dir,

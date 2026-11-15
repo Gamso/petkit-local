@@ -5,7 +5,8 @@ sent is built once per change and shared by every phone, so ten phones cost
 what one does:
 
 * `hello` — on connect: every device as `DeviceDetail`, so the app starts from
-  a known state with no window between a GET and the socket;
+  a known state with no window between a GET and the socket. The Bluetooth
+  accessories are devices here as in `GET /devices` (`inventory.py`);
 * `state` — the entities of one device whose value changed, and only those;
 * `device` — a device's summary when anything but `last_seen` changed
   (online/offline, transport, firmware), or when a device first appears;
@@ -17,7 +18,8 @@ what one does:
 
 What drives it is the panel's `EventHub`: every HTTP request, MQTT frame,
 stored event and finished media file is published there with its device id,
-which marks that device to be re-read. Re-read, not trusted — the hub's events
+which marks that device to be re-read — and the accessories it relays, whose
+frames arrive as its traffic. Re-read, not trusted — the hub's events
 are log lines, not state — and DIFFED against what was last sent, which is
 what keeps a chatty device from flooding a phone: a device is looked at once
 per `COALESCE_SEC` however many frames it sent, and if nothing a phone can see
@@ -43,17 +45,15 @@ import logging
 import time
 from typing import TYPE_CHECKING, Any
 
-from petkit_local.app_api import serializers
+from petkit_local.app_api import inventory, serializers
 from petkit_local.events import ingest
 from petkit_local.events.sessions import SUB_EVENT_WINDOW_SEC
-from petkit_local.ha.categories import get_entities_for_device
-from petkit_local.ha.state_doc import entity_state_doc
 from petkit_local.utils.coerce import to_int
 
 if TYPE_CHECKING:
     from petkit_local.ai.pets import PetRegistry
     from petkit_local.app_api.auth import AppAuth, AppSession
-    from petkit_local.devices.base import Device
+    from petkit_local.devices.ble import BLERegistry
     from petkit_local.devices.registry import DeviceRegistry
     from petkit_local.events.store import EventStore
 
@@ -126,10 +126,12 @@ class UpdateFeed:
     def __init__(self, auth: AppAuth, registry: DeviceRegistry, hub: Any = None, *,
                  event_store: EventStore | None = None,
                  pet_registry: PetRegistry | None = None, media_root: str = "",
+                 ble_registry: BLERegistry | None = None,
                  coalesce: float = COALESCE_SEC, sweep: float = SWEEP_SEC,
                  queue_limit: int = QUEUE_LIMIT) -> None:
         self._auth = auth
         self._registry = registry
+        self._ble = ble_registry
         self._hub = hub
         self._store = event_store
         self._pets = pet_registry
@@ -163,7 +165,7 @@ class UpdateFeed:
                 await self._start()
             # Bring everyone already connected up to date first, so the
             # snapshot below and the deltas after it start from one point.
-            self._dirty.update(d.petkit_id for d in self._registry.all())
+            self._dirty.update(inventory.ids(self._registry, self._ble))
             self._flush_states()
             sub = Subscriber(session, self._queue_limit)
             self._subs.add(sub)
@@ -171,9 +173,7 @@ class UpdateFeed:
                 "type": "hello",
                 "server_time": time.time(),
                 "heartbeat_sec": HEARTBEAT_SEC,
-                "devices": [serializers.device_detail(d, get_entities_for_device(d),
-                                                      entity_state_doc(d))
-                            for d in sorted(self._registry.all(), key=lambda d: d.petkit_id)],
+                "devices": inventory.all_details(self._registry, self._ble),
             }))
             return sub
 
@@ -241,7 +241,7 @@ class UpdateFeed:
                 self._check_sessions()
                 if loop.time() - last_sweep >= self._sweep:
                     last_sweep = loop.time()
-                    self._dirty.update(d.petkit_id for d in self._registry.all())
+                    self._dirty.update(inventory.ids(self._registry, self._ble))
                     self._dirty.update(self._summaries)
                 self._flush_states()
                 if self._dirty_timeline:
@@ -269,35 +269,37 @@ class UpdateFeed:
 
     def _flush_states(self) -> None:
         dirty, self._dirty = self._dirty, set()
+        # An accessory's frames are narrated under the parent relaying them.
+        for device_id in list(dirty):
+            dirty.update(a.petkit_id for a in inventory.linked(self._ble, device_id))
         for device_id in sorted(dirty):
-            device = self._registry.get(device_id)
-            if device is None:
+            described = inventory.describe(self._registry, self._ble, device_id)
+            if described is None:
                 if self._summaries.pop(device_id, None) is not None:
                     self._values.pop(device_id, None)
                     self._broadcast({"type": "device_removed", "device_id": device_id})
                 continue
-            self._diff_device(device)
+            self._diff_device(device_id, *described)
 
-    def _diff_device(self, device: Device) -> None:
-        summary = serializers.device_summary(device)
+    def _diff_device(self, device_id: int, summary: dict[str, Any],
+                     entities: list[Any], doc: dict[str, Any]) -> None:
         compared = {k: v for k, v in summary.items() if k != "last_seen"}
         values = {e["key"]: serializers.entity_change(e)
-                  for e in serializers.device_entities(get_entities_for_device(device),
-                                                       entity_state_doc(device))}
-        known = self._summaries.get(device.petkit_id)
+                  for e in serializers.device_entities(entities, doc)}
+        known = self._summaries.get(device_id)
         if known != compared:
-            self._summaries[device.petkit_id] = compared
+            self._summaries[device_id] = compared
             self._broadcast({"type": "device", "device": summary})
         if known is None:
             # New to this feed: `hello` (or the app's re-fetch after the
             # `device` message) carries its values; deltas start from here.
-            self._values[device.petkit_id] = values
+            self._values[device_id] = values
             return
-        before = self._values.get(device.petkit_id, {})
+        before = self._values.get(device_id, {})
         changed = [v for key, v in values.items() if before.get(key) != v]
-        self._values[device.petkit_id] = values
+        self._values[device_id] = values
         if changed:
-            self._broadcast({"type": "state", "device_id": device.petkit_id,
+            self._broadcast({"type": "state", "device_id": device_id,
                              "ts": time.time(), "entities": changed})
 
     async def _scan_timeline(self, device_ids: set[int], *, announce: bool) -> None:
