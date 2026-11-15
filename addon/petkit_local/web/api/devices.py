@@ -17,13 +17,12 @@ from aiohttp import web
 
 from petkit_local.devices import defaults
 from petkit_local.devices.base import TIMEZONE_PUSHED_KEY, Device
-from petkit_local.devices.state_parsers import apply_consumable_state
 from petkit_local.events import codes
-from petkit_local.events.normalize import apply_feed_plan_state
 from petkit_local.ha.categories import get_entities_for_device
 from petkit_local.ha.commands import (
-    ALL_ACTIONS, LOCAL_DEFAULTS, Refused, handle_ha_command, multi_config_texts,
+    ALL_ACTIONS, DESTRUCTIVE_ACTIONS, Refused, device_actions, handle_ha_command,
 )
+from petkit_local.ha.state_doc import entity_state_doc as _state_doc
 from petkit_local.ha.timezone_sync import push_timezone
 from petkit_local.media.go2rtc import stream_urls_with_rtsp
 from petkit_local.mqtt.broker import delivery_view
@@ -43,59 +42,6 @@ log = logging.getLogger(__name__)
 if TYPE_CHECKING:
     from petkit_local.devices.ble import BLERegistry
     from petkit_local.web.hub import EventHub
-
-
-# Actions that COST something you cannot get back — the UI colours these red,
-# confirms before sending, and sorts them last so a mis-click lands on a safe
-# button. The line is "spends a consumable or takes the box out of service",
-# not "moves the motor":
-#
-#   * `dump_litter` throws away the litter that is in the drum;
-#   * `maintenance_start` stops the box serving the cat until someone ends it;
-#   * the consumable resets overwrite a replacement date, and for the N50 that
-#     date exists NOWHERE else (see devices/state_parsers.py) — press it by
-#     accident and the real replacement date is gone.
-#
-# `reset` and `maintenance_stop` were in here and are not disruptive at all:
-# both are `thing.service.end`, i.e. the verbs that STOP whatever is running
-# and put the box back in service. Colouring the recovery button the same red
-# as the one you are recovering from is exactly backwards.
-#   * `fountain_drain` empties a W7H and leaves its FlowLift module raised
-#     until somebody runs Refill.
-#   * `fountain_deep_clean` started with nobody there to pour boiling water in
-#     aborts and latches a pump fault that refuses every later deep clean until
-#     it is reset by hand.
-DESTRUCTIVE_ACTIONS = {
-    "dump_litter", "maintenance_start", "reset_n50", "reset_n60", "reset_desiccant",
-    "fountain_drain", "fountain_deep_clean", "reset_bagbox",
-    # The 180-degree flip repositions the camera; the small left/right steps do
-    # not warrant a confirmation on every press.
-    "ptz_flip",
-}
-
-
-def _state_doc(d: Device) -> dict[str, Any]:
-    """Same shape the HA publisher publishes, for value resolution.
-
-    Recomputes the consumable countdowns first, for the same reason
-    `HAPublisher._build_state` does: they move with the calendar, and the N50's
-    has no device input to trigger it.
-    """
-    apply_consumable_state(d)
-    apply_feed_plan_state(d)
-    settings = d.config.get("settings") or {}
-    enabled = d.enabled_capabilities()
-    return {
-        "state": d.state or {},
-        "settings": settings,
-        "schedule": d.config.get("schedule", []),
-        "feed_schedule": d.config.get("feed_schedule", {}),
-        "capabilities": {ct: (ct in enabled) for ct in d.CAPABILITY_TYPES},
-        # Without it every `local.` control reads empty here while HA shows
-        # its value -- and the paused-plan switch would read as off.
-        "local": {**LOCAL_DEFAULTS, **(d.config.get("local") or {})},
-        "multi_config": multi_config_texts(d),
-    }
 
 
 def _delivery_view(broker: Any, d: Device) -> dict | None:
@@ -271,7 +217,7 @@ async def api_device_detail(request: web.Request) -> web.Response:
         "actions": sorted(
             ({"key": e.key, "name": e.name,
               "destructive": e.key in DESTRUCTIVE_ACTIONS}
-             for e in entities if e.component == "button" and e.key in ALL_ACTIONS),
+             for e in device_actions(entities)),
             key=lambda a: a["destructive"]),
         # The sidecars, so rendering one device costs one request. With a panel
         # per device refreshing on every WebSocket tick, four requests each was

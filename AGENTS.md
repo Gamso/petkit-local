@@ -189,6 +189,15 @@ Two rules about placement that the map does not make obvious:
   `thing/event/{t}/post_reply` never reaches that check: `EVENT_PATTERN` anchors on `/post`.)
 - **Entity keys are user state** — renaming an `EntityDef` orphans live entities. HA's silent-
   rejection rules (select labels, `text` max 255, `| default(...)`, `'None'`) are in `ha/discovery.py`.
+- **The app API (`app_api/`, port 8097) is the one surface built for the internet, so it stays
+  apart.** It is its own application serving `/app/v1` only: no panel or device route is ever
+  mounted on it, and it is mounted on neither of theirs. A route needs a bearer session unless its
+  handler is marked `@public` or `@credentials`, so a new route is authenticated by default; with
+  no password set, everything answers 401. Admin features (patchers, firmware, capture, proxy,
+  BLE) never appear there. Its JSON is built field by field in `serializers.py` — never a panel
+  dict — and `openapi.yaml` must list exactly `server.ROUTES` and exactly those keys (tests check
+  both). Only hashes of the password (scrypt) and of session tokens are stored, never in add-on
+  options; the panel is the reset path and must therefore never be exposed the same way.
 - **Device input never raises.** Untrusted scalars go through `utils/coerce`, untrusted path
   components through `utils/paths.safe_join` — `http/bucket.py` listens unauthenticated on 0.0.0.0.
 

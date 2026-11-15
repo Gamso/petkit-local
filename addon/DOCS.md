@@ -70,6 +70,7 @@ effect immediately, and persist to `/data/settings_overrides.json`.
 | `1883` | *(unmapped)* | Plain MQTT listener, internal to this app. Map it only if a device connects in plaintext. |
 | `9000` | `9000` | Media upload bucket the device PUTs photos and videos to. |
 | `8099` | *(unmapped)* | The web panel over plain HTTP, **no authentication**. Ingress proxies this internally. |
+| `8097` | *(unmapped)* | The phone app API (`/app/v1` only). **Authenticated by its own password**, and closed until one is set. Map it for your reverse proxy or tunnel — see [The phone app](#the-phone-app). |
 | `8554` | *(unmapped)* | Camera RTSP from the bundled go2rtc. Home Assistant reaches it over the internal network, so map it only to watch the stream from elsewhere on the LAN — and note 8554 clashes with the go2rtc app. |
 | `8555` tcp + udp | *(unmapped)* | WebRTC media from the bundled go2rtc. Unmapped, WebRTC is off and go2rtc does not listen on it. Map both to any free host port to turn it on (8555 itself is taken on a host that runs Frigate). No authentication of its own: a viewer needs the signalling first, which only the panel and the go2rtc API hand out. |
 | `1984` | *(unmapped)* | go2rtc's HTTP API. Served on this port only when it is mapped **and** `go2rtc_api_password` is set; otherwise it stays on loopback inside the container whatever is mapped. Basic auth over plain HTTP. |
@@ -390,6 +391,307 @@ models and does not support ESP32 feeders such as the D4S Gemini.
 
 Chrome or Edge only, on desktop or Android. Firefox, Safari and iOS have no Web
 Bluetooth at all.
+
+## The phone app
+
+A separate app can show your devices, the timeline, photos and clips, and your
+pets from outside your home network, run their buttons, change their settings and
+edit a feeder's plan. It talks to petkit-local through the **app API**, a
+versioned JSON API on its own port, `8097`. Nothing of the
+panel and nothing of the device API is reachable on that port, and the app API
+is reachable on neither of theirs.
+
+Unlike the panel, the app API authenticates every request itself — it is meant
+to be reached from the internet, through your own reverse proxy or tunnel. With
+no password set it refuses every request, so mapping the port changes nothing
+until you choose one.
+
+### Setting it up
+
+1. **Set a password** in the panel, **Setup → Phone app access** (at least 8
+   characters). The panel is the only place to set it, and the way back in if
+   it is forgotten: setting it again there never asks for the old one.
+2. **Map port 8097.** Under Home Assistant, in the app's **Network** settings,
+   give `8097/tcp` a host port. Standalone, publish it in `docker-compose.yml`
+   (there is a commented line; bind it to `127.0.0.1` if your reverse proxy runs
+   on the same machine), or move it with `--app-port`.
+3. **Point your reverse proxy or tunnel at that port, on a host of its own** —
+   for example `petkit.example.org` → `http://<this host>:8097`. Serve it over
+   HTTPS; the app sends its password and token in every login and request.
+4. **Do not put forward authentication on that host** (Authelia, Authentik,
+   Cloudflare Access and the like). They work by browser redirects and cookies,
+   which a native app cannot follow, and petkit-local is already doing the
+   authenticating.
+   The proxy must also pass **WebSockets** through for live updates
+   (`/app/v1/ws`): Cloudflare does by default; nginx needs the usual
+   `Upgrade`/`Connection` headers on that location.
+5. Sign in from the app with the password. Each phone gets its own session,
+   listed under **Phone app access**, where you can sign one out or all of
+   them.
+
+**Never expose the panel (8099) or the device API (80) the same way.** The
+panel has no login of its own and can flash firmware; the device API cannot
+have one, because the firmware has no way to authenticate. Only `8097` is
+built for the internet.
+
+### Sessions and the password
+
+- A session ends when the phone signs out, when you sign it out in the panel,
+  when the password changes, or after **90 days without use** — every request
+  extends it, so a phone in daily use never has to sign in again.
+- Setting, resetting or removing the password in the panel signs out **every**
+  phone. Removing it closes the app API again.
+- The app can change the password too, but only by sending the current one as
+  well — a stolen phone's session is not enough to lock you out. That signs out
+  every other phone and keeps the one that made the change.
+- Only a hash of the password and of each session token is stored, in
+  `/data/app_api.json`; neither is ever an add-on option or written to the log.
+
+### Wrong passwords and trusted proxies
+
+Each wrong password locks the address it came from out for twice as long as
+the last (1 s, 2 s, 4 s … up to 15 minutes). Behind a reverse proxy every
+request comes from the proxy, so all phones would share one allowance — set
+**Trusted reverse proxies** on the same card to the address (or CIDR) your
+proxy connects from. Only then are `X-Forwarded-For` and `CF-Connecting-IP`
+believed; from anyone else they are ignored, because anyone can send them.
+
+- The address your proxy connects from is what petkit-local sees, not its
+  public one: the Docker or LAN address of the reverse-proxy container or host.
+  Under Home Assistant OS, a reverse-proxy add-on usually connects from
+  `172.30.32.0/23`.
+- `CF-Connecting-IP` is preferred when present. Trust it only if every request
+  really comes through Cloudflare (a Cloudflare Tunnel, or a firewall that
+  admits nothing else); otherwise use `X-Forwarded-For` alone, which your proxy
+  appends to.
+- Leave the list empty if nothing sits in front of port 8097.
+
+### What the app can change
+
+Exactly what Home Assistant can, through the same code, so a value is checked
+and sent the same way whichever of the two changed it:
+
+- **Buttons** — feed now, clean, deodorize, a W7H's deep clean and the rest:
+  only the ones Home Assistant shows for that model. The ones the panel shows
+  in red (dump the litter, start maintenance, reset a filter's date, drain a
+  fountain, deep clean, flip the camera) cannot be undone, and the API refuses
+  them unless the app confirms explicitly.
+- **Settings** — the switches, numbers, lists and times Home Assistant can
+  set, within the same bounds.
+- **A feeder's plan** — its meals, and pausing it: paused, the meals are kept
+  and the feeder is served none until it is resumed. And **one-off feeds** at a
+  date and time.
+
+A change reaches the device at once if it is connected over MQTT, otherwise on
+its next poll; the app is told which. Each one is in the panel's log, marked
+`app:`, and Home Assistant shows it straight away.
+
+### Live updates
+
+While the app is open it holds one WebSocket, `/app/v1/ws`, authenticated by
+the same token. It is sent every device once, then only what changes: the
+values that moved (at most once a second per device), a device going online or
+offline, a new or updated timeline card. Signing the phone out — from the app or
+from the panel — closes its socket within a couple of seconds. A phone that
+stops reading is disconnected rather than queued for, and simply reconnects.
+
+### For app developers
+
+The API is described by an OpenAPI 3.1 file served at
+`/app/v1/openapi.yaml` (public once a password is set), which a Kotlin client
+can be generated from. Media URLs in responses are paths; fetch them with the
+same `Authorization: Bearer` header as everything else — there are no signed
+URLs to leak into logs. Adding a field is a compatible change; anything else
+moves to `/app/v2`.
+
+Live updates come over one WebSocket, `/app/v1/ws` (not to be confused with
+live video, below). Its messages are in the same file (`UpdateMessage` and the
+`Update*` schemas): a `hello` with every device as `DeviceDetail`, then `state`
+(only the entities that changed), `device` (a summary, when it went online or offline),
+`device_removed` and `timeline` (a card to insert or replace by `id`, with the
+ids it `replaces`). Open the socket before fetching the timeline and merge by
+`id`. It closes with `4401` when the session ends (sign in again), `1013` when
+the app read too slowly (reconnect) and `1001` on shutdown — the same codes as
+the live-video socket, so one handler covers both. Writes answer
+`delivered`: `mqtt`, `queued` or `local`.
+
+### Live video
+
+A camera's live view reaches the app through the same port and the same
+tunnel, so nothing else needs mapping: go2rtc's own port (1984) stays closed.
+It works for a camera whose stream the panel already shows (the camera patch is
+applied and go2rtc is serving it). Two ways, both behind the same token, both
+limited to the camera named in the request:
+
+- **Fragmented MP4 over a WebSocket** — `/app/v1/devices/{id}/live`. go2rtc's
+  "MSE" stream, relayed. Expect **a few hundred milliseconds to about a
+  second** of delay, plus whatever the camera itself adds (not measured on
+  these cameras). The first picture waits for the camera's next keyframe.
+  WebRTC is not used from outside: its video travels over UDP, which a
+  Cloudflare tunnel does not carry.
+- **HLS** — `/app/v1/devices/{id}/live/hls/playlist.m3u8`, the fallback for a
+  connection where the WebSocket keeps dropping. **Several seconds** of delay,
+  the player buffering whole segments.
+
+**At most 2 viewers per camera and 4 in all**, WebSocket and HLS together.
+Each viewer is a separate copy of the video through your tunnel and upload,
+and a camera has one connection to give (go2rtc shares it). One phone holds at
+most one view of a camera: opening it again replaces the older view. A viewer
+that arrives a few seconds after the previous one left may be told the stream
+could not be opened — the camera needs a few seconds between connections — and
+should simply retry.
+
+**Check your tunnel provider's terms before watching through it.** Cloudflare's
+terms for its CDN plans restrict serving video and other large files unless it
+goes through a product sold for it, and a tunnel's traffic crosses that same
+network. A live view to your own phone is small next to what that rule is
+about, but it is video: read the current terms for your plan, keep the caps,
+and watch on the LAN (the panel) when you are home. Other providers have terms
+of their own.
+
+For app developers (the full message flow and close codes are in the OpenAPI
+file):
+
+- **HLS with Media3/ExoPlayer** is the shortest path: an `HlsMediaSource` on
+  `playlist.m3u8`, with the bearer header set once through
+  `DefaultHttpDataSource.Factory().setDefaultRequestProperties(...)`, which
+  every playlist and segment request then carries. Every URI in the playlists
+  is relative to that route.
+- **The WebSocket** needs the bearer header on its upgrade request, and a
+  browser's `WebSocket` cannot send one — so go2rtc's `video-stream.js`, which
+  opens its own socket, cannot be pointed at it as is. In a WebView (Android's
+  supports Media Source Extensions), open the socket natively with OkHttp,
+  which can send the header, and hand each message to the page — through a
+  `WebMessagePort` (androidx.webkit, array-buffer messages) — where a short MSE
+  script creates a `SourceBuffer` with the type from the first text message
+  and appends every binary one in order (the MSE half of go2rtc's
+  `video-rtc.js` is a model). Natively, a Media3 `DataSource` fed from the same
+  OkHttp socket can play the stream as fragmented MP4, with no WebView, for
+  more work.
+- On close code `1013` (the phone did not keep up) switch to HLS; on `4401`
+  sign in again; on `1011` or an `error` message retry after a few seconds.
+
+### Notifications (ntfy)
+
+petkit-local can push notifications to your phone through **your own
+[ntfy](https://ntfy.sh) server** — nothing goes through Google or PetKit. Set it
+up in the panel, **Setup → Phone notifications**, next to Phone app access.
+
+What can be sent, each with its own switch:
+
+| Kind | Sent when |
+|---|---|
+| Toilet visit | a litter box reports a finished visit (with the pet's name when it was recognised or matched by weight) |
+| Meal served | a feeder finishes a meal, or skips one because the bowl was not empty |
+| Meal failed | a meal ends in an error, or nothing came out (hoppers empty, blocked outlet) |
+| Device error | a device reports a fault, as an event or in its state |
+| Food low | a feeder's hopper reads empty and still does ten minutes later |
+| Filter, litter or consumable to replace | waste bin or tray full, litter below 20 %, fountain filter or water, N50/N60/desiccant spent, deodorizer liquid low |
+| Device offline | the offline watchdog decides a device is gone (after `offline_timeout`, not on a missed poll) |
+
+A condition is announced when it **starts**, once — a full bin is not repeated
+on every report, and whatever was already true when the add-on started is not
+announced at all. Each event is announced once, however often the device
+retries it. Each device may send only a few notifications of one kind per
+period (one error per five minutes, one food-low per hour, …), so a device that
+flaps cannot flood the phone. Device offline works the same with or without
+Home Assistant (`--no-ha` included): the watchdog that decides it runs either
+way, and only telling Home Assistant depends on HA publishing being on.
+
+#### On the ntfy server
+
+Run ntfy with access control on, and nothing readable or writable by default
+(`auth-file` set, `auth-default-access: deny-all` in `server.yml`). Then:
+
+1. In the panel, enter the server URL (`https://ntfy.example.org`) and click
+   **Save and enable**. A random topic is generated — something like
+   `petkit-Aj4LZxpuM68UPghQY5MeN6bs…`. On ntfy a topic name is the
+   subscription itself, so treat it as a secret; **Regenerate** replaces it.
+2. Create a user for petkit-local that may only **write** to that topic, and a
+   token for it:
+
+   ```sh
+   ntfy user add petkit-local
+   ntfy access petkit-local 'petkit-Aj4LZx…' write-only
+   ntfy token add petkit-local
+   ```
+
+   Paste the token (`tk_…`) into **Access token** and save. It is stored in
+   `/data/ntfy.json`, never written to the log, and the panel only ever shows
+   its last four characters.
+3. Create a user for the phone that may only **read** it:
+
+   ```sh
+   ntfy user add phone
+   ntfy access phone 'petkit-Aj4LZx…' read-only
+   ```
+
+4. Click **Send test notification**. The panel says whether ntfy accepted it,
+   and why not if it did not (`401` is a wrong token, `403` a missing write
+   permission on the topic).
+
+Serve ntfy over HTTPS: the token travels in every publish, and petkit-local
+verifies the server's certificate and follows no redirect.
+
+#### On the phone
+
+- **With the ntfy Android app**: add your server under *Settings → Manage
+  users* with the `phone` user, then subscribe to the topic on that server.
+  Notifications appear as ntfy notifications, with their title, priority and
+  icon.
+- **Through UnifiedPush**, with the ntfy app as the distributor: an app using
+  UnifiedPush is given an endpoint by the distributor, on your server, of the
+  form `https://ntfy.example.org/upAbC123…?up=1`. Its topic is the `upAbC123…`
+  part — paste that into **Topic** instead of the generated one, and give
+  petkit-local's user write access to it (`ntfy access petkit-local 'up*'
+  write-only` covers every UnifiedPush topic). In this mode only the message
+  body reaches the app — title, priority and tags are the ntfy app's own — so
+  every message is written to make sense on its own ("Mochi used the Purobot
+  Ultra (waste 32 g).").
+
+What a notification carries: a title, one sentence naming the device by its
+product name and the pet by its name, a priority, and two tags (an emoji and
+the kind, e.g. `cat,toilet`). No device id, no token, no link.
+
+#### Pushed straight to the app
+
+The phone app can instead register **its own** UnifiedPush endpoint with
+petkit-local when you sign in — nothing to paste in the panel, one endpoint per
+phone, as many phones as are signed in. The app picks a distributor on the
+phone (the ntfy app pointed at your server, or any other UnifiedPush
+distributor), gets an endpoint from it, and hands it to petkit-local; from then
+on each notification is POSTed there too. The ntfy topic above keeps working
+alongside, for anyone who wants plain ntfy notifications without the app.
+
+- **The kind switches above apply to both**, and so does the rest: each event
+  is announced once, and the per-device rate limit counts it once whichever way
+  it goes. The app may narrow the kinds further for its own phone. The ntfy
+  topic does not need to be enabled for the app's pushes to be sent.
+- **The registration belongs to the phone's session.** Signing it out — from the
+  app, from **Phone app access** (which shows, per phone, whether push is on and
+  with which server), by a password change, or after 90 days unused — stops its
+  pushes at once. An endpoint that answers "gone" (HTTP 404 or 410) three times
+  in a row is dropped; the app registers again when it next opens.
+- **What is sent is not a sentence but a few keys** — the kind, the device id,
+  the pet id, an event code and the time, e.g.
+  `{"v":1,"kind":"toilet","device_id":100,"pet_id":2,"code":"10","ts":1763150000}`
+  — so the app writes the notification itself, in the phone's language. No
+  name, no text, no token, no link.
+- **With ntfy as the distributor**, the endpoint is on your ntfy server, and
+  petkit-local publishes to it **without a token**: give anonymous users write
+  access to UnifiedPush topics, which is what ntfy's UnifiedPush documentation
+  recommends (`ntfy access '*' 'up*' write-only`). The topic name in the
+  endpoint is long and random, and it is what keeps others out.
+- **The endpoint must be `https://`.** Plain `http://` is accepted only for a
+  private address or a name that only exists at home (`ntfy`, `*.lan`,
+  `*.local`, `*.home.arpa`, `*.internal`) — a self-hosted ntfy reached over the
+  LAN or a VPN. An endpoint on petkit-local's own machine is refused.
+
+For app developers: `PUT /app/v1/push` `{endpoint, kinds?}` registers (or
+replaces) the calling session's endpoint and `DELETE /app/v1/push` removes it;
+`session.push` in `/app/v1/info` says whether one is registered. The message is
+the `PushMessage` schema of the OpenAPI file — every key and every `code` is
+listed there.
 
 ## T4 litter-level calibration
 

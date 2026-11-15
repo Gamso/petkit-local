@@ -329,7 +329,7 @@ class AliyunAuthPlugin(BaseAuthPlugin):
         litter box publishes nothing for minutes at a time — while having
         stopped its HTTP heartbeat the moment it got onto the broker. Judged on
         those two signals a healthy device goes stale, and
-        `ha/publisher.py::availability_watchdog` then marks it offline and
+        `devices/liveness.py::offline_watchdog` then marks it offline and
         clears `mqtt_connected`, which strands its commands in a queue nothing
         drains.
 
@@ -401,7 +401,7 @@ class AliyunAuthPlugin(BaseAuthPlugin):
         poll late.
 
         `online` is deliberately untouched. A device off MQTT is still perfectly
-        reachable over HTTP, and `ha/publisher.py::availability_watchdog` owns
+        reachable over HTTP, and `devices/liveness.py::offline_watchdog` owns
         that flag.
 
         The session check is not defensive noise: a device that reconnects while

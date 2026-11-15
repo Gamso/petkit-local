@@ -522,6 +522,12 @@ def test_a_published_api_cannot_rewrite_or_restart_go2rtc():
     # What this module itself polls, and what a viewer plays through.
     for path in ("/api/streams", "/api/ws", "/api/webrtc"):
         assert path in g.API_PUBLIC_PATHS
+    # HLS: the entry point that opens a session, and every file fetched under
+    # it. allow_paths applies on loopback too, so the app API's HLS proxy dies
+    # with a 404 if any of these is missing.
+    for path in ("/api/stream.m3u8", "/api/hls/playlist.m3u8", "/api/hls/init.mp4",
+                 "/api/hls/segment.m4s"):
+        assert path in g.API_PUBLIC_PATHS
 
 
 def test_an_extra_candidate_cannot_break_out_of_its_yaml_line():

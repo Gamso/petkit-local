@@ -325,16 +325,17 @@ async def test_a_runner_does_not_wait_out_a_connection_that_never_ends():
         took = time.monotonic() - started
 
     assert took <= 2 * SHUTDOWN_DRAIN + 0.5
-    # Three runners, each at its worst, and room left inside the ten seconds
-    # for the broker, the background tasks and the event store.
-    assert 3 * 2 * SHUTDOWN_DRAIN <= 6.0
+    # Four runners (device API, bucket, panel, app API), each at its worst,
+    # and room left inside the ten seconds for the broker, the background
+    # tasks and the event store.
+    assert 4 * 2 * SHUTDOWN_DRAIN <= 8.0
 
 
 def test_every_runner_is_built_with_the_bounded_drain():
     """A runner added later without it brings the 60 s default back."""
     source = LIFECYCLE_PY.read_text()
     runners = re.findall(r"web\.AppRunner\((.*)\)", source)
-    assert len(runners) == 2
+    assert len(runners) == 3
     assert all("shutdown_timeout=SHUTDOWN_DRAIN" in args for args in runners)
     # The device-facing app is drained by `run_app` itself, before
     # `cleanup_background` has run at all.

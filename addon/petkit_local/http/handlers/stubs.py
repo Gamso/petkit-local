@@ -224,7 +224,8 @@ async def handle_event_report(request: web.Request) -> web.Response:
         if isinstance(state, dict) and state:
             hub.set_state_report(petkit_id, state)
         hub.publish("event", petkit_id,
-                    f"{row['event_type'] or 'event'} ({row['event_kind']})", detail=row)
+                    f"{row['event_type'] or 'event'} ({row['event_kind']})",
+                    detail={**row, "is_new": is_new})
 
     if ha_publisher is not None:
         # Resolved through the code table, not by name: over HTTP `event_type`

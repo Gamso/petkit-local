@@ -22,7 +22,6 @@ import asyncio
 import json
 import logging
 import os
-import time
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
 
@@ -47,25 +46,6 @@ if TYPE_CHECKING:
     from petkit_local.web.hub import EventHub
 
 log = logging.getLogger(__name__)
-
-
-def device_is_stale(device: Device, now: float, timeout: int) -> bool:
-    """True if the device hasn't been heard from within `timeout` seconds.
-
-    A freshly-created device that has never reported (last_seen == 0) is not
-    considered stale until it has been seen at least once.
-
-    `last_mqtt` counts as contact, and has to: a device that gets onto the
-    broker stops polling the HTTP heartbeat altogether, so judging it on HTTP
-    alone marks the healthiest devices offline and — worse — clears
-    `mqtt_connected` below, sending their commands to a queue that is never
-    drained again.
-    """
-    last_seen = max(device.last_heartbeat, device.last_state_report,
-                    device.last_seen, device.last_mqtt)
-    if last_seen <= 0:
-        return False
-    return (now - last_seen) > timeout
 
 
 #: How long shutdown waits for the broker to take the final `offline`.
@@ -264,34 +244,6 @@ class HAPublisher:
         except Exception:
             log.warning("Republishing the pets failed", exc_info=True)
 
-    async def availability_watchdog(self, timeout: int, interval: float | None = None) -> None:
-        """Periodically flip stale devices to offline in HA. Runs forever.
-
-        Without this, `device.online` is only ever set True (on contact) and a
-        disconnected device would show as available forever with stale sensors.
-
-        Args:
-            timeout: Seconds without contact after which a device is stale.
-            interval: Poll period; defaults to half the timeout, clamped to
-                15-30s so a long offline_timeout doesn't make the watchdog
-                itself the source of the reporting lag.
-        """
-        if interval is None:
-            interval = max(15.0, min(30.0, timeout / 2))
-        while True:
-            await asyncio.sleep(interval)
-            now = time.time()
-            for device in self._registry.all():
-                if device.online and device_is_stale(device, now, timeout):
-                    device.online = False
-                    device.mqtt_connected = False
-                    log.info("Device %d (%s) marked offline (no contact for >%ds)",
-                             device.petkit_id, device.device_type, timeout)
-                    await self.publish_availability(device)
-                    if self._hub:
-                        self._hub.publish("connect", device.petkit_id,
-                                          f"offline (no contact for >{timeout}s)")
-
     async def publish_discovery(self, device: Device) -> None:
         """Announce every entity of `device` and rebuild its command index."""
         if not self._client or not self._connected:
@@ -382,7 +334,11 @@ class HAPublisher:
         await self._emit(state_topic, json.dumps(state_data), retain=True)
 
     async def publish_availability(self, device: Device) -> None:
-        """Publish `online`/`offline` for every entity of the device."""
+        """Publish `online`/`offline` for every entity of the device.
+
+        Also the `on_offline` hook of `devices/liveness.py::offline_watchdog`,
+        which decides a device is gone whether or not HA publishing is on.
+        """
         if not self._client or not self._connected:
             return
 

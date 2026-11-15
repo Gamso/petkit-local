@@ -67,7 +67,7 @@ def encode_multi_range(key: str, value: Any) -> str:
 
     `schedule` is NOT this shape, despite travelling the same way: it is a
     plain JSON string of the array, with no wrapping key. See
-    `web/api/schedules.py::api_save_schedule`.
+    `ha/schedules.py::save_schedule`.
     """
     return json.dumps({key: value}, separators=(",", ":"))
 
@@ -194,7 +194,7 @@ class Device:
     #: the broker STOPS polling `poll/{type}/heartbeat` — confirmed on a T5,
     #: which went quiet over HTTP some 40s after its CONNECT — so without this
     #: the liveness check sees only silence and calls a perfectly healthy device
-    #: offline (`ha/publisher.py::device_is_stale`).
+    #: offline (`devices/liveness.py::device_is_stale`).
     last_mqtt: float = 0.0
     #: Every LAN address recently named for this device, `{kind: {ip: when}}` —
     #: see `devices/addresses.py`. `state["ip"]` is one unauthenticated claim;

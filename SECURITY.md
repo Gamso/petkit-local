@@ -36,6 +36,73 @@ real certificate in front of the ordinary panel port instead. (Confirmed on
 hardware: it works through Ingress when Home Assistant itself is served over a
 valid certificate.)
 
+### The one surface meant for the internet
+
+| Surface | How it is protected |
+|---|---|
+| Phone app API (container `8097`, unmapped by default) | Its own password, set only from the panel, stored as a salted `scrypt` hash. Every route answers 401 until one is set; afterwards every route but `/app/v1/info` and `/app/v1/openapi.yaml` needs a per-phone bearer token, of which only a SHA-256 hash is stored. Tokens end on logout, revocation from the panel, any password change, or 90 days unused. Failed logins lock the client address out for exponentially longer (up to 15 min), with a global ceiling; `X-Forwarded-For` / `CF-Connecting-IP` count only from proxies the owner listed as trusted. Only `/app/v1/...` is routed there — no panel route, no device route, no admin feature (patchers, firmware, capture, proxy settings, BLE). |
+
+What it does not do, so you can judge it:
+
+- **It does not terminate TLS.** It speaks plain HTTP and expects your reverse
+  proxy or tunnel to provide HTTPS. Reached over plain HTTP from outside, the
+  password and the tokens travel in the clear.
+- **One password, no accounts and no second factor.** Whoever has the password
+  sees everything the app sees. Choose a long one; the lockout slows guessing,
+  it does not make a weak password strong.
+- **The lockout is in memory**, so a restart forgets it, and it is per address:
+  an attacker with many addresses gets each its own allowance, until the global
+  ceiling (100 failures in 10 minutes) makes every login wait.
+- **The read-only API still reveals a lot**: device state, the visit history,
+  photos and video from inside your home. Treat the password accordingly.
+- **The panel remains the recovery path and is not authenticated.** Anything
+  that can reach the panel can reset the app password. That is why the panel
+  must never be exposed the way the app API is.
+
+### What it calls out to
+
+Nothing in petkit-local reaches the internet on a schedule of its own. Beyond
+Home Assistant's broker, the outbound calls — all off until you configure or
+press something — are:
+
+| Call | When | What it carries |
+|---|---|---|
+| PetKit's cloud (`http/cloud_fetch.py`, the firmware fetch) | only when a panel button asks it to (an accessory secret, a pet's photos, an ESP32 firmware image) | a request signed as the device |
+| Proxy mode's upstream (`http/proxy.py`, `mqtt/upstream.py`) | while proxy mode is on, relaying the device's own traffic | the device's traffic, redacted on the way back |
+| Cloudflare's TURN API (`media/turn.py`) | when a live view is opened and a TURN key is configured | a request for short-lived relay credentials |
+| Your ntfy server (`app_api/notify/`) | while phone notifications are on, once per notification (bounded per device and kind) | `POST {server}/{topic}` with `Authorization: Bearer <token>`, a title, a priority, tags and one sentence: a device's product name, a pet's name, what happened. No device id, no media, no link, no credential of anything else. TLS is verified and redirects are not followed, so the token goes to the configured host or nowhere. |
+| The push endpoint each signed-in phone registered (`app_api/notify/push.py`) | once per notification and phone, through the same bounds | a six-key JSON object (kind, ids, an event code, a time) and no credential; see below for where it may go |
+
+The ntfy access token and the topic are secrets — on ntfy the topic name is the
+subscription. Both live in `/data/ntfy.json` (0600), never in the add-on
+options; neither is written to the log, and the panel shows the token only by
+its last four characters. Give the token a user that may only **write** that one
+topic, and the phone a separate user that may only read it.
+
+#### Push endpoints the phones register
+
+The one outbound call whose address is NOT set in the panel: a signed-in phone
+may register its own UnifiedPush endpoint (`PUT /app/v1/push`,
+`app_api/push.py`), and petkit-local then POSTs each notification there
+(`app_api/notify/push.py`), once per notification and phone, through the same
+gates and rate limits as the ntfy topic.
+
+| What | How it is bounded |
+|---|---|
+| Who chooses the URL | Only an authenticated session, i.e. someone who has the app password. One endpoint per session; it is removed with the session (logout, revocation in the panel, password change, 90 days unused) and after three "gone" answers (404/410) in a row. |
+| What is sent | A fixed JSON object of six keys — version, kind, device id, pet id, event code, time — at most a few hundred bytes. No text, no names, no token, no media, no URL. The headers are `Content-Type`, `TTL` and `Urgency`; no `Authorization`, nothing of the session. |
+| Where it may go | `https://` anywhere, plain `http://` only to a private address or a home-only name (`*.lan`, `*.local`, `*.home.arpa`, `*.internal`, a single-label name). **Private addresses are allowed on purpose**: a self-hosted ntfy on the LAN is the expected distributor. Refused, both when the endpoint is registered and on every address a name resolves to at connect time: loopback, link-local (cloud metadata included), unspecified, multicast, reserved, and every address of petkit-local's own machine. That last rule keeps a push from reaching the services that listen there without authentication: go2rtc's API on loopback, and the panel on the container's own address. |
+| How | TLS verified, no redirect followed, 10 s timeout, at most 2 requests under way per endpoint and 100 in all; the answer is read for its status only and never reaches the phone, so this is a blind POST. |
+| Secrecy | An endpoint is a capability URL — whoever knows it can push to that phone. It is stored only in `/data/app_api.json` (0600). The API's answers, the panel and the log show only its host, and a failure is logged with the host and the HTTP status or the exception's type, never its text, which can contain the URL. |
+
+What remains, so you can judge it: whoever holds a session can make
+petkit-local send that small fixed POST to any other host it can reach on your
+LAN or VPN — a router, a printer, Home Assistant. The body is not theirs to
+choose, nothing is authenticated with it, and nothing of the answer comes back;
+but a device on the LAN that changes something on an unauthenticated POST of a
+URL alone would be reachable through it. This is one more reason the app
+password, and the phones signed in with it, must be kept tight.
+
 ### Things that are deliberately permissive
 
 - **`mqtt_strict_auth` defaults to `false`**, so the device-facing MQTT broker

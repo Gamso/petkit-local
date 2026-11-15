@@ -51,6 +51,8 @@ include = ["petkit_local*"]
 # for `static/js/*`: the panel is a graph of ES modules under that directory,
 # and without it a pip-installed copy serves an index whose only script 404s.
 "petkit_local.web" = ["templates/*.html", "static/*", "static/bin/*", "static/js/*"]
+# The app API serves its own contract at /app/v1/openapi.yaml.
+"petkit_local.app_api" = ["openapi.yaml"]
 
 [tool.pytest.ini_options]
 python_files = "test_*.py"
