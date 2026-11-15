@@ -54,7 +54,7 @@ from petkit_local.web.appkeys import NOTIFIER
 from petkit_local.web.hub import EventHub
 from petkit_local.web.panel import create_panel_app
 from tests.test_app_api import FAST, PASSWORD, START, Clock, Env, _Schemas
-from tests.test_app_api_updates import _closed, _next, _quiet
+from tests.test_app_api_updates import _next, _quiet
 from tests.test_app_notify import FakeNtfy, _row
 from tests.test_app_push import FakePush
 
@@ -71,6 +71,22 @@ async def _until(condition: Callable[[], bool], timeout: float = 3.0) -> None:
     while not condition():
         assert time.monotonic() < deadline, "condition never held"
         await asyncio.sleep(0.01)
+
+
+async def _closed(ws: aiohttp.ClientWebSocketResponse, timeout: float = 3.0) -> int:
+    """The code of the close frame the server sent.
+
+    Read from the frame itself, not `ws.close_code`: the server drops the
+    connection once its frame is out, and the client's own reply failing on
+    that dropped connection rewrites `close_code` to 1006 after the fact.
+    """
+    deadline = time.monotonic() + timeout
+    while True:
+        msg = await ws.receive(timeout=max(0.01, deadline - time.monotonic()))
+        if msg.type == aiohttp.WSMsgType.CLOSE:
+            return msg.data
+        assert msg.type not in (aiohttp.WSMsgType.CLOSED, aiohttp.WSMsgType.CLOSING,
+                                aiohttp.WSMsgType.ERROR), (msg.type, ws.exception())
 
 
 class NotifyEnv(Env):
