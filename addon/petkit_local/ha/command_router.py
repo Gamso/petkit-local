@@ -25,7 +25,7 @@ from petkit_local.utils.logtext import excerpt
 
 if TYPE_CHECKING:
     from petkit_local.devices.base import Device
-    from petkit_local.devices.ble import BLERegistry
+    from petkit_local.devices.ble import BLEDevice, BLERegistry
     from petkit_local.devices.registry import DeviceRegistry
     from petkit_local.ha.publisher import HAPublisher
     from petkit_local.mqtt.bridge import MQTTBridge
@@ -36,7 +36,7 @@ log = logging.getLogger(__name__)
 PAYLOAD_LOG_CHARS = 120
 
 
-def _ble_command_value(entity: Any, payload: str) -> int | None:
+def ble_command_value(entity: Any, payload: str) -> int | None:
     """An HA command payload as the integer an accessory's frame carries.
 
     Switches arrive as ON/OFF, selects as one of their labels, numbers as a
@@ -69,6 +69,25 @@ def _ble_command_value(entity: Any, payload: str) -> int | None:
             return to_int(values[index], None)
         return None
     return to_int(text, None)
+
+
+def reflect_ble_write(ble_dev: BLEDevice, entity: Any, value: int) -> None:
+    """Show a write an accessory was sent as its state, before it confirms it.
+
+    Optimistic, like a real device's: the accessory acknowledges the write but
+    its next status is what actually confirms it, and that is a poll away.
+    Reflecting immediately keeps the control from snapping back. Home
+    Assistant's writes and the phone app's both land here.
+
+    A button has no state to reflect — and no `value_path`, so writing one
+    anyway would file it under the empty string. The leading segment names the
+    block the accessory's parser fills (`states` or `consumables`, see
+    devices/ble/), so the reflection has to land in that one; an unsectioned
+    path is a `states` field.
+    """
+    if entity.value_path:
+        section, _, field = entity.value_path.rpartition(".")
+        ble_dev.state.setdefault(section or "states", {})[field] = value
 
 
 #: What `deliver_command` did with a command.
@@ -195,7 +214,7 @@ class CommandRouter:
 
         raw = message.payload
         payload = raw.decode(errors="replace") if isinstance(raw, (bytes, bytearray)) else str(raw)
-        value = _ble_command_value(entity, payload)
+        value = ble_command_value(entity, payload)
         if value is None:
             log.warning("Unusable value %r for %s on accessory %d",
                         payload, entity.key, ble_id)
@@ -211,18 +230,7 @@ class CommandRouter:
             parent, ble_dev, cmd, frame_payload)
         if not sent:
             return
-        # Optimistic, like a real device's: the accessory acknowledges the write
-        # but its next status is what actually confirms it, and that is a poll
-        # away. Reflecting immediately keeps the control from snapping back.
-        # A button has no state to reflect — and no `value_path`, so writing one
-        # anyway would file it under the empty string.
-        #
-        # The leading segment names the block the accessory's parser fills
-        # (`states` or `consumables`, see devices/ble.py), so the reflection has
-        # to land in that one; an unsectioned path is a `states` field.
-        if entity.value_path:
-            section, _, field = entity.value_path.rpartition(".")
-            ble_dev.state.setdefault(section or "states", {})[field] = value
+        reflect_ble_write(ble_dev, entity, value)
         if self._ble_registry:
             self._ble_registry.mark_dirty()
         await self._publisher.publish_ble_state(ble_dev)
