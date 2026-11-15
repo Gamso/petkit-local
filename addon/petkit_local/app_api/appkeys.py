@@ -13,6 +13,9 @@ key                     what it holds                                set by
                         proxies (`app_api/auth.py`)
 `THROTTLE`              `LoginThrottle` — failed-login lockouts      create_app_api
 `REGISTRY`              `DeviceRegistry`                             create_app_api
+`BLE_REGISTRY`          `BLERegistry` — the Bluetooth accessories,   create_app_api
+                        listed as devices (`app_api/inventory.py`);
+                        or None
 `EVENT_STORE`           `EventStore`, or None                        create_app_api
 `PET_REGISTRY`          `PetRegistry`, or None                       create_app_api
 `MEDIA_ROOT`            the friendly media tree ("" serves nothing)  create_app_api
@@ -52,6 +55,7 @@ if TYPE_CHECKING:
     from petkit_local.app_api.throttle import LoginThrottle
     from petkit_local.app_api.updates import UpdateFeed
     from petkit_local.app_api.video import VideoSessions
+    from petkit_local.devices.ble import BLERegistry
     from petkit_local.devices.registry import DeviceRegistry
     from petkit_local.events.store import EventStore
     from petkit_local.ha.publisher import HAPublisher
@@ -61,6 +65,7 @@ if TYPE_CHECKING:
 AUTH: web.AppKey[AppAuth] = web.AppKey("app_auth")
 THROTTLE: web.AppKey[LoginThrottle] = web.AppKey("app_throttle")
 REGISTRY: web.AppKey[DeviceRegistry] = web.AppKey("app_registry")
+BLE_REGISTRY: web.AppKey[BLERegistry | None] = web.AppKey("app_ble_registry")
 EVENT_STORE: web.AppKey[EventStore | None] = web.AppKey("app_event_store")
 PET_REGISTRY: web.AppKey[PetRegistry | None] = web.AppKey("app_pet_registry")
 MEDIA_ROOT: web.AppKey[str] = web.AppKey("app_media_root")

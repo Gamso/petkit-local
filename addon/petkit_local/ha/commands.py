@@ -562,6 +562,9 @@ DESTRUCTIVE_ACTIONS = frozenset({
     # The 180-degree flip repositions the camera; the small left/right steps do
     # not warrant a confirmation on every press.
     "ptz_flip",
+    # A Bluetooth fountain's filter counter: a consumable reset like the
+    # desiccant's, sent through the parent that relays for it.
+    "w5_reset_filter", "ctw3_reset_filter",
 })
 
 

@@ -11,12 +11,20 @@ from typing import Any
 
 from aiohttp import web
 
-from petkit_local.app_api.appkeys import COMMAND_SINK, HA_PUBLISHER, HUB, REGISTRY, SESSION
+from petkit_local.app_api import inventory
+from petkit_local.app_api.appkeys import (
+    BLE_REGISTRY, COMMAND_SINK, HA_PUBLISHER, HUB, REGISTRY, SESSION,
+)
 from petkit_local.app_api.middleware import ApiError
-from petkit_local.devices.base import Device
-from petkit_local.ha.command_router import deliver_command
+from petkit_local.devices.base import Device, Refused
+from petkit_local.devices.ble import BLEDevice, ble_command_for
+from petkit_local.ha.command_router import (
+    DELIVERED_MQTT, ble_command_value, deliver_command, reflect_ble_write,
+)
 from petkit_local.ha.commands import Command
+from petkit_local.ha.discovery import EntityDef
 from petkit_local.utils.coerce import to_int
+from petkit_local.utils.const import device_display_name
 
 log = logging.getLogger(__name__)
 
@@ -61,6 +69,23 @@ def device_or_404(request: web.Request) -> Device:
     return device
 
 
+def device_or_accessory_or_404(request: web.Request) -> Device | BLEDevice:
+    """The device or Bluetooth accessory the `{id}` segment names.
+
+    Only for the routes an accessory has too (`app_api/inventory.py`).
+
+    Raises:
+        ApiError: 404 `device_not_found`.
+    """
+    registry = request.app[REGISTRY]
+    node_id = path_int(request, "id", "device")
+    found = registry.get(node_id) or inventory.accessory(
+        registry, request.app.get(BLE_REGISTRY), node_id)
+    if found is None:
+        raise ApiError(404, "device_not_found", "no such device")
+    return found
+
+
 async def send_command(request: web.Request, device: Device, command: Command | None,
                        summary: str) -> str:
     """Deliver what a write produced, persist it, and tell everyone who shows it.
@@ -90,6 +115,57 @@ async def send_command(request: web.Request, device: Device, command: Command | 
     if publisher is not None:
         await publisher.publish_state(device)
     return delivered
+
+
+async def send_accessory_command(request: web.Request, accessory: BLEDevice,
+                                 entity: EntityDef, payload: str, summary: str) -> str:
+    """Write one entity of a Bluetooth accessory, through the parent relaying it.
+
+    `payload` is what Home Assistant would have published (`payload_for`), so
+    the value becomes the byte a frame carries exactly as HA's does
+    (`ha/command_router.py`). Unlike a device's, an accessory's write cannot
+    wait in a queue: it is a `thing/service/ble` publish to its parent, which
+    exists only while the parent holds an MQTT session. So it is sent now or
+    refused, and the answer is always `mqtt`.
+
+    Raises:
+        ApiError: 422 `refused` when the frame cannot be built (a block the
+            accessory has never reported in full, a field it cannot write);
+            409 `accessory_unreachable` when no parent on MQTT can relay it.
+    """
+    value = ble_command_value(entity, payload)
+    if value is None:
+        raise ApiError(422, "refused", f"unusable value for {entity.name}")
+    parent = inventory.parent_of(request.app[REGISTRY], accessory)
+    sink = request.app.get(COMMAND_SINK)
+    if parent is None:
+        raise ApiError(409, "accessory_unreachable",
+                       "no registered device relays this accessory")
+    if sink is None or not parent.mqtt_connected:
+        raise ApiError(409, "accessory_unreachable",
+                       f"the {device_display_name(parent.device_type)} relaying it is not "
+                       f"on MQTT, and an accessory is only reachable while it is")
+    try:
+        cmd, frame = ble_command_for(accessory, entity.key, value)
+    except Refused as exc:
+        raise ApiError(422, "refused", str(exc)) from None
+    if not await sink.publish_ble_command(parent, accessory, cmd, frame):
+        raise ApiError(409, "accessory_unreachable", "nothing could be sent to it")
+
+    reflect_ble_write(accessory, entity, value)
+    ble = request.app.get(BLE_REGISTRY)
+    if ble is not None:
+        ble.mark_dirty()
+    session = request.get(SESSION)
+    log.info("app API: %s on accessory %d via %d from %r", summary, accessory.petkit_id,
+             parent.petkit_id, session.name if session else "?")
+    hub = request.app.get(HUB)
+    if hub is not None:
+        hub.record_command(accessory.petkit_id, DELIVERED_MQTT, f"app: {summary}")
+    publisher = request.app.get(HA_PUBLISHER)
+    if publisher is not None:
+        await publisher.publish_ble_state(accessory)
+    return DELIVERED_MQTT
 
 
 def path_int(request: web.Request, name: str, what: str) -> int:

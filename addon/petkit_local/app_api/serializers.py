@@ -27,6 +27,7 @@ from urllib.parse import quote
 
 from petkit_local.ai.pets import learned_weight_in_use, pet_weight_grams, reference_weight_grams
 from petkit_local.devices.base import Device
+from petkit_local.devices.ble import BLEDevice
 from petkit_local.events import decode
 from petkit_local.events.sessions import content_of_row, session_filters
 from petkit_local.ha.commands import DESTRUCTIVE_ACTIONS, device_actions
@@ -34,7 +35,9 @@ from petkit_local.ha.discovery import EntityDef
 from petkit_local.ha.schedules import is_dual_hopper
 from petkit_local.media.serving import has_media, session_media_slots
 from petkit_local.utils.coerce import to_float, to_int
-from petkit_local.utils.const import device_display_name
+from petkit_local.utils.const import (
+    DEVICE_TYPES_PURIFIER, DEVICE_TYPES_WATER_FOUNTAIN, device_display_name,
+)
 from petkit_local.utils.dicts import dig_path
 
 API_PREFIX = "/app/v1"
@@ -87,11 +90,33 @@ def device_kind(d: Device) -> str:
     return "other"
 
 
-def device_summary(d: Device) -> dict[str, Any]:
+def accessory_kind(a: BLEDevice) -> str:
+    """`device_kind` for a Bluetooth accessory, which has a codename and no `Device`."""
+    if a.ble_type in DEVICE_TYPES_WATER_FOUNTAIN:
+        return "fountain"
+    if a.ble_type in DEVICE_TYPES_PURIFIER:
+        return "purifier"
+    return "other"
+
+
+def accessory_ref(a: BLEDevice) -> dict[str, Any]:
+    """An accessory as its parent lists it: enough to know what it is.
+
+    A litter box's page decides from `kind` alone whether it has a Pura Air
+    to show, and fetches `/devices/{id}` for its readings.
+    """
+    return {"id": a.petkit_id, "type": a.ble_type, "kind": accessory_kind(a)}
+
+
+def device_summary(d: Device, accessories: list[BLEDevice] | tuple = ()) -> dict[str, Any]:
     """One device in the list. `last_seen` is the latest contact on either transport.
 
     A device on MQTT stops polling HTTP altogether (AGENTS.md), so the HTTP
     timestamps alone would make the healthiest device look abandoned.
+
+    `accessories` are the Bluetooth accessories it relays, in the order the
+    registry holds them — which is also the order `BLERegistry.get_linked_k3`
+    picks the one K3 the firmware has a slot for.
     """
     last = max(d.last_seen or 0, d.last_mqtt or 0, d.last_heartbeat or 0,
                d.last_state_report or 0)
@@ -105,6 +130,34 @@ def device_summary(d: Device) -> dict[str, Any]:
         "last_seen": _ts(last),
         "firmware": str(d.firmware) if d.firmware else None,
         "is_camera": bool(d.is_camera),
+        "connection": "wifi",
+        "parent_id": None,
+        "accessories": [accessory_ref(a) for a in accessories],
+    }
+
+
+def accessory_summary(a: BLEDevice, parent: Device | None) -> dict[str, Any]:
+    """A Bluetooth accessory in the device list, shaped like a device.
+
+    It has no network identity of its own (`devices/ble/registry.py`): it is
+    reachable while its parent is, over whichever transport the parent uses,
+    and has no firmware version we know. `last_seen` is its own — when a frame
+    from it last decoded — and stays null for a K3, whose readings ride on its
+    parent's reports rather than arriving as frames.
+    """
+    return {
+        "id": a.petkit_id,
+        "type": a.ble_type,
+        "model": device_display_name(a.ble_type),
+        "kind": accessory_kind(a),
+        "online": bool(parent and parent.online),
+        "transport": "mqtt" if parent and parent.mqtt_connected else "http",
+        "last_seen": _ts(a.last_seen),
+        "firmware": None,
+        "is_camera": False,
+        "connection": "ble",
+        "parent_id": parent.petkit_id if parent else None,
+        "accessories": [],
     }
 
 
@@ -165,19 +218,44 @@ def device_entities(entities: list[EntityDef], doc: dict[str, Any]) -> list[dict
     return [entity_value(e, doc) for e in entities if e.component in VALUE_COMPONENTS]
 
 
-def device_detail(d: Device, entities: list[EntityDef], doc: dict[str, Any]) -> dict[str, Any]:
+def _detail(summary: dict[str, Any], serial: str, entities: list[EntityDef],
+            actions: list[EntityDef], doc: dict[str, Any]) -> dict[str, Any]:
+    return {
+        **summary,
+        "serial": serial or None,
+        "entities": device_entities(entities, doc),
+        "actions": sorted((device_action(e) for e in actions),
+                          key=lambda a: a["destructive"]),
+    }
+
+
+def device_detail(d: Device, entities: list[EntityDef], doc: dict[str, Any],
+                  accessories: list[BLEDevice] | tuple = ()) -> dict[str, Any]:
     """A device's summary, every value-bearing entity, and the actions it offers.
 
     Actions are in the panel's order: destructive last, so a mis-tap lands on
     a safe button.
     """
-    return {
-        **device_summary(d),
-        "serial": d.serial_number or None,
-        "entities": device_entities(entities, doc),
-        "actions": sorted((device_action(e) for e in device_actions(entities)),
-                          key=lambda a: a["destructive"]),
-    }
+    return _detail(device_summary(d, accessories), d.serial_number, entities,
+                   device_actions(entities), doc)
+
+
+def accessory_actions(entities: list[EntityDef]) -> list[EntityDef]:
+    """An accessory's buttons. Each one is a frame (`devices/ble/ble_command_for`),
+    so there is no `ALL_ACTIONS` entry to check them against."""
+    return [e for e in entities if e.component == "button"]
+
+
+def accessory_detail(a: BLEDevice, parent: Device | None,
+                     entities: list[EntityDef]) -> dict[str, Any]:
+    """`device_detail` for an accessory: its entities read from its own state.
+
+    No adapter is needed for the values: an accessory's `value_path`s are
+    `states.x`/`consumables.x`, and `BLEDevice.state` has exactly those
+    sections — the document Home Assistant's templates read too.
+    """
+    return _detail(accessory_summary(a, parent), a.serial_number, entities,
+                   accessory_actions(entities), a.state)
 
 
 # --- feeding -------------------------------------------------------------------

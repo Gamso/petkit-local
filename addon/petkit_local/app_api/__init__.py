@@ -11,6 +11,8 @@ authenticate), every request here is authenticated by petkit-local itself.
                     trusted proxies, persisted to `{data_dir}/app_api.json`
     throttle.py     failed-login lockouts, and which client address a request is charged to
     serializers.py  every JSON shape returned, explicit, so the panel can change freely
+    inventory.py    what is listed as a device: the WiFi devices and the Bluetooth
+                    accessories they relay, linked both ways
     updates.py      live updates (`/ws`): one EventHub subscription, diffed, fanned out
     video.py        live video (`/devices/{id}/live`): go2rtc's fMP4 WebSocket and HLS
                     relayed, viewer caps
@@ -25,7 +27,8 @@ authenticate), every request here is authenticated by petkit-local itself.
                     settings in `{data_dir}/ntfy.json`, set from the panel
 
 Layering: this package reads the same stores, registries and helpers the panel
-reads (`events/`, `ai/pets.py`, `ha/categories.py`, `ha/state_doc.py`,
+reads (`events/`, `ai/pets.py`, `devices/ble/`, `ha/categories.py`,
+`ha/entities/ble.py`, `ha/state_doc.py`,
 `media/serving.py`, `media/go2rtc.py`), writes through the ones Home Assistant
 writes through (`ha/commands.py`, `ha/command_router.py`, `ha/schedules.py`), and
 imports nothing from `web/` or `http/`; the panel's `EventHub` is handed in, typed
