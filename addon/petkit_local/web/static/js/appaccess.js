@@ -34,11 +34,14 @@ function render(a) {
     <p class="sub" style="margin-top:14px">Signed-in phones — each signs out by itself after ${esc(a.idle_timeout_days)} days unused.</p>
     ${
       sessions.length
-        ? `<table><thead><tr><th>Name</th><th>Signed in</th><th>Last used</th><th></th></tr></thead><tbody>${sessions
+        ? `<table><thead><tr><th>Name</th><th>Signed in</th><th>Last used</th><th>Push${help(
+            'Whether the app registered its own push endpoint, and with which server (the endpoint itself is a secret and is never shown). Notifications reach that phone without any ntfy topic set up here, filtered by the kind switches under Phone notifications. Signing the phone out stops them at once.',
+          )}</th><th></th></tr></thead><tbody>${sessions
             .map(
               s => `<tr><td>${esc(s.name)}</td>
           <td class="mut">${esc(new Date(s.created * 1000).toLocaleString())}</td>
           <td class="mut">${esc(relTime(s.last_used))}</td>
+          <td>${s.push ? `<span class="badge ok">on</span> <span class="mut">${esc(s.push.host)}</span>` : '<span class="mut">—</span>'}</td>
           <td><button class="mini" data-action="app-revoke-session" data-id="${esc(s.id)}">Sign out</button></td></tr>`,
             )
             .join('')}</tbody></table>

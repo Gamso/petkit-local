@@ -64,7 +64,8 @@ petkit_local/
 │                  updates.py live updates on /ws (one hub subscription, diffed, fanned out)
 │                  video.py live video: go2rtc's fMP4 WebSocket and HLS relayed, capped
 │                  handlers/ · openapi.yaml the contract, tested against ROUTES
-│                  notify/ ntfy push: hub subscriber -> rules -> bounded publish queue
+│                  push.py a session's own UnifiedPush endpoint: validation, address fence
+│                  notify/ hub subscriber -> rules -> bounded queue -> ntfy topic + push.py sink
 ├── patchers/      on-device patches: cacert · mqtt · cloud · camera · ssh
 │                  firmware (ESP32: a whole image rebuilt, not a file on a device)
 │                  esp32_ota (that image stored, offered over OTA, rolled back)

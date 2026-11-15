@@ -7,7 +7,8 @@ asks for the old one — and revokes every session, so a reset also signs out a
 phone that should not be signed in.
 
 The password travels to the server once, in the POST body, and is never sent
-back: `GET` says only whether one is set.
+back: `GET` says only whether one is set. A session's push registration is
+shown by its host only — the endpoint is a capability URL (`app_api/push.py`).
 """
 from __future__ import annotations
 

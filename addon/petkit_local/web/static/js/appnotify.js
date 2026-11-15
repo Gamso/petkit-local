@@ -51,9 +51,10 @@ function render(n) {
         )
         .join('')}
     </div>
+    <p class="sub mut" style="margin-top:4px">These switches also apply to phones that registered for push from the app (see Phone app access), with or without the ntfy topic.</p>
     <div style="margin-top:10px;display:flex;gap:6px;flex-wrap:wrap">
       <button class="act" data-action="ntfy-save" data-enable="1">${n.enabled ? 'Save' : 'Save and enable'}</button>
-      ${n.enabled ? '<button class="mini" data-action="ntfy-save" data-enable="0">Disable</button>' : ''}
+      <button class="mini" data-action="ntfy-save" data-enable="0">${n.enabled ? 'Disable' : 'Save without enabling'}</button>
       <button class="mini" data-action="ntfy-test">Send test notification</button>
     </div>`;
 }

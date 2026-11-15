@@ -71,12 +71,37 @@ press something — are:
 | Proxy mode's upstream (`http/proxy.py`, `mqtt/upstream.py`) | while proxy mode is on, relaying the device's own traffic | the device's traffic, redacted on the way back |
 | Cloudflare's TURN API (`media/turn.py`) | when a live view is opened and a TURN key is configured | a request for short-lived relay credentials |
 | Your ntfy server (`app_api/notify/`) | while phone notifications are on, once per notification (bounded per device and kind) | `POST {server}/{topic}` with `Authorization: Bearer <token>`, a title, a priority, tags and one sentence: a device's product name, a pet's name, what happened. No device id, no media, no link, no credential of anything else. TLS is verified and redirects are not followed, so the token goes to the configured host or nowhere. |
+| The push endpoint each signed-in phone registered (`app_api/notify/push.py`) | once per notification and phone, through the same bounds | a six-key JSON object (kind, ids, an event code, a time) and no credential; see below for where it may go |
 
 The ntfy access token and the topic are secrets — on ntfy the topic name is the
 subscription. Both live in `/data/ntfy.json` (0600), never in the add-on
 options; neither is written to the log, and the panel shows the token only by
 its last four characters. Give the token a user that may only **write** that one
 topic, and the phone a separate user that may only read it.
+
+#### Push endpoints the phones register
+
+The one outbound call whose address is NOT set in the panel: a signed-in phone
+may register its own UnifiedPush endpoint (`PUT /app/v1/push`,
+`app_api/push.py`), and petkit-local then POSTs each notification there
+(`app_api/notify/push.py`), once per notification and phone, through the same
+gates and rate limits as the ntfy topic.
+
+| What | How it is bounded |
+|---|---|
+| Who chooses the URL | Only an authenticated session, i.e. someone who has the app password. One endpoint per session; it is removed with the session (logout, revocation in the panel, password change, 90 days unused) and after three "gone" answers (404/410) in a row. |
+| What is sent | A fixed JSON object of six keys — version, kind, device id, pet id, event code, time — at most a few hundred bytes. No text, no names, no token, no media, no URL. The headers are `Content-Type`, `TTL` and `Urgency`; no `Authorization`, nothing of the session. |
+| Where it may go | `https://` anywhere, plain `http://` only to a private address or a home-only name (`*.lan`, `*.local`, `*.home.arpa`, `*.internal`, a single-label name). **Private addresses are allowed on purpose**: a self-hosted ntfy on the LAN is the expected distributor. Refused, both when the endpoint is registered and on every address a name resolves to at connect time: loopback, link-local (cloud metadata included), unspecified, multicast, reserved, and every address of petkit-local's own machine. That last rule keeps a push from reaching the services that listen there without authentication: go2rtc's API on loopback, and the panel on the container's own address. |
+| How | TLS verified, no redirect followed, 10 s timeout, at most 2 requests under way per endpoint and 100 in all; the answer is read for its status only and never reaches the phone, so this is a blind POST. |
+| Secrecy | An endpoint is a capability URL — whoever knows it can push to that phone. It is stored only in `/data/app_api.json` (0600). The API's answers, the panel and the log show only its host, and a failure is logged with the host and the HTTP status or the exception's type, never its text, which can contain the URL. |
+
+What remains, so you can judge it: whoever holds a session can make
+petkit-local send that small fixed POST to any other host it can reach on your
+LAN or VPN — a router, a printer, Home Assistant. The body is not theirs to
+choose, nothing is authenticated with it, and nothing of the answer comes back;
+but a device on the LAN that changes something on an unauthenticated POST of a
+URL alone would be reachable through it. This is one more reason the app
+password, and the phones signed in with it, must be kept tight.
 
 ### Things that are deliberately permissive
 

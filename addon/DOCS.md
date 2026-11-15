@@ -653,6 +653,46 @@ What a notification carries: a title, one sentence naming the device by its
 product name and the pet by its name, a priority, and two tags (an emoji and
 the kind, e.g. `cat,toilet`). No device id, no token, no link.
 
+#### Pushed straight to the app
+
+The phone app can instead register **its own** UnifiedPush endpoint with
+petkit-local when you sign in — nothing to paste in the panel, one endpoint per
+phone, as many phones as are signed in. The app picks a distributor on the
+phone (the ntfy app pointed at your server, or any other UnifiedPush
+distributor), gets an endpoint from it, and hands it to petkit-local; from then
+on each notification is POSTed there too. The ntfy topic above keeps working
+alongside, for anyone who wants plain ntfy notifications without the app.
+
+- **The kind switches above apply to both**, and so does the rest: each event
+  is announced once, and the per-device rate limit counts it once whichever way
+  it goes. The app may narrow the kinds further for its own phone. The ntfy
+  topic does not need to be enabled for the app's pushes to be sent.
+- **The registration belongs to the phone's session.** Signing it out — from the
+  app, from **Phone app access** (which shows, per phone, whether push is on and
+  with which server), by a password change, or after 90 days unused — stops its
+  pushes at once. An endpoint that answers "gone" (HTTP 404 or 410) three times
+  in a row is dropped; the app registers again when it next opens.
+- **What is sent is not a sentence but a few keys** — the kind, the device id,
+  the pet id, an event code and the time, e.g.
+  `{"v":1,"kind":"toilet","device_id":100,"pet_id":2,"code":"10","ts":1763150000}`
+  — so the app writes the notification itself, in the phone's language. No
+  name, no text, no token, no link.
+- **With ntfy as the distributor**, the endpoint is on your ntfy server, and
+  petkit-local publishes to it **without a token**: give anonymous users write
+  access to UnifiedPush topics, which is what ntfy's UnifiedPush documentation
+  recommends (`ntfy access '*' 'up*' write-only`). The topic name in the
+  endpoint is long and random, and it is what keeps others out.
+- **The endpoint must be `https://`.** Plain `http://` is accepted only for a
+  private address or a name that only exists at home (`ntfy`, `*.lan`,
+  `*.local`, `*.home.arpa`, `*.internal`) — a self-hosted ntfy reached over the
+  LAN or a VPN. An endpoint on petkit-local's own machine is refused.
+
+For app developers: `PUT /app/v1/push` `{endpoint, kinds?}` registers (or
+replaces) the calling session's endpoint and `DELETE /app/v1/push` removes it;
+`session.push` in `/app/v1/info` says whether one is registered. The message is
+the `PushMessage` schema of the OpenAPI file — every key and every `code` is
+listed there.
+
 ## T4 litter-level calibration
 
 On the Pura Max (T4), leveling the litter and confirming that it is full are
