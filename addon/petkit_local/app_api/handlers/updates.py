@@ -32,7 +32,7 @@ MAX_INBOUND = 1024
 CLOSE_TIMEOUT = 1.0
 
 
-async def _write(ws: web.WebSocketResponse, sub: Subscriber) -> None:
+async def write_queue(ws: web.WebSocketResponse, sub: Subscriber) -> None:
     """Send the subscriber's messages until it is ended, then close the socket."""
     while True:
         item = await sub.queue.get()
@@ -57,13 +57,13 @@ async def updates(request: web.Request) -> web.StreamResponse:
         log.exception("app API: could not open live updates")
         await ws.close(code=WSCloseCode.INTERNAL_ERROR, message=b"internal error")
         return ws
-    writer = asyncio.create_task(_write(ws, sub), name="app-ws-writer")
+    writer = asyncio.create_task(write_queue(ws, sub), name="app-ws-writer")
     log.info("app API: live updates opened by %r", session.name)
     try:
         async for msg in ws:
             if writer.done():
                 break
-            if msg.type == WSMsgType.TEXT and _is_ping(msg.data):
+            if msg.type == WSMsgType.TEXT and is_ping(msg.data):
                 sub.push('{"type":"pong"}')
     except ConnectionResetError:
         pass
@@ -81,7 +81,7 @@ async def updates(request: web.Request) -> web.StreamResponse:
     return ws
 
 
-def _is_ping(data: str) -> bool:
+def is_ping(data: str) -> bool:
     try:
         return json.loads(data) == {"type": "ping"}
     except ValueError:

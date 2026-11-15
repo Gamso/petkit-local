@@ -7,10 +7,13 @@
                   the bounded queue the ntfy publisher drains
     push.py       the second sink: a six-key JSON message POSTed to the
                   UnifiedPush endpoint each signed-in phone registered
+    channel.py    the third sink: that same message, with an id, written to the
+                  app API's notification socket, and a bounded catch-up log
     failurelog.py the rate-limited failure warning both sinks share
 
 The phone receives them through UnifiedPush, with the ntfy Android app (or any
-distributor) on the phone (see DOCS.md). The only outbound calls are POSTs to
-the configured ntfy server and to the endpoints the phones registered — never
-anything of PetKit's.
+distributor) on the phone, or over the app's own connection to the app API, with
+nothing else (see DOCS.md). The only outbound calls are POSTs to the configured
+ntfy server and to the endpoints the phones registered — never anything of
+PetKit's.
 """

@@ -66,6 +66,7 @@ petkit_local/
 │                  handlers/ · openapi.yaml the contract, tested against ROUTES
 │                  push.py a session's own UnifiedPush endpoint: validation, address fence
 │                  notify/ hub subscriber -> rules -> bounded queue -> ntfy topic + push.py sink
+│                          + channel.py (the app's notification socket, catch-up log)
 ├── patchers/      on-device patches: cacert · mqtt · cloud · camera · ssh
 │                  firmware (ESP32: a whole image rebuilt, not a file on a device)
 │                  esp32_ota (that image stored, offered over OTA, rolled back)
@@ -99,6 +100,8 @@ phone --HTTPS--> your tunnel / reverse proxy --HTTP--> app_api/server.py (port 8
 writes:  handlers/controls.py, feeding.py -> ha/commands.py, ha/schedules.py
                                           -> ha/command_router.deliver_command (MQTT, else queue)
 /ws:     EventHub --(device id marked dirty)--> updates.UpdateFeed: re-read, diff, fan out per socket
+/notifications/ws:  EventHub -> notify/notifier.py gates (kind, dedupe, rate limit)
+                    -> ntfy topic, notify/push.py endpoints, notify/channel.py: log + sockets
 /devices/{id}/live:  handlers/video.py -> video.VideoSessions (caps) -> go2rtc on loopback
 ```
 

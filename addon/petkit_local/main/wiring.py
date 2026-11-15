@@ -20,6 +20,7 @@ from petkit_local.ai.pets import PetRegistry
 from petkit_local.app_api.auth import FILENAME as APP_AUTH_FILENAME
 from petkit_local.app_api.auth import AppAuth
 from petkit_local.app_api.notify.notifier import Notifier
+from petkit_local.app_api.notify.channel import FILENAME as NOTIFY_LOG_FILENAME
 from petkit_local.app_api.notify.settings import FILENAME as NTFY_FILENAME
 from petkit_local.app_api.notify.settings import NtfyConfig
 from petkit_local.config import Config
@@ -283,9 +284,12 @@ def build_services(config: Config, args: argparse.Namespace) -> Services:
     # administered from the panel, which is why both are handed this object.
     app_auth = AppAuth(f"{config.data_dir}/{APP_AUTH_FILENAME}")
     # Push notifications to the phone: fed by the hub, configured from the panel,
-    # and sent to the endpoints the phones registered with their sessions.
+    # and sent to the endpoints the phones registered with their sessions and
+    # to their notification sockets, which the app API serves from
+    # `notifier.channel`.
     notifier = Notifier(NtfyConfig(f"{config.data_dir}/{NTFY_FILENAME}"), registry,
-                        pet_registry=pet_registry, hub=hub, app_auth=app_auth)
+                        pet_registry=pet_registry, hub=hub, app_auth=app_auth,
+                        notify_log=f"{config.data_dir}/{NOTIFY_LOG_FILENAME}")
 
     return Services(
         config=config,

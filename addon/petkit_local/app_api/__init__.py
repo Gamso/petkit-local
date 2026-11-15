@@ -16,10 +16,13 @@ authenticate), every request here is authenticated by petkit-local itself.
                     relayed, viewer caps
     handlers/       one module per area: meta, auth, devices, controls (actions and
                     settings), feeding (plan, one-off feeds), timeline, media, pets,
-                    updates (the live-updates WebSocket), video (live video)
+                    updates (the live-updates WebSocket), video (live video),
+                    push (a UnifiedPush endpoint), notifications (kinds, and the
+                    notification WebSocket)
     openapi.yaml    the contract the app's client is generated from (tested against ROUTES)
-    notify/         push notifications through the owner's ntfy server, fed by the
-                    event hub; settings in `{data_dir}/ntfy.json`, set from the panel
+    notify/         notifications, fed by the event hub, to the owner's ntfy server,
+                    the phones' UnifiedPush endpoints and their notification sockets;
+                    settings in `{data_dir}/ntfy.json`, set from the panel
 
 Layering: this package reads the same stores, registries and helpers the panel
 reads (`events/`, `ai/pets.py`, `ha/categories.py`, `ha/state_doc.py`,

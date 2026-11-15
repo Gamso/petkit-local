@@ -571,11 +571,15 @@ file):
 - On close code `1013` (the phone did not keep up) switch to HLS; on `4401`
   sign in again; on `1011` or an `error` message retry after a few seconds.
 
-### Notifications (ntfy)
+### Notifications
 
-petkit-local can push notifications to your phone through **your own
-[ntfy](https://ntfy.sh) server** — nothing goes through Google or PetKit. Set it
-up in the panel, **Setup → Phone notifications**, next to Phone app access.
+The phone app receives notifications **over its own connection to petkit-local**,
+with nothing else to install or run: see [Straight to the app, without
+ntfy](#straight-to-the-app-without-ntfy). petkit-local can also push them
+through **your own [ntfy](https://ntfy.sh) server**, to the ntfy app or to any
+UnifiedPush app — nothing goes through Google or PetKit either way. Which kinds
+are sent is set in the panel, **Setup → Phone notifications**, next to Phone app
+access, and applies to every way they leave.
 
 What can be sent, each with its own switch:
 
@@ -691,7 +695,50 @@ For app developers: `PUT /app/v1/push` `{endpoint, kinds?}` registers (or
 replaces) the calling session's endpoint and `DELETE /app/v1/push` removes it;
 `session.push` in `/app/v1/info` says whether one is registered. The message is
 the `PushMessage` schema of the OpenAPI file — every key and every `code` is
-listed there.
+listed there. `kinds` are the session's own, shared with the notification
+socket below; left out of `PUT /app/v1/push`, they stay as they were.
+
+#### Straight to the app, without ntfy
+
+The app can also keep **one connection of its own** open to petkit-local in the
+background, the way the ntfy app keeps one to an ntfy server, and receive every
+notification over it. Nothing else is needed — no ntfy server, no second app on
+the phone, no access rule — only the app API you already reach for everything
+else, through the same reverse proxy or tunnel.
+
+- **The same notifications, decided once.** The kind switches above, the
+  once-per-event rule and the per-device rate limit decide whether a
+  notification is sent, once, for the ntfy topic, the pushed endpoints and this
+  connection alike; they can never disagree. Each phone then keeps only the
+  kinds chosen in its app, whichever way it receives them.
+- **Nothing is lost to a dead zone.** petkit-local keeps the last 500
+  notifications of the last 3 days (in `/data/app_notifications.json`, so a
+  restart keeps them too). A phone that was offline or switched off is sent what
+  it missed when it reconnects, then the rest live. A phone never receives what
+  happened before it was signed in. If more was missed than is kept, the app is
+  told that some are missing.
+- **It stays quiet.** The connection carries notifications only, never device
+  updates, and petkit-local pings it every 45 seconds — well inside the 100
+  seconds after which Cloudflare drops an idle connection — so it survives a
+  tunnel and costs about what the ntfy app costs.
+- **It belongs to the phone's session**, like everything else: signing the phone
+  out (from the app, from **Phone app access**, by a password change, or after
+  90 days unused) closes it at once. **Phone app access** shows, per phone,
+  whether it is connected right now, or when it last was.
+
+For app developers: `GET /app/v1/notifications/ws?after=<id>` is the socket
+(bearer token on the upgrade). It sends a `hello` (with `last_id`, how many
+notifications are `replayed`, and whether there was a `gap`), then each
+notification as `{"type":"notification","id":42,"replay":false,"message":{…}}`,
+where `message` is the same `PushMessage` a pushed endpoint receives. Pass the
+highest `id` received as `after` when reconnecting; leave it out the very first
+time. One socket per session: opening a second closes the first with `4409`.
+It closes with `4401` when the session ends (sign in again, do not retry),
+`1013` if the app read too slowly (reconnect with `after`; nothing is lost) and
+`1001` on shutdown. `GET`/`PUT /app/v1/notifications` `{kinds}` read and set the
+kinds this phone receives, with no push endpoint needed, and list which kinds
+the panel has switched on. Every message and parameter is in the OpenAPI file
+(`NotificationSocketMessage`, `NotificationSettings`).
 
 ## T4 litter-level calibration
 

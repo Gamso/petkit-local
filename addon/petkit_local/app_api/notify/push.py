@@ -4,7 +4,7 @@ A phone registers its own UnifiedPush endpoint with its session
 (`PUT /app/v1/push`, stored by `auth.py`). For every notification that got
 through the notifier's gates — the kind switch, the `event_uid` dedupe, the
 rate limit, the bounded queue, shared with the ntfy topic — `dispatch` POSTs the
-same message to every live registration whose `kinds` allow it.
+same message to every live registration whose session's `kinds` allow it.
 
 The message (`message`, `PUSH_VERSION` 1) is stable keys only, so the app writes
 the notification itself, in the phone's language, and nothing in it is worth
@@ -142,7 +142,7 @@ class PushSink:
 
     def wants(self, kind: str) -> bool:
         """Whether any live registration would receive `kind`."""
-        return any(s.push.allows(kind) for s in self._auth.push_targets())
+        return any(s.allows(kind) for s in self._auth.push_targets())
 
     # --- fan-out --------------------------------------------------------------
 
@@ -159,7 +159,7 @@ class PushSink:
         queued = 0
         for session in targets:
             reg = session.push
-            if not reg.allows(notification.kind):
+            if not session.allows(notification.kind):
                 continue
             key = (session.id, reg.endpoint)
             lane = self._lanes.setdefault(key, _Lane())

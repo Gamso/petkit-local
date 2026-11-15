@@ -103,6 +103,25 @@ but a device on the LAN that changes something on an unauthenticated POST of a
 URL alone would be reachable through it. This is one more reason the app
 password, and the phones signed in with it, must be kept tight.
 
+#### The notification socket
+
+A phone can also receive notifications with no outbound call at all, over a
+WebSocket it opens to the app API itself (`GET /app/v1/notifications/ws`,
+`app_api/notify/channel.py`) — no ntfy server and no distributor, so nothing of
+the above applies to it. It is one more route of the app API, protected like
+every other: the bearer token on the upgrade request, and the socket closed
+within about a second when the session ends (logout, revocation, a password
+change or removal, 90 days unused). One socket per session; a second replaces
+the first. A phone that stops reading is disconnected rather than queued for.
+
+It carries the same six-key message as a pushed endpoint, plus a sequence
+number. To let a phone catch up after a dead zone, the last 500 notifications of
+the last 3 days are kept in `/data/app_notifications.json` (0600): kinds, device
+and pet ids, event codes and times — no names, no text, no credential. Any
+signed-in phone may be replayed entries from that log since it signed in, subject to
+its own kinds; that is no more than it would have received live. Signing every
+phone out does not erase it; it ages out.
+
 ### Things that are deliberately permissive
 
 - **`mqtt_strict_auth` defaults to `false`**, so the device-facing MQTT broker

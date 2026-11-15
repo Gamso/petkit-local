@@ -14,6 +14,15 @@ const jsonPost = (path, body, method = 'POST') =>
     body: JSON.stringify(body),
   });
 
+// Whether that phone holds the notification socket: null when it never opened one.
+function notifyCell(n) {
+  if (!n) return '<span class="mut">—</span>';
+  const when = (label, t) => (t ? ` <span class="mut">${label} ${esc(relTime(t))}</span>` : '');
+  return n.connected
+    ? `<span class="badge ok">connected</span>${when('since', n.since)}`
+    : `<span class="badge">not connected</span>${when('last', n.since)}`;
+}
+
 function render(a) {
   const v = document.getElementById('appAccessView');
   if (!v) return;
@@ -34,13 +43,16 @@ function render(a) {
     <p class="sub" style="margin-top:14px">Signed-in phones — each signs out by itself after ${esc(a.idle_timeout_days)} days unused.</p>
     ${
       sessions.length
-        ? `<table><thead><tr><th>Name</th><th>Signed in</th><th>Last used</th><th>Push${help(
+        ? `<table><thead><tr><th>Name</th><th>Signed in</th><th>Last used</th><th>Notifications${help(
+            'Whether the app holds its own notification connection to this server right now — the way it receives notifications with no ntfy at all. A phone that is offline gets what it missed when it reconnects (up to a few days). Filtered by the kind switches under Phone notifications, then by the kinds chosen in the app.',
+          )}</th><th>Push${help(
             'Whether the app registered its own push endpoint, and with which server (the endpoint itself is a secret and is never shown). Notifications reach that phone without any ntfy topic set up here, filtered by the kind switches under Phone notifications. Signing the phone out stops them at once.',
           )}</th><th></th></tr></thead><tbody>${sessions
             .map(
               s => `<tr><td>${esc(s.name)}</td>
           <td class="mut">${esc(new Date(s.created * 1000).toLocaleString())}</td>
           <td class="mut">${esc(relTime(s.last_used))}</td>
+          <td>${notifyCell(s.notify)}</td>
           <td>${s.push ? `<span class="badge ok">on</span> <span class="mut">${esc(s.push.host)}</span>` : '<span class="mut">—</span>'}</td>
           <td><button class="mini" data-action="app-revoke-session" data-id="${esc(s.id)}">Sign out</button></td></tr>`,
             )

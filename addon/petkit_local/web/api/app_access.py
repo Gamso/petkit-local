@@ -9,6 +9,8 @@ phone that should not be signed in.
 The password travels to the server once, in the POST body, and is never sent
 back: `GET` says only whether one is set. A session's push registration is
 shown by its host only — the endpoint is a capability URL (`app_api/push.py`).
+Each session also says whether its phone holds the notification socket
+(`app_api/notify/channel.py`) right now, as the notifier knows it.
 """
 from __future__ import annotations
 
@@ -21,7 +23,7 @@ from petkit_local.app_api.auth import (
     MIN_PASSWORD_LENGTH, SESSION_IDLE_LIFETIME, AppAuth, PasswordRejected,
 )
 from petkit_local.web.api._common import _json_body, _refuse
-from petkit_local.web.appkeys import APP_AUTH, CFG
+from petkit_local.web.appkeys import APP_AUTH, CFG, NOTIFIER
 
 log = logging.getLogger(__name__)
 
@@ -34,13 +36,15 @@ def _auth(request: web.Request) -> AppAuth:
 
 
 def _view(request: web.Request, auth: AppAuth) -> dict[str, Any]:
+    channel = getattr(request.app.get(NOTIFIER), "channel", None)
     return {
         "password_set": auth.password_set,
         "min_password_length": MIN_PASSWORD_LENGTH,
         "idle_timeout_days": SESSION_IDLE_LIFETIME // 86400,
         "app_port": request.app[CFG].get("app_port"),
         "trusted_proxies": auth.trusted_proxies,
-        "sessions": [s.public() for s in auth.sessions()],
+        "sessions": [{**s.public(), "notify": channel.status(s) if channel is not None else None}
+                     for s in auth.sessions()],
     }
 
 
