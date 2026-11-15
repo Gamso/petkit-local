@@ -115,7 +115,19 @@ FOUNTAIN_NEXT_GEN = frozenset({"w7h"})
 #: `battery`/`liquid` LEVELS on its parent's report (`bridge._update_linked_k3`),
 #: not as the reset date the N60 countdown uses, so the two are not
 #: interchangeable sources even where the function is the same.
+#:
+#: The N60 countdown and the Reset N60 button ARE about the built-in unit, so
+#: those two are narrowed to this set (`ha/categories.py`,
+#: `devices/consumables.py`). A T3/T4 has no `sprayDays` to be told and no
+#: evidenced meaning for `start_action: 10`; the cartridge of a K3 linked to it
+#: is read where it is measured, the K3's own `k3_liquid`.
 LITTER_N60 = frozenset({"t5", "t6", "t7"})
+#: Litter boxes with no N50 cartridge: the Purobot Ultra, whose own app uses
+#: the code pypetkitapi calls RESET_N50_DEODOR for Pack (see
+#: `ha/entities/buttons.py::LITTER_T6_BUTTONS`). The T7 is not listed although
+#: the reference integration offers it no N50 reset either: nothing here has
+#: seen a T7, and a guess would take a sensor away from somebody's box.
+LITTER_WITHOUT_N50 = frozenset({"t6"})
 #: T6 introduced the wander/melt/package cycles.
 LITTER_T6_PLUS = frozenset({"t6", "t7"})
 #: Feeders with a camera; the eat/move/pet detection topics are theirs alone.

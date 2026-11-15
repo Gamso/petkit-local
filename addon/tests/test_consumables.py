@@ -289,3 +289,26 @@ def test_pressing_reset_desiccant_starts_its_countdown():
     dev = Device(device_type="d4sh", petkit_id=15)
     handle_ha_command(dev, _entity(dev, "reset_desiccant"), "PRESS")
     assert dev.state["desiccantLeftDays"] == 30
+
+
+def test_a_box_without_the_cartridge_keeps_no_countdown_for_it():
+    """A T4 has no built-in N60 and a T6 no N50, and both were once offered the
+    reset button that records a date. A date recorded then must not keep the
+    countdown alive: `state` is what the app and its "to replace" notification
+    read, and it is merged into and never pruned -- so the key is removed, not
+    merely left unwritten."""
+    from petkit_local.app_api.notify.rules import active_conditions
+
+    for device_type, gone, kept in (("t4", "sprayLeftDays", "deodorantLeftDays"),
+                                    ("t3", "sprayLeftDays", "deodorantLeftDays"),
+                                    ("t6", "deodorantLeftDays", "sprayLeftDays")):
+        dev = Device(device_type=device_type, petkit_id=1, serial_number="SN")
+        long_ago = time.time() - 400 * 86400
+        dev.config[CONSUMABLE_RECORD_KEY] = {"n50": long_ago, "n60": long_ago}
+        dev.state[gone] = 0   # what the previous version left there
+
+        apply_consumable_state(dev)
+
+        assert gone not in dev.state, device_type
+        assert dev.state[kept] == 0, device_type
+        assert gone not in active_conditions(1, device_type, dev.state), device_type

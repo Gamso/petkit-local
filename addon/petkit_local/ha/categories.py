@@ -236,8 +236,36 @@ CATEGORY_SPECS: dict[str, CategorySpec] = {
         # means elsewhere, here it is a physical action behind a label about a
         # consumable, so the button goes and `pack_waste` (model_entities above)
         # says what the code actually does.
+        #
+        # Its N50 Days Left goes with it, for the same missing cartridge: the
+        # countdown's only source is the date `reset_n50` records, so on this
+        # model nothing could ever fill it.
+        #
+        # The T3 and T4 have no built-in N60 (`codes.LITTER_N60`), and both N60
+        # controls are about that unit. The countdown is only ever fed by our
+        # own record of a Reset N60 press: no T3/T4 capture carries
+        # `sprayResetTime`, and `to_device_info` tells only a camera litter its
+        # `sprayDays`. The button sends `start_action: 10`, confirmed on a T5
+        # alone, to a firmware whose action numbers are its own (6 confirms a
+        # litter calibration on a T4). A linked K3 does not make either
+        # meaningful: its cartridge reports a measured level, published as the
+        # K3's own `k3_liquid`.
         model_excludes=(
-            ("t6", frozenset({"reset_n50"})),
+            ("t6", frozenset({"reset_n50", "n50_durability"})),
+            ("t3", frozenset({"n60_spray_days", "reset_n60"})),
+            ("t4", frozenset({"n60_spray_days", "reset_n60"})),
+        ),
+        # Everything above was published to these models before, so its
+        # retained discovery is cleared rather than left as a ghost entity.
+        model_retired=(
+            ("t6", (
+                EntityDef(component="button", key="reset_n50", name="Reset N50"),
+                EntityDef(component="sensor", key="n50_durability", name="N50 Days Left"),
+            )),
+            *((model, (
+                EntityDef(component="sensor", key="n60_spray_days", name="N60 Spray Days Left"),
+                EntityDef(component="button", key="reset_n60", name="Reset N60"),
+            )) for model in ("t3", "t4")),
         ),
     ),
     "feeder": CategorySpec(
