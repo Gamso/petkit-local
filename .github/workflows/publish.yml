@@ -205,10 +205,94 @@ jobs:
           fi
 
           sources=""
+          source_digests=""
           for d in /tmp/digests/*; do
             sources="$sources ${image}@sha256:$(basename "$d")"
+            source_digests="${source_digests:+$source_digests,}sha256:$(basename "$d")"
           done
 
+          if [ "$primary" = "dev" ]; then
+            # What `dev` names until the next line moves it: exactly what the
+            # cleanup step below may delete, and nothing else.
+            docker buildx imagetools inspect --raw "${image}:dev" > /tmp/old-dev.json 2>/dev/null || true
+            docker buildx imagetools inspect "${image}:dev" --format '{{.Manifest.Digest}}' \
+              > /tmp/old-dev.digest 2>/dev/null || true
+          fi
+
+          # The per-platform indexes this list is assembled from are pushed by
+          # digest and named by nothing once it exists. Recording them on the
+          # list is what lets the cleanup find them when this `dev` is replaced.
           # shellcheck disable=SC2086
-          docker buildx imagetools create $tags $sources
+          docker buildx imagetools create $tags \
+            --annotation "index:io.github.gamso.petkit-local.sources=${source_digests}" \
+            $sources
           docker buildx imagetools inspect "${image}:${primary}"
+
+      # ONLY the image `dev` named before this run: its manifest list, every
+      # manifest the list names (per platform: the image and its attestation),
+      # and the per-platform indexes recorded in its annotation. Never a release,
+      # never anything selected by "untagged" (see prune-packages.yml for why
+      # that would gut a multi-arch release), and never a digest a current tag
+      # still reaches. A failure here leaves a leftover, not a broken image, so
+      # it warns instead of failing the publish.
+      - name: Delete the image `dev` named before this run
+        if: github.ref_type != 'tag'
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          image="ghcr.io/$(echo "$GITHUB_REPOSITORY" | tr '[:upper:]' '[:lower:]')"
+          owner="${GITHUB_REPOSITORY%%/*}"
+          package="${GITHUB_REPOSITORY##*/}"
+          annotation="io.github.gamso.petkit-local.sources"
+
+          if [ ! -s /tmp/old-dev.digest ]; then
+            echo "no previous dev image: nothing to delete"
+            exit 0
+          fi
+          old=$(cat /tmp/old-dev.digest)
+          new=$(docker buildx imagetools inspect "${image}:dev" --format '{{.Manifest.Digest}}')
+          if [ "$old" = "$new" ]; then
+            echo "dev still names ${old}: nothing to delete"
+            exit 0
+          fi
+
+          # A dev built before this step existed has no annotation: its
+          # per-platform indexes cannot be found and stay behind, once.
+          candidates=$( { echo "$old"
+                          jq -r '.manifests[]?.digest // empty' /tmp/old-dev.json
+                          jq -r --arg a "$annotation" '.annotations[$a] // empty' /tmp/old-dev.json \
+                            | tr ',' '\n'
+                        } | grep -v '^$' | sort -u)
+
+          versions=$(gh api --paginate "users/${owner}/packages/container/${package}/versions" \
+            --jq '.[] | {id, digest: .name, tags: (.metadata.container.tags // [])}' | jq -s '.')
+
+          # Everything a current tag reaches -- `dev` itself included -- is kept.
+          # If any tag cannot be resolved, nothing is deleted.
+          keep=$(mktemp)
+          for tag in $(jq -r '.[].tags[]' <<<"$versions"); do
+            if ! raw=$(docker buildx imagetools inspect --raw "${image}:${tag}" 2>/dev/null); then
+              echo "::warning::could not resolve ${image}:${tag}; deleting nothing"
+              exit 0
+            fi
+            docker buildx imagetools inspect "${image}:${tag}" --format '{{.Manifest.Digest}}' >> "$keep"
+            jq -r '.manifests[]?.digest // empty' <<<"$raw" >> "$keep"
+            jq -r --arg a "$annotation" '.annotations[$a] // empty' <<<"$raw" | tr ',' '\n' >> "$keep"
+          done
+
+          for digest in $candidates; do
+            if grep -qxF "$digest" "$keep"; then
+              echo "kept, a current tag reaches it: $digest"
+              continue
+            fi
+            id=$(jq -r --arg d "$digest" '.[] | select(.digest == $d and (.tags | length) == 0) | .id' <<<"$versions")
+            if [ -z "$id" ]; then
+              echo "not an untagged version of the package (gone already?): $digest"
+              continue
+            fi
+            echo "deleting: $digest"
+            gh api -X DELETE "users/${owner}/packages/container/${package}/versions/${id}" \
+              || echo "::warning::could not delete ${digest}. A user-owned package may need this repository to have the Admin role in the package's Manage Actions access."
+          done

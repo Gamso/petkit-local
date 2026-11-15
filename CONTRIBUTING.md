@@ -193,6 +193,12 @@ The version tag is what the Supervisor pulls, so it is a promise that the
 version is released, and it is cut by a git tag and nothing else. A tag
 publishes only after the test suite and the lint pass on that commit.
 
+A `publish` run on a branch then deletes the image `dev` named before it: that
+manifest list, the per-platform images and attestations it names, and the
+per-platform indexes it was assembled from (recorded in an annotation on the
+list). Only those, and never a digest any current tag still reaches; releases
+are never touched.
+
 `prune-packages.yml` deletes the versions `dev` leaves behind as it moves. It
 runs weekly, and `workflow_dispatch` takes a `dry_run` (on by default) so you
 can see what it would remove first. It never deletes from "untagged" alone: a
