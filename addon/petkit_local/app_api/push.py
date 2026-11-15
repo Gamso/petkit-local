@@ -150,7 +150,7 @@ def check_endpoint(value: Any) -> str:
 
 
 def check_kinds(value: Any) -> tuple[str, ...] | None:
-    """`kinds` as registered: None (every kind the server sends) or a tuple.
+    """`kinds` as a session chose them: None (every kind the server sends) or a tuple.
 
     Kinds this server does not know are dropped, not refused, so a newer app
     may name kinds an older server has not got yet. The result is in the
@@ -171,29 +171,27 @@ def check_kinds(value: Any) -> tuple[str, ...] | None:
 
 @dataclass(frozen=True)
 class PushRegistration:
-    """One session's endpoint. `kinds` None follows the server's own switches."""
+    """One session's endpoint. Which kinds it receives is the session's (`AppSession.kinds`)."""
 
     endpoint: str
-    kinds: tuple[str, ...] | None
     registered: float
 
     @property
     def host(self) -> str:
         return endpoint_host(self.endpoint)
 
-    def allows(self, kind: str) -> bool:
-        return self.kinds is None or kind in self.kinds
+    def public(self, kinds: tuple[str, ...] | None) -> dict[str, Any]:
+        """What the app and the panel see: the host, never the endpoint.
 
-    def public(self) -> dict[str, Any]:
-        """What the app and the panel see: the host, never the endpoint."""
+        `kinds` is the session's, shown here as it was when the registration
+        carried them, so a client written against that shape still reads it.
+        """
         return {"host": self.host,
-                "kinds": list(self.kinds) if self.kinds is not None else None,
+                "kinds": list(kinds) if kinds is not None else None,
                 "registered": self.registered}
 
     def to_json(self) -> dict[str, Any]:
-        return {"endpoint": self.endpoint,
-                "kinds": list(self.kinds) if self.kinds is not None else None,
-                "registered": self.registered}
+        return {"endpoint": self.endpoint, "registered": self.registered}
 
     @classmethod
     def from_json(cls, raw: Any) -> PushRegistration | None:
@@ -202,9 +200,8 @@ class PushRegistration:
             return None
         try:
             endpoint = check_endpoint(raw.get("endpoint"))
-            kinds = check_kinds(raw.get("kinds"))
         except PushRejected as e:
             # Never the endpoint itself: it is a capability URL.
             log.warning("app API: dropping a stored push registration (%s)", e)
             return None
-        return cls(endpoint, kinds, to_float(raw.get("registered"), 0.0) or 0.0)
+        return cls(endpoint, to_float(raw.get("registered"), 0.0) or 0.0)

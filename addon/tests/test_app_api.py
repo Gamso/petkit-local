@@ -793,7 +793,7 @@ def _services(env: Env, port: int) -> Any:
         config=SimpleNamespace(app_port=port, data_dir=str(env.tmp)),
         app_auth=env.auth, registry=env.registry, event_store=env.store,
         pet_registry=env.pets, media_root=str(env.media_root),
-        mqtt_bridge=None, ha_publisher=None, hub=EventHub(), go2rtc=None)
+        mqtt_bridge=None, ha_publisher=None, hub=EventHub(), go2rtc=None, notifier=None)
 
 
 async def test_the_listener_serves_the_app_api_and_shuts_down(env: Env):

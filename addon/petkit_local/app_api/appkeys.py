@@ -30,6 +30,10 @@ key                     what it holds                                set by
                         None: which streams exist, whether it runs
 `VIDEO_SESSIONS`        `VideoSessions` — live-video viewers, their  create_app_api
                         caps and relays (`app_api/video.py`)
+`NOTIFY_CHANNEL`        `NotifyChannel` — the notification sockets   create_app_api
+                        and their catch-up log; the notifier's own
+                        when `main/` hands it in
+                        (`app_api/notify/channel.py`)
 ======================  ===========================================  ==========
 
 `SESSION` is set on each request by the auth middleware once a bearer token
@@ -44,6 +48,7 @@ from aiohttp import web
 if TYPE_CHECKING:
     from petkit_local.ai.pets import PetRegistry
     from petkit_local.app_api.auth import AppAuth, AppSession
+    from petkit_local.app_api.notify.channel import NotifyChannel
     from petkit_local.app_api.throttle import LoginThrottle
     from petkit_local.app_api.updates import UpdateFeed
     from petkit_local.app_api.video import VideoSessions
@@ -66,6 +71,7 @@ HUB: web.AppKey[Any] = web.AppKey("app_hub")
 UPDATE_FEED: web.AppKey[UpdateFeed] = web.AppKey("app_update_feed")
 GO2RTC: web.AppKey[Go2rtc | None] = web.AppKey("app_go2rtc")
 VIDEO_SESSIONS: web.AppKey[VideoSessions] = web.AppKey("app_video_sessions")
+NOTIFY_CHANNEL: web.AppKey[NotifyChannel] = web.AppKey("app_notify_channel")
 
 #: The session the bearer token belongs to.
 SESSION: web.RequestKey[AppSession] = web.RequestKey("app_session")

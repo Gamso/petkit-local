@@ -147,7 +147,7 @@ class PushEnv:
                       kinds: tuple[str, ...] | None = None) -> str:
         _, session = await self.auth.create_session(name)
         if endpoint is not None:
-            await self.auth.set_push(session.id, PushRegistration(endpoint, kinds, self.clock()))
+            await self.auth.set_push(session.id, PushRegistration(endpoint, self.clock()), kinds)
         return session.id
 
     async def event(self, row: dict[str, Any]) -> None:
@@ -551,7 +551,7 @@ async def test_a_new_registration_is_not_dropped_for_the_old_ones_failures(penv:
     for _ in range(GONE_LIMIT - 1):
         sink.dispatch(note)
         await sink.drain()
-    await penv.auth.set_push(sid, PushRegistration(fake.url("/new"), None, 0.0))
+    await penv.auth.set_push(sid, PushRegistration(fake.url("/new"), 0.0))
     sink.dispatch(note)
     await sink.drain()
     # The old endpoint's last strike cannot clear the new one.
@@ -593,7 +593,7 @@ async def test_the_panel_shows_each_phones_push_host_and_never_the_endpoint(tmp_
     _, with_push = await auth.create_session("Pixel")
     await auth.create_session("Tablet")
     endpoint = f"https://ntfy.example.org/{SECRET}?up=1&k={QUERY_SECRET}"
-    await auth.set_push(with_push.id, PushRegistration(check_endpoint(endpoint), None, 1.0))
+    await auth.set_push(with_push.id, PushRegistration(check_endpoint(endpoint), 1.0))
     app = create_panel_app(DeviceRegistry(), None, EventHub(), {}, app_auth=auth)
     client = TestClient(TestServer(app))
     await client.start_server()

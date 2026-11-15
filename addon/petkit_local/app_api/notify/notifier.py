@@ -19,12 +19,15 @@ for that kind (`RATE_LIMITS`); and the queue has room. Publishing happens in a
 background worker, so a slow or dead ntfy server never holds up the hub, and
 nothing in this module can raise into the event path.
 
-Two sinks share those gates: the panel's ntfy topic (`enabled`, a server, a
-topic) and every phone that registered its own UnifiedPush endpoint with its
-session (`push.py`). The kind switches are the server's, and apply to both; a
-notification is classified and counted when at least one sink would take it.
-Dedupe and the rate limit are therefore shared too: a notification the topic
-would not have sent is not sent to a phone either.
+Three sinks share those gates: the panel's ntfy topic (`enabled`, a server, a
+topic), every phone that registered its own UnifiedPush endpoint with its
+session (`push.py`), and every phone that opened the app API's notification
+socket (`channel.py`). The kind switches are the server's, and apply to all
+three; each phone's own `kinds` then choose among what got through, whichever
+way it receives them. A notification is classified and counted when at least
+one sink would take it. Dedupe and the rate limit are therefore shared too: a
+notification the topic would not have sent is not sent to a phone either, over
+its push endpoint or its socket.
 
 Only ever the configured ntfy server and the endpoints the phones registered
 are called. Never PetKit's cloud.
@@ -34,15 +37,18 @@ from __future__ import annotations
 import asyncio
 import base64
 import logging
+import os
 import time
 from collections import OrderedDict, deque
 from collections.abc import Callable
+from dataclasses import replace
 from typing import Any, Protocol
 from urllib.parse import urlsplit
 
 import aiohttp
 
 from petkit_local.app_api.notify import rules
+from petkit_local.app_api.notify.channel import NotifyChannel
 from petkit_local.app_api.notify.failurelog import FAILURE_LOG_INTERVAL as FAILURE_LOG_INTERVAL
 from petkit_local.app_api.notify.failurelog import FailureLog
 from petkit_local.app_api.notify.push import PushSink
@@ -109,7 +115,8 @@ class Notifier:
 
     def __init__(self, config: NtfyConfig, registry: Any, *, pet_registry: Any = None,
                  hub: Hub | None = None, clock: Callable[[], float] = time.monotonic,
-                 queue_size: int = QUEUE_SIZE, app_auth: Any = None) -> None:
+                 queue_size: int = QUEUE_SIZE, app_auth: Any = None,
+                 notify_log: str | os.PathLike[str] | None = None) -> None:
         self._config = config
         self._registry = registry
         self._pets = pet_registry
@@ -126,6 +133,12 @@ class Notifier:
         self._failure = FailureLog(clock)
         # The phones' own endpoints live with their sessions in `AppAuth`.
         self._push = PushSink(app_auth, clock=clock) if app_auth is not None else None
+        # ... and so do the phones that use the app API's notification socket,
+        # which `main/` hands to the app API to serve (`notify_log` None: the
+        # catch-up log is kept in memory only).
+        self._channel = (NotifyChannel(app_auth, notify_log,
+                                       enabled=lambda kind: self._config.settings.wants(kind))
+                         if app_auth is not None else None)
 
     @property
     def config(self) -> NtfyConfig:
@@ -134,6 +147,10 @@ class Notifier:
     @property
     def push(self) -> PushSink | None:
         return self._push
+
+    @property
+    def channel(self) -> NotifyChannel | None:
+        return self._channel
 
     # --- lifecycle ------------------------------------------------------------
 
@@ -163,6 +180,8 @@ class Notifier:
     async def close(self) -> None:
         if self._push is not None:
             await self._push.close()
+        if self._channel is not None:
+            await self._channel.flush()
         if self._session is not None:
             await self._session.close()
             self._session = None
@@ -247,8 +266,9 @@ class Notifier:
         settings = self._config.settings
         if not settings.wants(notification.kind):
             return False
-        if not (settings.ready or (self._push is not None
-                                   and self._push.wants(notification.kind))):
+        if not (settings.ready
+                or (self._push is not None and self._push.wants(notification.kind))
+                or (self._channel is not None and self._channel.wants(notification.kind))):
             return False  # no sink would take it
         key = notification.dedupe_key
         if key:
@@ -261,6 +281,9 @@ class Notifier:
             log.debug("ntfy: %s for device %s rate-limited", notification.kind,
                       notification.device_id)
             return False
+        if notification.ts is None:
+            # Stamped once, here, so every sink sends the very same message.
+            notification = replace(notification, ts=time.time())
         try:
             self._queue.put_nowait(notification)
         except asyncio.QueueFull:
@@ -286,16 +309,19 @@ class Notifier:
     # --- publishing -----------------------------------------------------------
 
     async def publish_forever(self) -> None:
-        """Drain the queue until cancelled: pushes started, then one ntfy publish.
+        """Drain the queue until cancelled: sockets written, pushes started, one ntfy publish.
 
-        The pushes run as their own tasks (`PushSink.dispatch` returns at
-        once), so neither sink waits for the other.
+        The socket write is synchronous (`NotifyChannel.deliver`) and the pushes
+        run as their own tasks (`PushSink.dispatch` returns at once), so no sink
+        waits for another.
         """
         while True:
             notification = await self._queue.get()
             settings = self._config.settings
             if not settings.wants(notification.kind):
                 continue
+            if self._channel is not None:
+                self._channel.deliver(notification)
             if self._push is not None:
                 try:
                     self._push.dispatch(notification)

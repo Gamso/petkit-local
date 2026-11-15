@@ -43,6 +43,7 @@ tags:
   - name: controls
   - name: feeding
   - name: push
+  - name: notifications
 
 paths:
   /info:
@@ -722,7 +723,7 @@ paths:
         For every notification that passes the server's own gates (the per-kind
         switches set in the panel, one notification per event, a per-device rate
         limit), the server POSTs a `PushMessage` to every registered endpoint whose
-        `kinds` allow it: `Content-Type: application/json`, `TTL: 86400`, `Urgency:
+        session's `kinds` allow it: `Content-Type: application/json`, `TTL: 86400`, `Urgency:
         high` for faults, failed meals and offline devices (`normal` otherwise), no
         redirect followed, TLS verified, 10 s timeout. An endpoint that answers 404
         or 410 three times in a row is unregistered (`session.push` in `/info`
@@ -730,7 +731,12 @@ paths:
 
         The message carries stable keys only — no title, no text, no URL, no token —
         so the app writes the notification itself, in the phone's language. See
-        `PushMessage`.
+        `PushMessage`. The same message reaches the notification socket
+        (`/notifications/ws`); a phone needs only one of the two.
+
+        `kinds` are the session's, shared with the notification socket: sent here,
+        they replace its choice exactly as `PUT /notifications` does; left out, they
+        stay as they are (a new session starts with `null`, every kind).
 
         The endpoint must be `https://` (plain `http://` only for a private address
         or a local name such as `*.lan`), without credentials or a fragment, at most
@@ -777,12 +783,125 @@ paths:
       tags: [push]
       operationId: unregisterPush
       summary: Stop pushing to this session. Succeeds when none is registered too.
+      description: The session's `kinds` are kept; they also choose what its notification socket receives.
       responses:
         "200":
           description: Unregistered.
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Ok" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /notifications:
+    get:
+      tags: [notifications]
+      operationId: getNotificationSettings
+      summary: This session's notification kinds, and where its notification socket stands.
+      responses:
+        "200":
+          description: The settings.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/NotificationSettings" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+    put:
+      tags: [notifications]
+      operationId: setNotificationKinds
+      summary: Choose the kinds this session receives, on every channel.
+      description: |
+        The kinds apply to the notification socket and to the session's UnifiedPush
+        endpoint alike, and need no endpoint to be set. They narrow what the server
+        sends, never widen it: a kind switched off in the panel (`server_kinds`) is
+        sent to nobody. Stored with the session, so logout and the other ways a
+        session ends forget them.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/NotificationKindsRequest" }
+      responses:
+        "200":
+          description: Set.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/NotificationSettings" }
+        "400":
+          description: "`bad_parameter` (`kinds` missing, not a list or `null`, or longer than 32) or `bad_json`."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "415": { $ref: "#/components/responses/UnsupportedMediaType" }
+
+  /notifications/ws:
+    get:
+      tags: [notifications]
+      operationId: openNotificationSocket
+      summary: Notifications over a WebSocket, with catch-up — no ntfy needed.
+      description: |
+        A socket for the app to keep open in the background, as a push distributor
+        would. It carries notifications only, never device state (that is `/ws`), so it
+        is silent until something happens. Upgrade with `Authorization: Bearer <token>`
+        on the request; a refusal (bad `after`, no session) happens before the upgrade,
+        as a normal JSON `Error`.
+
+        Every frame the server sends is one JSON text message, a `NotificationSocketMessage`
+        told apart by `type`:
+
+        * `hello` — first, once. `last_id` is the newest notification id the server has
+          logged (whether or not it was for this phone); `replayed` how many
+          `notification` messages with `replay: true` follow at once; `gap` whether
+          notifications after `after` were dropped from the log before this phone came
+          back for them (more than 500, or older than 3 days), so some are missing.
+        * `notification` — one notification: a monotonic `id` and the same
+          `PushMessage` a UnifiedPush endpoint would receive. `replay` is true for those
+          sent because of `after`, false for live ones.
+        * `pong` — the answer to a `{"type": "ping"}` the app sent; anything else it
+          sends is ignored.
+
+        Catch-up: pass `after`, the highest `id` received so far (or the hello's
+        `last_id`, whichever is higher). The server first sends, oldest first, every
+        logged notification after it that this session's kinds allow and that is not
+        older than the session itself, then goes live; nothing falls between the two
+        and nothing is sent twice. Leave `after` out on the very first connection, to
+        start from now. An `after` above `last_id` comes from a log the server no
+        longer has: everything it holds is replayed, with `gap: true`. The log holds the
+        last 500 notifications of at most 3 days and survives a restart; ids are not
+        reused unless the log file itself is lost, which the next `hello` reports as
+        a `gap`.
+
+        What is sent is what the ntfy topic and the UnifiedPush endpoints are sent: the
+        server's per-kind switches, one notification per event and the per-device rate
+        limit decide once for all three, then this session's `kinds`
+        (`PUT /notifications`) choose among it. A session is owed catch-up from the
+        first time it opens this socket until it ends.
+
+        The server pings every 45 s at the protocol level (`heartbeat_sec`), inside
+        Cloudflare's 100 s idle timeout. Treat two missed pings as a dead connection.
+
+        Close codes (as `/ws` and live video): `1001` server shutting down — reconnect
+        later; `4401` the session ended (logout, revoked in the panel, password changed
+        or removed, 90 days unused) — sign in again, do not retry; `4409` this session
+        opened another notification socket, which replaced this one — do not reconnect
+        from the replaced one; `1013` the app read too slowly and its queue filled —
+        reconnect with `after`, nothing is lost.
+      parameters:
+        - name: after
+          in: query
+          required: false
+          description: The highest notification `id` already received; omit on the first connection.
+          schema: { type: integer, minimum: 0, maximum: 999999999999999999 }
+      responses:
+        "101":
+          description: Switching to the WebSocket protocol; each message is a `NotificationSocketMessage`.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/NotificationSocketMessage" }
+        "400":
+          description: "`bad_parameter` (`after` is not a non-negative integer), or not a WebSocket upgrade request."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
         "401": { $ref: "#/components/responses/Unauthorized" }
 
 components:
@@ -903,13 +1022,14 @@ components:
 
     Session:
       type: object
-      required: [id, name, created, last_used, expires, push]
+      required: [id, name, created, last_used, expires, kinds, push]
       properties:
         id: { type: string, description: "Public id; the panel revokes by it." }
         name: { type: string, description: The `device_name` given at login. }
         created: { type: number }
         last_used: { type: number, description: Updated at most every 5 minutes. }
         expires: { type: number, description: "`last_used` + 90 days." }
+        kinds: { $ref: "#/components/schemas/NotificationKinds" }
         push:
           description: This session's push registration, `null` when there is none.
           oneOf:
@@ -926,8 +1046,10 @@ components:
           description: The UnifiedPush endpoint the distributor gave the app.
         kinds:
           description: |
-            The `PushMessage.kind`s this phone wants; `null` or left out for every kind
-            switched on in the panel. Kinds this server does not know are ignored.
+            The `PushMessage.kind`s this phone wants, on every channel (the session's
+            kinds, as `PUT /notifications` sets them); `null` for every kind switched on
+            in the panel; left out, the session's current choice is kept. Kinds this
+            server does not know are ignored.
           oneOf:
             - type: array
               maxItems: 32
@@ -939,19 +1061,121 @@ components:
       required: [host, kinds, registered]
       properties:
         host: { type: string, description: The endpoint's host. The endpoint itself is never returned. }
+        kinds: { $ref: "#/components/schemas/NotificationKinds" }
+        registered: { type: number }
+
+    NotificationKind:
+      type: string
+      enum: [toilet, feed_served, feed_failed, error, food_low, consumable, offline]
+      description: A notification kind; see `PushMessage.kind`.
+
+    NotificationKinds:
+      description: |
+        The session's notification kinds (known ones, in the server's order), or `null`
+        for every kind switched on in the panel. They apply to every channel.
+      oneOf:
+        - type: array
+          items: { $ref: "#/components/schemas/NotificationKind" }
+        - { type: "null" }
+
+    NotificationKindsRequest:
+      type: object
+      required: [kinds]
+      properties:
         kinds:
-          description: The kinds kept (known ones, in the server's order), or `null` for every kind.
+          description: |
+            The kinds this phone wants, or `null` for every kind switched on in the panel;
+            `[]` for none. Kinds this server does not know are ignored, so a newer app
+            may name kinds an older server has not got.
           oneOf:
             - type: array
+              maxItems: 32
               items: { type: string }
             - { type: "null" }
-        registered: { type: number }
+
+    NotificationSettings:
+      type: object
+      required: [kinds, server_kinds, connected, last_id]
+      properties:
+        kinds: { $ref: "#/components/schemas/NotificationKinds" }
+        server_kinds:
+          type: array
+          description: |
+            Every kind the server sends, in its order, and whether the panel's switch for
+            it is on. A kind switched off there reaches no phone, whatever `kinds` says.
+          items:
+            type: object
+            required: [kind, enabled]
+            properties:
+              kind: { $ref: "#/components/schemas/NotificationKind" }
+              enabled: { type: boolean }
+        connected: { type: boolean, description: Whether this session holds the notification socket now. }
+        last_id:
+          type: integer
+          minimum: 0
+          description: The newest notification id logged for catch-up; 0 before the first.
+
+    NotificationSocketMessage:
+      description: One WebSocket message from `/notifications/ws`, told apart by `type`.
+      oneOf:
+        - { $ref: "#/components/schemas/NotificationHello" }
+        - { $ref: "#/components/schemas/NotificationDelivery" }
+        - { $ref: "#/components/schemas/NotificationPong" }
+      discriminator:
+        propertyName: type
+        mapping:
+          hello: "#/components/schemas/NotificationHello"
+          notification: "#/components/schemas/NotificationDelivery"
+          pong: "#/components/schemas/NotificationPong"
+
+    NotificationHello:
+      type: object
+      required: [type, server_time, heartbeat_sec, last_id, replayed, gap]
+      additionalProperties: false
+      properties:
+        type: { type: string, const: hello }
+        server_time: { type: number }
+        heartbeat_sec: { type: number, description: The protocol ping interval (45). }
+        last_id:
+          type: integer
+          minimum: 0
+          description: The newest notification id logged, whoever it was for; 0 before the first.
+        replayed:
+          type: integer
+          minimum: 0
+          description: How many `notification` messages with `replay` true follow at once.
+        gap:
+          type: boolean
+          description: |
+            Notifications after `after` were dropped from the log (its 500-entry or
+            3-day bound) or the log was lost: some this phone should have had are missing.
+
+    NotificationDelivery:
+      type: object
+      required: [type, id, replay, message]
+      additionalProperties: false
+      properties:
+        type: { type: string, const: notification }
+        id:
+          type: integer
+          minimum: 1
+          description: Monotonic. Pass the highest one received as `after` on reconnection.
+        replay: { type: boolean, description: "True when sent as catch-up, false when live." }
+        message: { $ref: "#/components/schemas/PushMessage" }
+
+    NotificationPong:
+      type: object
+      required: [type]
+      additionalProperties: false
+      properties:
+        type: { type: string, const: pong }
 
     PushMessage:
       type: object
       description: |
-        The body the server POSTs to a registered endpoint (see `PUT /push`); compact
-        JSON, a few hundred bytes at most. Stable keys only: build the notification
+        The body the server POSTs to a registered endpoint (see `PUT /push`), and the
+        `message` of a `notification` on the notification socket (`/notifications/ws`);
+        compact JSON, a few hundred bytes at most. Stable keys only: build the notification
         text from them. A new key may be added within `v` 1; ignore keys you do not
         know. Nothing in it is secret.
       required: [v, kind, device_id, pet_id, code, ts]

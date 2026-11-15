@@ -15,8 +15,10 @@ What is stored, and what deliberately is not:
   a fast hash is enough: there is nothing to brute-force, and what the file
   must not hold is anything that could be replayed;
 * never the token itself, never the password, never a client address;
-* with a session, the UnifiedPush endpoint its phone registered (`push.py`), so
-  that whatever ends the session also ends the pushes to it.
+* with a session, the notification kinds its phone chose, the UnifiedPush
+  endpoint it registered (`push.py`) and when it first opened the notification
+  socket (`notify/channel.py`), so that whatever ends the session also ends
+  every notification to it, whichever way it was delivered.
 
 A session expires after `SESSION_IDLE_LIFETIME` without use, and each use
 slides that deadline — but `last_used` is written to disk at most once every
@@ -44,7 +46,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from petkit_local.app_api.push import PushRegistration
+from petkit_local.app_api.push import PushRegistration, PushRejected, check_kinds
 from petkit_local.app_api.throttle import IPNetwork, parse_networks
 from petkit_local.utils.jsonio import atomic_write_text, read_json
 
@@ -68,6 +70,9 @@ MAX_TRUSTED_PROXIES = 32
 #: scrypt runs in a worker thread and needs ~32 MiB each at the default cost,
 #: so at most this many run at once whatever the request rate.
 MAX_CONCURRENT_HASHES = 2
+
+#: `set_push`'s default: leave the session's notification kinds as they are.
+UNCHANGED: Any = object()
 
 
 @dataclass(frozen=True)
@@ -142,22 +147,41 @@ class AppSession:
     created: float
     last_used: float
     push: PushRegistration | None = None
+    #: The notification kinds this phone wants, on every channel (the
+    #: notification socket and its push endpoint); None for every kind the
+    #: server's own switches let through.
+    kinds: tuple[str, ...] | None = None
+    #: When this session first opened the notification socket. From then on it
+    #: is owed what it misses while offline (`notify/channel.py`).
+    notify_ws: float | None = None
 
     @property
     def expires(self) -> float:
         return self.last_used + SESSION_IDLE_LIFETIME
 
+    def allows(self, kind: str) -> bool:
+        """Whether this phone wants notifications of `kind`."""
+        return self.kinds is None or kind in self.kinds
+
     def public(self) -> dict[str, Any]:
         """What the panel and the app may see: not the token hash, not the endpoint."""
         return {"id": self.id, "name": self.name, "created": self.created,
                 "last_used": self.last_used, "expires": self.expires,
-                "push": self.push.public() if self.push is not None else None}
+                "kinds": list(self.kinds) if self.kinds is not None else None,
+                "push": self.push.public(self.kinds) if self.push is not None else None}
 
     def to_json(self) -> dict[str, Any]:
-        """The stored form, endpoint included (`app_api.json` is 0600)."""
+        """The stored form, endpoint included (`app_api.json` is 0600).
+
+        The kinds are written into the push registration too, where a version
+        from before they moved to the session reads them.
+        """
+        kinds = list(self.kinds) if self.kinds is not None else None
         return {"id": self.id, "token_hash": self.token_hash, "name": self.name,
                 "created": self.created, "last_used": self.last_used,
-                "push": self.push.to_json() if self.push is not None else None}
+                "kinds": kinds, "notify_ws": self.notify_ws,
+                "push": ({**self.push.to_json(), "kinds": kinds}
+                         if self.push is not None else None)}
 
     @classmethod
     def from_json(cls, raw: Any) -> AppSession | None:
@@ -172,8 +196,20 @@ class AppSession:
             return None
         if len(session.token_hash) != 64 or not session.id:
             return None
-        if raw.get("push") is not None:
-            session.push = PushRegistration.from_json(raw["push"])
+        push = raw.get("push")
+        if push is not None:
+            session.push = PushRegistration.from_json(push)
+        # Kinds lived in the push registration before the notification socket
+        # needed them without one; a file from then still has them there.
+        kinds = raw["kinds"] if "kinds" in raw else (
+            push.get("kinds") if isinstance(push, dict) else None)
+        try:
+            session.kinds = check_kinds(kinds)
+        except PushRejected:
+            session.kinds = None
+        notify_ws = raw.get("notify_ws")
+        if isinstance(notify_ws, (int, float)) and not isinstance(notify_ws, bool):
+            session.notify_ws = float(notify_ws)
         return session
 
 
@@ -403,18 +439,53 @@ class AppAuth:
     def _by_id(self, session_id: str) -> AppSession | None:
         return next((s for s in self._sessions.values() if s.id == session_id), None)
 
-    async def set_push(self, session_id: str, registration: PushRegistration) -> bool:
+    async def set_push(self, session_id: str, registration: PushRegistration,
+                       kinds: tuple[str, ...] | None = UNCHANGED) -> bool:
         """Register (or replace) a session's endpoint; False if the session is gone.
 
-        `registration` is already validated (`push.check_endpoint`).
+        `registration` is already validated (`push.check_endpoint`), and so are
+        `kinds` (`push.check_kinds`) when given; left out, they stay as they are.
         """
         async with self._lock:
             session = self._by_id(session_id)
             if session is None:
                 return False
             session.push = registration
+            if kinds is not UNCHANGED:
+                session.kinds = kinds
             await self._save()
         return True
+
+    async def set_kinds(self, session_id: str, kinds: tuple[str, ...] | None) -> bool:
+        """Choose a session's notification kinds, for every channel; False if it is gone."""
+        async with self._lock:
+            session = self._by_id(session_id)
+            if session is None:
+                return False
+            session.kinds = kinds
+            await self._save()
+        return True
+
+    async def mark_notify_ws(self, session_id: str) -> bool:
+        """Record that a session opened the notification socket; False if it is gone.
+
+        Written once, the first time: a phone reconnecting all day long must
+        not rewrite this file on every reconnection.
+        """
+        async with self._lock:
+            session = self._by_id(session_id)
+            if session is None:
+                return False
+            if session.notify_ws is None:
+                session.notify_ws = self._clock()
+                await self._save()
+        return True
+
+    def notify_targets(self) -> list[AppSession]:
+        """Live sessions that use the notification socket — read at every delivery."""
+        if not self.password_set:
+            return []
+        return [s for s in self.sessions() if s.notify_ws is not None]
 
     async def clear_push(self, session_id: str, endpoint: str | None = None) -> bool:
         """Unregister a session's endpoint; False if there was none to remove.

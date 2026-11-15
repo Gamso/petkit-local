@@ -154,7 +154,9 @@ async def _start_app_api(services: Services, app_instance: web.Application) -> N
                          media_root=services.media_root, data_dir=config.data_dir,
                          command_sink=services.mqtt_bridge,
                          ha_publisher=services.ha_publisher, hub=services.hub,
-                         go2rtc=services.go2rtc)
+                         go2rtc=services.go2rtc,
+                         notify_channel=(services.notifier.channel
+                                         if services.notifier is not None else None))
     runner = web.AppRunner(app, shutdown_timeout=SHUTDOWN_DRAIN)
     await runner.setup()
     try:

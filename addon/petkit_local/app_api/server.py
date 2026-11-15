@@ -17,6 +17,9 @@ Extension points for the later phases:
 * phase 4 (ntfy) — no route here: a publisher fed by the `EventHub`, with its
   settings in the panel. `PUT`/`DELETE /app/v1/push` let a phone register its
   own UnifiedPush endpoint with its session, a second sink of that publisher;
+  `GET /app/v1/notifications/ws` is the third, the app's own socket, with
+  `GET`/`PUT /app/v1/notifications` for the kinds a phone wants on every one
+  (`notify/channel.py`);
 * phase 5 (live video) — `GET /app/v1/devices/{id}/live` (WebSocket, fMP4) and
   `.../live/hls/{file}`, proxying that device's go2rtc stream only
   (`app_api/video.py`).
@@ -29,14 +32,15 @@ from typing import TYPE_CHECKING, Any
 from aiohttp import web
 
 from petkit_local.app_api.appkeys import (
-    AUTH, COMMAND_SINK, DATA_DIR, EVENT_STORE, GO2RTC, HA_PUBLISHER, HUB, MEDIA_ROOT, PET_REGISTRY,
-    REGISTRY, THROTTLE, UPDATE_FEED, VIDEO_SESSIONS,
+    AUTH, COMMAND_SINK, DATA_DIR, EVENT_STORE, GO2RTC, HA_PUBLISHER, HUB, MEDIA_ROOT,
+    NOTIFY_CHANNEL, PET_REGISTRY, REGISTRY, THROTTLE, UPDATE_FEED, VIDEO_SESSIONS,
 )
 from petkit_local.app_api.handlers import (
-    auth, controls, devices, feeding, media, meta, pets, push, timeline, updates,
-    video,
+    auth, controls, devices, feeding, media, meta, notifications, pets, push, timeline,
+    updates, video,
 )
 from petkit_local.app_api.middleware import app_api_middleware
+from petkit_local.app_api.notify.channel import NotifyChannel
 from petkit_local.app_api.throttle import LoginThrottle
 from petkit_local.app_api.updates import UpdateFeed
 from petkit_local.app_api.video import VideoSessions
@@ -87,6 +91,9 @@ ROUTES: tuple[tuple[str, str, Handler], ...] = (
     ("GET", "/ws", updates.updates),
     ("PUT", "/push", push.register_push),
     ("DELETE", "/push", push.unregister_push),
+    ("GET", "/notifications", notifications.get_settings),
+    ("PUT", "/notifications", notifications.put_settings),
+    ("GET", "/notifications/ws", notifications.notifications_ws),
 )
 
 
@@ -99,14 +106,16 @@ def create_app_api(app_auth: AppAuth, registry: DeviceRegistry, *,
                    ha_publisher: HAPublisher | None = None,
                    hub: Any = None,
                    go2rtc: Go2rtc | None = None,
-                   video_sessions: VideoSessions | None = None) -> web.Application:
+                   video_sessions: VideoSessions | None = None,
+                   notify_channel: NotifyChannel | None = None) -> web.Application:
     """Build the app API application.
 
     Everything after `registry` is optional so a test can build one without
     the full stack; a handler whose collaborator is missing answers 503.
     Without a `command_sink` every write is queued for the device's heartbeat;
     without a `hub` (the panel's `EventHub`) the WebSocket still works, on its
-    periodic sweep alone.
+    periodic sweep alone. Without a `notify_channel` (the notifier's, which
+    is what feeds it) the notification socket opens and stays silent.
     """
     app = web.Application(client_max_size=MAX_BODY, middlewares=[app_api_middleware])
     app[AUTH] = app_auth
@@ -126,6 +135,9 @@ def create_app_api(app_auth: AppAuth, registry: DeviceRegistry, *,
     app[VIDEO_SESSIONS] = video_sessions if video_sessions is not None else VideoSessions()
     # Ends every live-video relay as shutdown begins, so none holds the bounded drain.
     app.on_shutdown.append(app[VIDEO_SESSIONS].close_all)
+    app[NOTIFY_CHANNEL] = (notify_channel if notify_channel is not None
+                           else NotifyChannel(app_auth))
+    app.on_shutdown.append(_close_notify_sockets)
     for method, path, handler in ROUTES:
         # `add_get` would also register HEAD; the OpenAPI file lists GET only.
         app.router.add_route(method, PREFIX + path, handler)
@@ -140,3 +152,8 @@ async def _close_update_sockets(app: web.Application) -> None:
     cut without a close frame.
     """
     await app[UPDATE_FEED].shutdown()
+
+
+async def _close_notify_sockets(app: web.Application) -> None:
+    """Close every notification socket (1001) before the drain, for the same reason."""
+    await app[NOTIFY_CHANNEL].shutdown()
