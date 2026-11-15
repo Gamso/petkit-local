@@ -14,7 +14,9 @@ from typing import TYPE_CHECKING, Any
 
 from petkit_local.devices.state_tables import (CONSUMABLE_RECORD_KEY, CONSUMABLE_TOTALS,
                                                DEODORANT_TOTAL_DAYS, SPRAY_TOTAL_DAYS)
+from petkit_local.events.codes import LITTER_N60, LITTER_WITHOUT_N50
 from petkit_local.utils.coerce import to_float
+from petkit_local.utils.const import DEVICE_TYPES_LITTER
 
 if TYPE_CHECKING:  # import-cycle-free: `devices.base` imports nothing from here
     from petkit_local.devices.base import Device
@@ -64,9 +66,31 @@ def apply_consumable_state(device: Device) -> None:
             device.state["sprayResetTime"] = remembered
 
     for which, (state_key, total) in CONSUMABLE_TOTALS.items():
+        if not _has_consumable(device.device_type, which):
+            # Removed rather than skipped: `state` is merged into and never
+            # pruned, and a countdown for a part the box does not have would
+            # still reach the app and its "to replace" notification.
+            device.state.pop(state_key, None)
+            continue
         left = _days_left_from_reset(rec.get(which), total)
         if left is not None:
             device.state[state_key] = left
+
+
+def _has_consumable(device_type: str, which: str) -> bool:
+    """Whether a litter box of this model carries the cartridge `which` names.
+
+    Only the two litter cartridges are model-dependent. A T3/T4 has no built-in
+    N60 (`codes.LITTER_N60`) and a T6 no N50 (`codes.LITTER_WITHOUT_N50`); a
+    date recorded for either -- the buttons were offered on those models once --
+    must not keep a countdown, and its notification, alive.
+    """
+    codename = (device_type or "").lower()
+    if which == "n60":
+        return codename not in DEVICE_TYPES_LITTER - LITTER_N60
+    if which == "n50":
+        return codename not in LITTER_WITHOUT_N50
+    return True
 
 
 def _days_left_from_reset(reset_ts: Any, total_days: int) -> int | None:

@@ -1,7 +1,9 @@
+import pytest
+
 from petkit_local.devices.base import Device
 from petkit_local.ha.categories import CATEGORY_SPECS, spec_for_device
 from petkit_local.ha.categories import get_entities_for_device, get_mqtt_state_topics
-from petkit_local.utils.const import DEVICE_TYPES_ALL
+from petkit_local.utils.const import DEVICE_TYPES_ALL, DEVICE_TYPES_LITTER
 
 VALID_COMPONENTS = {
     "sensor", "binary_sensor", "switch", "button", "number", "select", "camera",
@@ -75,7 +77,10 @@ EXPECTED_ENTITY_COUNTS = {
     # the three do-not-disturb windows. The seven are cleared from HA, not just
     # left unannounced (`CategorySpec.model_retired`).
     # t4 +1: Finish Litter Calibration, the only model it is verified on.
-    "t3": 47, "t4": 48, "t5": 83, "t6": 99, "t7": 83,
+    # t3 and t4 -2, t6 -1: the N60 countdown and Reset N60 on the two boxes
+    # with no built-in N60, the N50 countdown on the one with no N50. Retired
+    # from HA.
+    "t3": 45, "t4": 46, "t5": 83, "t6": 98, "t7": 83,
     # d4s +4 on 2026-10-08: a live D4S feeds with `amount1`/`amount2`, so it
     # gets the dual-hopper feed buttons and portion numbers (upstream PR #43).
     # d4 -6 on 2026-10-24: six entities no D4 report fills; retired from HA.
@@ -306,3 +311,29 @@ def test_a_d4_publishes_none_of_the_entities_it_never_fills():
     assert {e.key for e in get_retired_entities_for_device(d4)} == gone
     d3 = Device(device_type="d3", petkit_id=2, serial_number="SN")
     assert gone <= {e.key for e in get_entities_for_device(d3)}
+
+
+@pytest.mark.parametrize("device_type", sorted(DEVICE_TYPES_LITTER))
+def test_a_litter_box_publishes_cartridge_controls_only_for_cartridges_it_has(device_type):
+    """The N60 countdown and its reset are about the built-in sprayer, which
+    only `codes.LITTER_N60` has; the N50 countdown and its reset about a
+    cartridge the T6 does not take. A T3/T4 was offered both N60 controls and
+    a T6 the N50 countdown, and each is retired from HA where it went away --
+    a retained discovery config would otherwise keep the entity alive."""
+    from petkit_local.events.codes import LITTER_N60, LITTER_WITHOUT_N50
+    from petkit_local.ha.categories import get_retired_entities_for_device
+
+    dev = Device(device_type=device_type, petkit_id=1, serial_number="SN")
+    published = {e.key for e in get_entities_for_device(dev)}
+    retired = {e.key for e in get_retired_entities_for_device(dev)}
+
+    n60 = {"n60_spray_days", "reset_n60"}
+    n50 = {"n50_durability", "reset_n50"}
+    if device_type in LITTER_N60:
+        assert n60 <= published and not n60 & retired
+    else:
+        assert not n60 & published and n60 <= retired
+    if device_type in LITTER_WITHOUT_N50:
+        assert not n50 & published and n50 <= retired
+    else:
+        assert n50 <= published and not n50 & retired
