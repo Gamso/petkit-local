@@ -208,7 +208,8 @@ async def test_nothing_paired_omits_the_list_key_entirely():
     used to be no `nextTick` either, which left a parent with nothing paired
     holding neither a list nor a time to ask again.
 
-    Both transports must agree, and they have drifted apart once already."""
+    Over MQTT the same answer is no answer at all: wrapped in the envelope
+    the real cloud uses for `user/get` it would be long enough to be parsed."""
     reg = DeviceRegistry()
     reg.get_or_create(petkit_id=10, device_type="t5", serial_number="SN10")
     app = create_app(reg, dict(DEVICE_CONFIG))
@@ -222,8 +223,29 @@ async def test_nothing_paired_omits_the_list_key_entirely():
         await c.close()
 
     bridge = MQTTBridge(reg, None, BLERegistry())
-    mqtt_body = bridge._user_get_payload(reg.get(10), "dev_ble_device")
-    assert mqtt_body == http_body, "the two transports answer the same question differently"
+    assert bridge._user_get_payload(reg.get(10), "dev_ble_device") is None
+
+
+async def test_both_transports_list_the_same_accessories():
+    """They have drifted apart once already. Over MQTT the list is carried in
+    the `user/get` envelope, but what is in it is the HTTP `result`."""
+    reg = DeviceRegistry()
+    reg.get_or_create(petkit_id=10, device_type="t5", serial_number="SN10")
+    ble = BLERegistry()
+    ble.register(ble_type="w5", petkit_id=700, mac="AABBCCDDEEFF",
+                 secret="s3cret", interval=240, link_with=10)
+    app = create_app(reg, dict(DEVICE_CONFIG))
+    app[device_keys.BLE_REGISTRY] = ble
+    c = await _client(app)
+    try:
+        http_body = await (await c.get("/6/t5/dev_ble_device", headers=HDR)).json()
+    finally:
+        await c.close()
+
+    frame = MQTTBridge(reg, None, ble)._user_get_payload(reg.get(10), "dev_ble_device")
+    payload = dict(frame["payload"])
+    assert payload.pop("dataType") == "dev_ble_device"
+    assert payload == http_body["result"]
 
 
 async def test_a_k3_is_never_put_in_the_relay_list():
@@ -1702,6 +1724,14 @@ def test_the_empty_ble_list_answer_stays_under_the_firmware_length_gate():
 
     empty = {"result": {"nextTick": 3600}}
     http_len = len(_json.dumps(empty).encode())
-    mqtt_len = len(_json.dumps(empty, separators=(",", ":")).encode())
     assert http_len < 40, f"HTTP empty answer is {http_len} B and now reaches the parser"
-    assert mqtt_len < 40, f"MQTT empty answer is {mqtt_len} B and now reaches the parser"
+
+    # Over MQTT there is no short form to send: the captured `user/get`
+    # envelope alone is past the gate. So nothing is sent at all.
+    reg = DeviceRegistry()
+    reg.get_or_create(petkit_id=10, device_type="t4", serial_number="SN10")
+    bridge = MQTTBridge(reg, None, BLERegistry())
+    assert bridge._user_get_payload(reg.get(10), "dev_ble_device") is None
+    from petkit_local.devices.payloads import to_data_get_reply
+    wrapped = to_data_get_reply(reg.get(10), "dev_ble_device", {"nextTick": 3600}, now=0)
+    assert len(_json.dumps(wrapped, separators=(",", ":")).encode()) >= 40

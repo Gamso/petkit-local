@@ -174,10 +174,10 @@ def _bridge(reg):
 def test_a_paused_plan_is_withheld_from_an_mqtt_data_get_too():
     reg, d = _registry()
     bridge = _bridge(reg)
-    assert bridge._user_get_payload(d, "dev_feed_get")["result"]["schedule"][0]["it"] == [MEAL]
+    assert bridge._user_get_payload(d, "dev_feed_get")["payload"]["schedule"][0]["it"] == [MEAL]
 
     _pause(d)
-    assert bridge._user_get_payload(d, "dev_feed_get")["result"]["schedule"] == []
+    assert bridge._user_get_payload(d, "dev_feed_get")["payload"]["schedule"] == []
     assert _stored_meals(d) == [MEAL]
 
 

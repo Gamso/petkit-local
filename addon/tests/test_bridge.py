@@ -157,6 +157,8 @@ async def test_user_get_and_post_reply_are_also_compact():
 
 
 async def test_data_get_replies_on_user_get():
+    """In the envelope `user/get`'s dispatcher routes on — not the HTTP body,
+    whose bare `result` it has nothing to route by."""
     reg, dev, ble, pub, bridge = _setup()
     bridge._client = FakeMqttClient()
     await bridge._handle_event(dev, "data_get", {"params": {"dataType": "dev_multi_config"}})
@@ -164,7 +166,18 @@ async def test_data_get_replies_on_user_get():
     assert pubs, "expected a user/get publish"
     topic, payload, _kw = pubs[-1]
     assert topic.endswith("/user/get")
-    assert "result" in json.loads(payload)
+    frame = json.loads(payload)
+    assert "result" not in frame
+    assert frame["msgType"] == 0 and frame["type"] == "t5_data_get"
+    assert frame["payload"]["dataType"] == "dev_multi_config"
+
+
+@pytest.mark.parametrize("data_type", [None, 7, ["dev_device_info"], "dev_nothing"])
+async def test_a_data_get_for_nothing_we_serve_is_not_answered(data_type):
+    reg, dev, ble, pub, bridge = _setup()
+    bridge._client = FakeMqttClient()
+    await bridge._handle_event(dev, "data_get", {"params": {"dataType": data_type}})
+    assert not [t for t, _p, _k in bridge._client.published if t.endswith("/user/get")]
 
 
 # --- message-loop resilience -------------------------------------------------
