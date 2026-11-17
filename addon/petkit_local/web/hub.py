@@ -103,6 +103,10 @@ class EventHub:
         # Same shape, same reason: the key is `error_<code>` built from an
         # upstream-controlled response body.
         self._upstream: OrderedDict[str, int] = OrderedDict()
+        # Keep-online heartbeats sent for a device (`http/presence.py`), keyed
+        # by a registered device's id — only `CloudPresence` writes here, for a
+        # device on our broker, so the cap is belt and braces.
+        self._presence: OrderedDict[int, dict] = OrderedDict()
 
     # --- events -----------------------------------------------------------
     def publish(self, kind: str, device_id: Any = None, summary: str = "",
@@ -289,6 +293,31 @@ class EventHub:
         """Proxied-call outcomes since start: `ok`, `error_<code>`, `http_<status>`."""
         return dict(self._upstream)
 
+    def record_presence(self, device_id: int, *, status: int | None, outcome: str,
+                        error: Any = None, withheld: int = 0,
+                        shape: str | None = None) -> None:
+        """Count one keep-online heartbeat sent to PetKit for a device.
+
+        Counted, not published: one lands every 30-60s per device, and the Log
+        tab would be all heartbeats. The Setup tab renders these as "Kept
+        online for ... · last heartbeat 40s ago · 200". `status` is None when
+        nothing came back (`outcome` then says why: `timeout`, ...).
+        """
+        entry = self._presence.pop(device_id, None) or {"count": 0, "withheld": 0}
+        entry["count"] += 1
+        entry["withheld"] += withheld
+        entry.update(last_at=time.time(), last_status=status, last_outcome=outcome,
+                     last_error=error)
+        if shape is not None:
+            entry["shape"] = shape
+        self._presence[device_id] = entry
+        while len(self._presence) > MAX_TRACKED_DEVICES:
+            self._presence.popitem(last=False)
+
+    def presence_stats(self) -> dict[int, dict]:
+        """`{device_id: {count, withheld, last_at, last_status, last_outcome, ...}}`."""
+        return {k: dict(v) for k, v in self._presence.items()}
+
     def diag(self, device_id: Any) -> dict:
         """This device's diagnostics, or `{}` if it has never been seen.
 
@@ -301,3 +330,4 @@ class EventHub:
     def forget_device(self, device_id: int) -> None:
         """Drop all diagnostic state for a deleted device."""
         self._diag.pop(device_id, None)
+        self._presence.pop(device_id, None)

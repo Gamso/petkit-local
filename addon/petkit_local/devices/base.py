@@ -179,6 +179,14 @@ class Device:
     #: device had before proxy mode could learn a real one — see
     #: `signing_secret`.
     api_secret: str = ""
+    #: The HTTP heartbeat this device last sent — method, path, query, body and
+    #: the session headers — recorded from live traffic
+    #: (`http/presence.py::remember_heartbeat`). Replayed to PetKit, signed as
+    #: the device, by the opt-in keep-online heartbeat once the device is on
+    #: MQTT and has stopped sending it. Persisted, because a device on MQTT
+    #: does not heartbeat over HTTP again until it reboots: a restart that lost
+    #: this would fall back to a guessed shape. Empty until the first heartbeat.
+    heartbeat_request: dict[str, Any] = field(default_factory=dict)
 
     state: dict[str, Any] = field(default_factory=dict)
     config: dict[str, Any] = field(default_factory=dict)
@@ -508,6 +516,10 @@ class Device:
             "mqtt_device_name": self.mqtt_device_name,
             "mqtt_device_secret": self.mqtt_device_secret,
             "api_secret": self.api_secret,
+            # What the keep-online heartbeat replays (`http/presence.py`). Kept
+            # for the same reason as `wire_type`: the device on MQTT will not
+            # send it again before it reboots.
+            "heartbeat_request": self.heartbeat_request,
             "config": self.config,
             "created_at": self.created_at,
             # The one piece of live state that does survive, as a HINT rather
@@ -545,6 +557,8 @@ class Device:
         d.mqtt_device_name = data.get("mqtt_device_name", d.mqtt_device_name)
         d.mqtt_device_secret = data.get("mqtt_device_secret", d.mqtt_device_secret)
         d.api_secret = data.get("api_secret", d.api_secret)
+        heartbeat = data.get("heartbeat_request")
+        d.heartbeat_request = heartbeat if isinstance(heartbeat, dict) else {}
         d.config = data.get("config", {})
         d.created_at = data.get("created_at", d.created_at)
         last_ip = str(data.get("last_ip") or "")

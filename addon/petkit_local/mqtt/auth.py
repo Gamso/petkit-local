@@ -180,6 +180,10 @@ class AliyunAuthPlugin(BaseAuthPlugin):
         #: take-over's teardown apart from a real disconnect; see
         #: `on_broker_client_disconnected`.
         self._live_sessions: dict[int, Session] = {}
+        #: `http/presence.py::CloudPresence`, told of every packet a device
+        #: sends so the opt-in keep-online heartbeat follows the device's own
+        #: pace. None unless wired (`set_presence`), which is every test plugin.
+        self._presence: Any = None
 
     def set_registry(self, registry: DeviceRegistry) -> None:
         """Supply the registry every credential is checked against.
@@ -196,6 +200,15 @@ class AliyunAuthPlugin(BaseAuthPlugin):
     def set_hub(self, hub: EventHub | None) -> None:
         """Supply the web-panel event hub that receives connection attempts."""
         self._hub = hub
+
+    def set_presence(self, presence: Any) -> None:
+        """Supply the keep-online heartbeat sender (`http/presence.py`).
+
+        Typed `Any` and injected, like the broker, so this module does not
+        import the HTTP side. It decides for itself whether to send anything;
+        this plugin only tells it a device was active.
+        """
+        self._presence = presence
 
     def set_broker(self, broker: Any) -> None:
         """Supply the broker this plugin runs in, for `_server_subscribe`.
@@ -339,6 +352,10 @@ class AliyunAuthPlugin(BaseAuthPlugin):
         the session really is gone the stamp stops, and the offline sweep is
         right to fire.
 
+        The same beat paces the opt-in keep-online heartbeat to PetKit
+        (`http/presence.py`): it is sent from here, for a device that is
+        active, and from nowhere else.
+
         The scan is over live device sessions only — a handful of entries, and
         our own bridge is not among them, so its traffic costs one identity
         comparison per entry and nothing else.
@@ -351,6 +368,10 @@ class AliyunAuthPlugin(BaseAuthPlugin):
                 if device is not None:
                     device.last_mqtt = time.time()
                     self._note_subscriptions(device, packet)
+                    if self._presence is not None:
+                        # Synchronous and never raises: it only schedules a
+                        # send when one is due (`CloudPresence.note_activity`).
+                        self._presence.note_activity(device)
                 return
 
     def _note_subscriptions(self, device: Device, packet: Any) -> None:

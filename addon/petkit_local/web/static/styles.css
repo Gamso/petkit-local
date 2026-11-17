@@ -890,6 +890,18 @@ a:hover {
 }
 /* The explanation sits under the label, so these rows need more room than a
    switch does. */
+/* A warning that belongs to the control before it, across the whole grid row
+   (the Setup tab's keep-online switch). */
+.ctrl-warn {
+  grid-column: 1 / -1;
+  margin: -2px 0 4px;
+  font-size: 11px;
+  color: var(--mut);
+  line-height: 1.45;
+}
+.ctrl-warn.disabled {
+  opacity: 0.55;
+}
 .ctrls.weight-match {
   grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
 }

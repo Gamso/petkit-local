@@ -18,7 +18,7 @@ import logging
 import os
 import socket
 import ssl
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from amqtt.broker import Broker, BrokerConfig
 from amqtt.contexts import ListenerConfig
@@ -252,6 +252,7 @@ async def start_broker(
     strict_auth: bool = False,
     hub: EventHub | None = None,
     data_dir: str = "/data",
+    presence: Any = None,
 ) -> Broker:
     """Start the embedded broker and hand the auth plugin its dependencies.
 
@@ -269,6 +270,8 @@ async def start_broker(
             default (see AliyunAuthPlugin).
         data_dir: Where the ESP32 firmware CA and its broker leaf live
             (`Esp32Certificate`).
+        presence: `http/presence.py::CloudPresence`, handed to the auth plugin
+            so the opt-in keep-online heartbeat follows each device's packets.
 
     Returns:
         The started Broker. The caller owns shutting it down.
@@ -336,6 +339,7 @@ async def start_broker(
                 obj.set_strict(strict_auth)
                 obj.set_hub(hub)
                 obj.set_broker(broker)
+                obj.set_presence(presence)
                 log.info("AliyunAuthPlugin registered (strict=%s)", strict_auth)
                 break
         else:
