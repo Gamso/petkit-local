@@ -1517,6 +1517,26 @@ SAFE_WARN: dict[int, str] = {
 
 # --- NS6: feeder dispensing sub-fields -------------------------------------
 
+#: Where a finished feed says what it put out, per hopper; `None` is the
+#: unsuffixed field. A Dual-Hopper (D4SH, confirmed on code 4 over HTTP and
+#: `feed_over` over MQTT) reports `real_amount1`/`real_amount2`, in PORTIONS
+#: (a D4S reported `real_amount2: 2` for a two-portion feed). Single-hopper
+#: firmware reports `real_amount` (a D4H, upstream issue #36; a D4H2, issue
+#: #2's mirror), in the device's own unit, the one its `amount` is asked in,
+#: which is not portions. The camelCase spellings are the cloud model's, read
+#: alongside as `normalize._accumulate_feed_totals` reads them.
+#:
+#: A meal that put out nothing still reports the field: 0 beside an
+#: `err_code` (8, or 10 for a skipped D4H meal), and -1 when the firmware
+#: skipped the motor (`FEED_RESULT` 9). Both are "nothing came out", which is
+#: 0, not unknown. Code 2 (`{id, day, manual, time, online_state, eat_video,
+#: state}`) carries none of these, so a meal it closes has no amount at all.
+FEED_AMOUNT_KEYS: dict[str | None, tuple[str, ...]] = {
+    None: ("real_amount", "realAmount"),
+    "1": ("real_amount1", "realAmount1"),
+    "2": ("real_amount2", "realAmount2"),
+}
+
 FEED_SRC: dict[int, str] = {
     1: "scheduled",
     3: "manual (app)",

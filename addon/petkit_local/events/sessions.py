@@ -16,6 +16,7 @@ from __future__ import annotations
 from petkit_local.events import codes
 from petkit_local.events.normalize import _as_dict, is_detail_event
 from petkit_local.utils.coerce import to_float, to_int
+from petkit_local.utils.const import DEVICE_TYPES_FEEDER_DUAL
 
 # --- visit-session grouping (Timeline tab) ------------------------------
 
@@ -595,6 +596,53 @@ def group_sessions(events: list[dict]) -> list[dict]:
     sessions.extend(_standalone_rows(events, used_ids))
     sessions.sort(key=lambda s: s.get("ts") or 0, reverse=True)
     return sessions
+
+
+def _fed_amount(content: dict, hopper: str | None) -> int | None:
+    """One `FEED_AMOUNT_KEYS` field, 0 or more; None when it was not sent.
+
+    A negative value is the firmware's "skipped, nothing dispensed" (-1, see
+    `codes.FEED_AMOUNT_KEYS`), so it reads 0 like any other empty meal.
+    """
+    for key in codes.FEED_AMOUNT_KEYS[hopper]:
+        value = to_int(content.get(key), None)
+        if value is not None:
+            return max(0, value)
+    return None
+
+
+def served_amounts(session: dict, device_type: str | None) -> dict | None:
+    """What a feeding card's meal put out: `{total, hopper1, hopper2}`.
+
+    None unless the card is a finished feed (`codes.is_feed_done`, read in the
+    device's own category) whose report names an amount: a cat eating, a feed
+    that only started, and a code 2 report carrying no amount have none, which
+    is not the same as a meal that served nothing (0).
+
+    Per model, as the device reports it, and only the fields that model
+    reports. A Dual-Hopper gives each hopper (`real_amount1`/`2`, portions),
+    None for one its report left out, and `total` is their sum. A single
+    hopper has no per-hopper split, so both hoppers are None and `total` is
+    its `real_amount` -- in that model's own unit, which is not portions.
+
+    Public for the app API, like `session_filters`.
+    """
+    code = codes.lookup(session.get("event_type"), device_type)
+    if code is None or not codes.is_feed_done(code):
+        return None
+    content = session.get("content") or {}
+    if not isinstance(content, dict):
+        return None
+    if (device_type or "").lower() in DEVICE_TYPES_FEEDER_DUAL:
+        hopper1, hopper2 = _fed_amount(content, "1"), _fed_amount(content, "2")
+        if hopper1 is None and hopper2 is None:
+            return None
+        return {"total": (hopper1 or 0) + (hopper2 or 0),
+                "hopper1": hopper1, "hopper2": hopper2}
+    whole = _fed_amount(content, None)
+    if whole is None:
+        return None
+    return {"total": whole, "hopper1": None, "hopper2": None}
 
 
 def _filter_buckets(session: dict) -> set[str]:

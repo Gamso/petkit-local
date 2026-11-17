@@ -801,6 +801,43 @@ async def test_a_drink_and_a_meal_eaten_carry_their_duration(ready: Env):
     assert by_type["4"]["duration_sec"] is None
 
 
+async def test_a_meal_says_what_each_hopper_served(ready: Env):
+    """Issue #98: the app read every meal's event to learn its portions. The
+    timeline item says it now, on a feed and on nothing else."""
+    schemas = _Schemas()
+    t = START - 3600
+    for row in (
+        {"device_id": 102, "device_type": "d4sh", "event_type": "feed_over",
+         "event_kind": "feeding", "ts": t, "related_event": "f1",
+         "content_json": json.dumps({"result": 0, "real_amount1": 2, "real_amount2": 1})},
+        {"device_id": 102, "device_type": "d4sh", "event_type": "feed_over",
+         "event_kind": "feeding", "ts": t + 600, "related_event": "f2",
+         "content_json": json.dumps({"result": 8, "err_code": 8,
+                                     "real_amount1": 0, "real_amount2": 0})},
+        {"device_id": 103, "device_type": "d4h", "event_type": "feed_over",
+         "event_kind": "feeding", "ts": t + 1200, "related_event": "f3",
+         "content_json": json.dumps({"result": 0, "real_amount": 10})},
+        {"device_id": 102, "device_type": "d4sh", "event_type": "eat_over",
+         "event_kind": "feeding", "ts": t + 1800, "related_event": "e1",
+         "content_json": json.dumps({"start_time": t + 1770})},
+        {"device_id": 100, "device_type": "t5", "event_type": "pet_out",
+         "event_kind": "toilet_visit", "ts": t + 2400, "related_event": "v1"},
+    ):
+        await ready.store.upsert_event({**row, "event_uid": f"{row['related_event']}:"
+                                                            f"{row['event_type']}"})
+    token = await ready.login()
+    items = (await (await ready.get("/timeline", token)).json())["items"]
+    for item in items:
+        schemas.check(item, "TimelineItem")
+    by_ts = {i["ts"]: i["served"] for i in items}
+    assert len(by_ts) == 5
+    assert by_ts[t] == {"total": 3, "hopper1": 2, "hopper2": 1}
+    assert by_ts[t + 600] == {"total": 0, "hopper1": 0, "hopper2": 0}
+    assert by_ts[t + 1200] == {"total": 10, "hopper1": None, "hopper2": None}
+    assert by_ts[t + 1800] is None, "a cat eating is not a feed"
+    assert by_ts[t + 2400] is None
+
+
 async def test_a_pet_shows_its_weight_and_recent_visits(ready: Env):
     pet = await ready.pets.create("Appka", device_ids=[100], weight=4.2)
     now = time.time()

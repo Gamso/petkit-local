@@ -1587,7 +1587,7 @@ components:
     TimelineItem:
       type: object
       required: [id, kind, filters, device_id, device_type, ts, display_ts, event_type,
-                 event_kind, label, pet, duration_sec, weight_g, facts, media, steps]
+                 event_kind, label, pet, duration_sec, weight_g, served, facts, media, steps]
       properties:
         id: { type: integer, description: "Pass to `GET /timeline/{event_id}`." }
         kind: { type: string, description: "`visit`, `event`, or a grouped cycle kind." }
@@ -1621,6 +1621,15 @@ components:
             known at all, on a card whose end never arrived, and on every other card,
             a dispensed feed included. Never estimated.
         weight_g: { type: [integer, "null"] }
+        served:
+          description: |
+            What a dispensed feed put out, on a card closed by a finished feed. Null on
+            every other card (a cat eating at a camera feeder included) and on a feed
+            whose report states no amount, which is not the same as a meal that served
+            nothing: that one is 0.
+          oneOf:
+            - { $ref: "#/components/schemas/ServedAmounts" }
+            - { type: "null" }
         facts:
           type: array
           items: { type: string }
@@ -1631,6 +1640,27 @@ components:
         steps:
           type: array
           items: { $ref: "#/components/schemas/TimelineStep" }
+
+    ServedAmounts:
+      type: object
+      required: [total, hopper1, hopper2]
+      description: |
+        A finished feed's output as the feeder reported it. Units follow the model, as
+        a Meal's do: portions on a Dual-Hopper (`amount1`/`amount2`), the device's own
+        unit on a single hopper (`amount`).
+      properties:
+        total:
+          type: integer
+          minimum: 0
+          description: Everything the meal put out; 0 when nothing came out.
+        hopper1:
+          type: [integer, "null"]
+          minimum: 0
+          description: A Dual-Hopper's first hopper; null on a single hopper, or when the report left it out.
+        hopper2:
+          type: [integer, "null"]
+          minimum: 0
+          description: A Dual-Hopper's second hopper; null on a single hopper, or when the report left it out.
 
     TimelinePage:
       type: object
