@@ -13,11 +13,15 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from petkit_local.devices.registry import PersistedRegistry
 from petkit_local.utils.coerce import to_int
+from petkit_local.utils.const import device_display_name
 from petkit_local.utils.dicts import dig
+
+if TYPE_CHECKING:
+    from petkit_local.devices.base import Device
 
 log = logging.getLogger(__name__)
 
@@ -229,6 +233,36 @@ class BLEDevice:
     def from_dict(cls, data: dict[str, Any]) -> BLEDevice:
         """Rebuild from `to_dict`, ignoring keys this version no longer has."""
         return cls(**{k: v for k, v in data.items() if k in cls.__dataclass_fields__})
+
+
+def relay_blocker(accessory: BLEDevice, parent: Device | None) -> str:
+    """Why this accessory cannot be read or set right now, or "" when it can.
+
+    One answer for every place that has to give it — the panel's row, its read
+    and write handlers, the app API's `accessory_unreachable` — so a phone and
+    the panel say the same thing in the same words.
+
+    An accessory is reached only by a `thing/service/*` publish to its parent:
+    `connect` to open the link, `ble` for the frame. Those exist only over MQTT,
+    and there is no HTTP way to ask a parent for an accessory's reading — none
+    is known from any firmware. So a parent on HTTP is not a parent that is
+    slow to answer; it is one that cannot be asked at all.
+
+    A K3 is never blocked by this: nothing is ever sent to it, and its readings
+    arrive in its parent's own report over either transport
+    (`reports_via_parent`).
+    """
+    if accessory.reports_via_parent:
+        return ""
+    if parent is None:
+        return "No registered device relays this accessory"
+    if parent.mqtt_connected:
+        return ""
+    name = device_display_name(parent.device_type)
+    if not parent.online:
+        return (f"{name} is offline: an accessory can only be read or set while its "
+                f"parent is on MQTT")
+    return f"{name} talks HTTP: an accessory can only be read or set while its parent is on MQTT"
 
 
 #: The K3's operating parameters, as the parent's `settings.k3Config.config`.

@@ -1542,6 +1542,94 @@ async def test_read_now_on_a_k3_is_refused_with_the_reason():
         await c.close()
 
 
+# --- an accessory under a parent that cannot be asked (issue #99) -------------
+
+def _row_for(parent_type="t4", *, mqtt=False, online=True, linked=True, ble_type="ctw3"):
+    from petkit_local.web.api.ble import _ble_view
+
+    reg = DeviceRegistry()
+    parent = reg.get_or_create(petkit_id=10, device_type=parent_type, serial_number="SN10")
+    parent.mqtt_connected = mqtt
+    parent.online = online
+    ble = BLERegistry()
+    dev = ble.register(ble_type=ble_type, petkit_id=700, mac="A4C138AABBCC",
+                       link_with=10 if linked else 0)
+    return _ble_view(dev, reg)
+
+
+def test_the_row_says_whether_the_accessory_can_be_reached():
+    on_mqtt = _row_for(mqtt=True)
+    assert on_mqtt["reachable"] is True and on_mqtt["unreachable_reason"] == ""
+    assert on_mqtt["parent_mqtt"] is True
+
+    on_http = _row_for(mqtt=False)
+    assert on_http["reachable"] is False and on_http["parent_mqtt"] is False
+    assert on_http["unreachable_reason"] == (
+        "Pura Max talks HTTP: an accessory can only be read or set while its "
+        "parent is on MQTT")
+
+    offline = _row_for(mqtt=False, online=False)
+    assert offline["reachable"] is False
+    assert offline["unreachable_reason"].startswith("Pura Max is offline:")
+
+    unknown = _row_for(linked=False)
+    assert unknown["reachable"] is False
+    assert unknown["unreachable_reason"] == "No registered device relays this accessory"
+
+
+def test_the_row_points_at_the_firmware_job_only_where_there_is_one():
+    """`patchers/esp32_ota.py` is what puts a T4 on the local broker; a T5 gets
+    there with its own patchers, and pointing it at the job would be wrong."""
+    assert _row_for("t4")["parent_firmware_job"] is True
+    assert _row_for("t5")["parent_firmware_job"] is False
+    assert _row_for(linked=False)["parent_firmware_job"] is False
+
+
+def test_a_k3_is_never_unreachable_on_its_parents_transport():
+    """Nothing is sent to it; its readings come over HTTP as well as MQTT."""
+    row = _row_for(mqtt=False, ble_type="k3")
+    assert row["reachable"] is True and row["unreachable_reason"] == ""
+
+
+async def test_read_now_and_a_write_refuse_in_the_rows_words():
+    from petkit_local.web import appkeys as panel_keys
+
+    app, reg, ble = _panel()
+    parent = reg.get_or_create(petkit_id=10, device_type="t4", serial_number="SN10")
+    parent.online = True
+    ble.register(ble_type="ctw3", petkit_id=700, mac="A4C138AABBCC", link_with=10)
+    app[panel_keys.BRIDGE] = type("B", (), {"_client": object()})()
+    c = await _client(app)
+    try:
+        reason = (await (await c.get("/api/ble")).json())["accessories"][0]["unreachable_reason"]
+        r = await c.post("/api/ble/700/poll")
+        assert r.status == 409 and (await r.json())["error"] == reason
+        r = await c.post("/api/ble/700/command", json={"entity": "ctw3_power", "value": "OFF"})
+        assert r.status == 409 and (await r.json())["error"] == reason
+    finally:
+        await c.close()
+
+
+def test_the_panel_offers_no_button_that_would_fail():
+    """The JS half of #99: the row's actions are decided before any button is
+    drawn, the controls are switched off rather than left to fail, and the
+    firmware job is linked only where the server says there is one."""
+    js = (Path(__file__).resolve().parents[1] / "petkit_local" / "web" / "static"
+          / "js" / "devices.js").read_text(encoding="utf-8")
+    actions = js[js.index("function accActions("):]
+    actions = actions[: actions.index("\n}\n")]
+    read_now = actions.index("ble-read-now")
+    assert actions.index("if (a.reports_via_parent)") < read_now
+    assert actions.index("if (!a.reachable)") < read_now
+    assert "a.unreachable_reason" in actions
+    assert "a.parent_firmware_job" in actions and 'data-tab="patchers"' in actions
+
+    body = js[js.index("function accBody("):]
+    body = body[: body.index("\n}\n")]
+    assert "accActions(a, actions)" in body and "ble-read-now" not in body
+    assert "a.reachable ? '' : 'disabled'" in body
+
+
 def test_a_read_is_not_a_write_and_a_write_is_not_a_read():
     """Two sets, two builders: a read sent through the write path would open a
     session first, and a write sent as a read would go out with no payload."""

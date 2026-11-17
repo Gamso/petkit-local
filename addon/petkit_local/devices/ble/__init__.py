@@ -35,7 +35,7 @@ from petkit_local.devices.ble.framing import (
 from petkit_local.devices.ble.registry import (
     _cloud_binding, BLE_TYPE_CONFIRMED, BLE_TYPE_MAP, BLE_TYPES, BLEDevice,
     BLERegistry, CLOUD_BINDING_ENDPOINTS, CLOUD_BLE_TYPES, K3_DEFAULT_CONFIG,
-    K3_SETTING_KEYS, cloud_bindings, normalize_mac,
+    K3_SETTING_KEYS, cloud_bindings, normalize_mac, relay_blocker,
 )
 from petkit_local.devices.ble.w5 import (
     _W5_CONFIG_BYTE_FIELDS, _W5_CONFIG_ENTITY_FIELDS, _W5_CONFIG_INT_FIELDS,
@@ -174,6 +174,7 @@ __all__ = [
     "parse_ctw3_ble_response",
     "parse_w5_ble_response",
     "parser_for",
+    "relay_blocker",
     "w5_config_payload",
     "w5_mode_payload",
 ]

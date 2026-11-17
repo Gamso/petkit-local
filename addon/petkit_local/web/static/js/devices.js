@@ -186,9 +186,23 @@ function accClocks(a) {
 // "Read now" asks the parent to open a Bluetooth session, which is meaningless
 // for a K3: it is in no relay list, and its battery and liquid already arrive
 // inside the parent's own state report, over either transport.
+//
+// For everything else the session is a `thing/service/*` publish, which exists
+// only over MQTT. A parent on HTTP cannot be asked at all, so instead of
+// buttons that fail with a banner (issue #99) the row says why — and, where
+// the ESP32 firmware job can put that parent on the local broker, points at
+// it. The row is rebuilt on every hub event, the parent's MQTT connect and
+// disconnect included, so the actions come back on their own.
 function accActions(a, actions) {
   if (a.reports_via_parent)
     return `<div class="card"><h3>Actions</h3><p class="mut" style="margin:0">Nothing to read on its own: a ${esc(a.name)} reports inside ${esc(a.parent_name || 'its parent')}’s state, on the parent’s schedule.</p></div>`;
+  if (!a.reachable)
+    return `<div class="card notice stop"><b>Cannot be read or set right now.</b>
+    <p class="sub" style="margin:6px 0 0">${esc(a.unreachable_reason)}.${
+      a.parent_firmware_job
+        ? ` The ESP32 firmware job on the <a data-action="goto-tab" data-tab="patchers">Patchers</a> tab is what puts a ${esc(a.parent_name)} on the local broker.`
+        : ''
+    } Its values below are the last ones it reported.</p></div>`;
   return `<div class="card"><h3>Actions${help(
     'Read now is about the relay rather than the accessory: it speaks only when its parent is told to open a Bluetooth session, and otherwise that happens on a timer up to the poll interval away. The rest are the accessory’s own — a filter reset carries no settings and is the one write that works before it has ever reported.',
   )}</h3>
@@ -211,6 +225,7 @@ function accSummary(a) {
     <b class="dp-name" title="${esc(a.name)}">${esc(a.name)}</b>
     <span class="chip">${esc(a.ble_type.toUpperCase())} · #${esc(a.petkit_id)}</span>
     ${a.parent_online ? '<span class="badge ble">BLE</span>' : '<span class="badge off">offline</span>'}
+    ${a.parent_online && !a.reachable ? `<span class="badge warn" title="${esc(a.unreachable_reason)}">parent on HTTP</span>` : ''}
     ${a.parent_name ? `<span class="badge">relayed by ${esc(a.parent_name)}</span>` : '<span class="badge bad">no parent</span>'}
     <span class="grow"></span>
     <span class="mut dp-meta">${esc((a.entities || []).length)} entities · ${esc(seen)}</span>`;
@@ -250,9 +265,9 @@ function accBody(a) {
   }
   ${
     controls.length
-      ? `<div class="card"><h3>Controls</h3><div class="ctrls">${controls
+      ? `<div class="card"><h3>Controls</h3><fieldset ${a.reachable ? '' : 'disabled'} style="border:0;padding:0;margin:0;min-width:0"><div class="ctrls">${controls
           .map(e => controlRow(a.petkit_id, e, 'ble'))
-          .join('')}</div>
+          .join('')}</div></fieldset>
     <p class="sub" style="margin:8px 0 0">Settings travel as one block, so a change needs a reading first — before the accessory has reported, a write is refused rather than guessed at.</p></div>`
       : ''
   }`;

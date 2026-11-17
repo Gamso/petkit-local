@@ -232,6 +232,19 @@ async def test_a_write_is_refused_not_queued_while_the_parent_is_off_mqtt(a: Acc
     assert "mode" not in a.ctw3.state.get("states", {})
 
 
+async def test_an_unreachable_accessory_is_explained_as_the_panel_explains_it(
+        a: AccessoryEnv):
+    """Issue #99: the words a phone shows are the panel's, from one place."""
+    from petkit_local.devices.ble import relay_blocker
+
+    a.t4.online = True
+    r = await a.call("PUT", f"/devices/{CTW3_ID}/entities/ctw3_mode", {"value": "smart"})
+    await _refused(r, 409, "accessory_unreachable")
+    message = (await r.json())["message"]
+    assert message == relay_blocker(a.ctw3, a.t4)
+    assert message.startswith("Pura Max talks HTTP")
+
+
 async def test_an_accessory_with_no_parent_is_unreachable(a: AccessoryEnv):
     r = await a.call("POST", f"/devices/{ORPHAN_ID}/actions/w5_reset_filter",
                      {"confirm": True})

@@ -17,14 +17,13 @@ from petkit_local.app_api.appkeys import (
 )
 from petkit_local.app_api.middleware import ApiError
 from petkit_local.devices.base import Device, Refused
-from petkit_local.devices.ble import BLEDevice, ble_command_for
+from petkit_local.devices.ble import BLEDevice, ble_command_for, relay_blocker
 from petkit_local.ha.command_router import (
     DELIVERED_MQTT, ble_command_value, deliver_command, reflect_ble_write,
 )
 from petkit_local.ha.commands import Command
 from petkit_local.ha.discovery import EntityDef
 from petkit_local.utils.coerce import to_int
-from petkit_local.utils.const import device_display_name
 
 log = logging.getLogger(__name__)
 
@@ -138,13 +137,15 @@ async def send_accessory_command(request: web.Request, accessory: BLEDevice,
         raise ApiError(422, "refused", f"unusable value for {entity.name}")
     parent = inventory.parent_of(request.app[REGISTRY], accessory)
     sink = request.app.get(COMMAND_SINK)
+    # The panel's words, from the one place that decides (issue #99).
+    blocker = relay_blocker(accessory, parent)
+    if blocker:
+        raise ApiError(409, "accessory_unreachable", blocker)
     if parent is None:
         raise ApiError(409, "accessory_unreachable",
                        "no registered device relays this accessory")
-    if sink is None or not parent.mqtt_connected:
-        raise ApiError(409, "accessory_unreachable",
-                       f"the {device_display_name(parent.device_type)} relaying it is not "
-                       f"on MQTT, and an accessory is only reachable while it is")
+    if sink is None:
+        raise ApiError(409, "accessory_unreachable", "the MQTT bridge is not running")
     try:
         cmd, frame = ble_command_for(accessory, entity.key, value)
     except Refused as exc:
