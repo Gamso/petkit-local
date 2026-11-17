@@ -1205,7 +1205,10 @@ async def test_a_frame_that_is_not_a_reading_does_not_end_the_session():
         "content": json.dumps({"device": {"mac": "AABBCCDDEEFF"},
                                "payload": [{"cmd": 252, "data": ack}]}),
     })
-    assert bridge._client.sent == [], "hung up before the accessory had spoken"
+    # A 252 is a link-up, so it is answered with reads -- and with no
+    # `connect` of either kind: neither a hang-up nor a re-open.
+    topics = [t.rsplit("/", 1)[-1] for t, _ in bridge._client.sent]
+    assert "connect" not in topics, "hung up before the accessory had spoken"
 
     # A real decode still closes it — the radio is not left on for ever.
     await bridge._ble_relay._handle_ble_response(reg.get(10), {
@@ -1227,6 +1230,209 @@ async def test_a_write_opens_the_session_it_needs():
     assert topics == ["connect", "ble"], topics
     opened = json.loads(bridge._client.sent[0][1])["params"]
     assert opened["connect_action"] == 1 and "time" in opened
+
+
+# --- reading a fountain once its link is up ----------------------------------
+#
+# A T4 (1.652) relaying a CTW3 brought the link up on 4 of 4 sessions, passed
+# on one 252 and then nothing until it hung up. The D4SH observation everything
+# relied on -- the CTW3 pushing its run-info unasked -- did not hold there. The
+# frames below are that T4's own, from `fixtures/`.
+
+T4_CAPTURE = json.loads(
+    (Path(__file__).parent / "fixtures" / "t4_ble_relay_and_data_get.json")
+    .read_text(encoding="utf-8"))
+RELAY = T4_CAPTURE["relay"]
+
+
+def _t4_with_ctw3():
+    reg = DeviceRegistry()
+    reg.get_or_create(petkit_id=10, device_type="t4", serial_number="SN10")
+    ble = BLERegistry()
+    # The capture's MAC, so the captured frames match it unchanged.
+    ble.register(ble_type="ctw3", petkit_id=700, mac="A4C138AABBCC",
+                 secret="s", interval=240, link_with=10)
+    bridge = MQTTBridge(reg, None, ble)
+    bridge._client = _FakeClient()
+    return bridge, reg, ble
+
+
+def _sent_ble(bridge):
+    """`(cmd, decoded frame)` for every `thing/service/ble` publish, in order."""
+    out = []
+    for topic, body in bridge._client.sent:
+        if topic.endswith("/thing/service/ble"):
+            payload = json.loads(body)["params"]["payload"]
+            out.append((payload["cmd"], _decode_frame(payload["data"])))
+    return out
+
+
+def _services(bridge):
+    return [t.rsplit("/", 1)[-1] for t, _ in bridge._client.sent]
+
+
+async def test_a_link_up_is_followed_by_a_state_read_and_a_settings_read():
+    bridge, reg, _ = _t4_with_ctw3()
+    await bridge._handle_event(reg.get(10), "ble_relay_over", RELAY["over_link_up"])
+
+    sent = _sent_ble(bridge)
+    assert [cmd for cmd, _ in sent] == [210, 211]
+    # Exactly the bytes, header to trailer: an empty request, seq per accessory.
+    assert sent[0][1] == bytes.fromhex("fafcfdd201000000fb")
+    assert sent[1][1] == bytes.fromhex("fafcfdd301010000fb")
+    # Into the session the parent has just reported up -- a `connect` here would
+    # ask it to bring the link up all over again.
+    assert "connect" not in _services(bridge)
+
+
+async def test_a_read_goes_out_as_the_writes_do():
+    bridge, reg, _ = _t4_with_ctw3()
+    await bridge._handle_event(reg.get(10), "ble_relay_over", RELAY["over_link_up"])
+    topic, body = bridge._client.sent[0]
+    env = json.loads(body)
+    assert topic.endswith("/thing/service/ble")
+    assert env["method"] == "thing.service.ble"
+    assert env["params"]["device"] == {"type": 24, "mac": "a4c138aabbcc"}
+    # URL-encoded base64, the inverse of what `_ble_decode_data` undoes.
+    assert env["params"]["payload"]["data"] == "%2Bvz90gEAAAD7"
+
+
+async def test_the_252_behind_the_link_up_is_the_same_link_up():
+    """Both carry one `event_id`; reading twice would double every poll."""
+    bridge, reg, _ = _t4_with_ctw3()
+    await bridge._handle_event(reg.get(10), "ble_relay_over", RELAY["over_link_up"])
+    await bridge._handle_event(reg.get(10), "ble_response", RELAY["response_252"])
+    await bridge._handle_event(reg.get(10), "ble_relay_over", RELAY["over_link_up"])
+    assert [cmd for cmd, _ in _sent_ble(bridge)] == [210, 211]
+
+
+async def test_a_252_on_its_own_still_gets_the_reads():
+    """Either half of the link-up may arrive alone."""
+    bridge, reg, _ = _t4_with_ctw3()
+    await bridge._handle_event(reg.get(10), "ble_response", RELAY["response_252"])
+    assert [cmd for cmd, _ in _sent_ble(bridge)] == [210, 211]
+
+
+async def test_the_next_link_up_is_read_again(monkeypatch):
+    from petkit_local.mqtt import ble_relay
+
+    bridge, reg, _ = _t4_with_ctw3()
+    clock = [1794949774.0]
+    monkeypatch.setattr(ble_relay.time, "time", lambda: clock[0])
+    await bridge._handle_event(reg.get(10), "ble_relay_over", RELAY["over_link_up"])
+
+    clock[0] += 240
+    later = json.loads(json.dumps(RELAY["over_link_up"]))
+    later["params"]["event_id"] = "100000001_1794950014"
+    await bridge._handle_event(reg.get(10), "ble_relay_over", later)
+    assert [cmd for cmd, _ in _sent_ble(bridge)] == [210, 211, 210, 211]
+
+
+async def test_a_link_up_without_an_event_id_is_still_read_once(monkeypatch):
+    from petkit_local.mqtt import ble_relay
+
+    bridge, reg, _ = _t4_with_ctw3()
+    monkeypatch.setattr(ble_relay.time, "time", lambda: 1794949774.0)
+    bare = json.loads(json.dumps(RELAY["over_link_up"]))
+    del bare["params"]["event_id"]
+    await bridge._handle_event(reg.get(10), "ble_relay_over", bare)
+    await bridge._handle_event(reg.get(10), "ble_relay_over", bare)
+    assert [cmd for cmd, _ in _sent_ble(bridge)] == [210, 211]
+
+
+@pytest.mark.parametrize("frame", ["start", "over_failed", "over_closed"])
+async def test_nothing_is_read_when_the_link_is_not_up(frame):
+    """`result 6` is a link that never came up; `action 0` is one going down;
+    `ble_relay_start` is the parent only starting to try."""
+    bridge, reg, _ = _t4_with_ctw3()
+    await bridge._handle_event(reg.get(10), f"ble_relay_{frame.split('_')[0]}",
+                               RELAY[frame])
+    assert bridge._client.sent == []
+
+
+async def test_a_k3_or_a_stranger_is_never_read():
+    """A K3 has no frame decoder to read a reply with; a MAC nobody paired is
+    nobody's."""
+    bridge, reg, ble = _t4_with_ctw3()
+    ble.remove(700)
+    await bridge._handle_event(reg.get(10), "ble_relay_over", RELAY["over_link_up"])
+    ble.register(ble_type="k3", petkit_id=555, mac="A4C138AABBCC", link_with=10)
+    await bridge._handle_event(reg.get(10), "ble_relay_over", RELAY["over_link_up"])
+    assert bridge._client.sent == []
+
+
+@pytest.mark.parametrize("content", [
+    "not json", "[1, 2]", json.dumps({"action": "x", "result": None,
+                                      "device": {"mac": 42}}), None,
+])
+async def test_a_garbled_relay_report_is_ignored_not_raised(content):
+    bridge, reg, _ = _t4_with_ctw3()
+    await bridge._handle_event(reg.get(10), "ble_relay_over",
+                               {"params": {"content": content}})
+    assert bridge._client.sent == []
+
+
+async def test_the_session_stays_open_until_both_reads_are_answered():
+    """The status and the settings come back as two replies. Hanging up on the
+    first -- as every decoded frame used to -- loses the second."""
+    import base64
+
+    bridge, reg, ble = _t4_with_ctw3()
+    await bridge._handle_event(reg.get(10), "ble_relay_over", RELAY["over_link_up"])
+
+    status = base64.b64decode(CTW3_CMD230)[:30]
+    await bridge._handle_event(reg.get(10), "ble_response", {"params": {
+        "event_id": "100000001_1794949774",
+        "content": json.dumps({"device": {"type": 24, "mac": "a4c138aabbcc"},
+                               "payload": [{"cmd": 210,
+                                            "data": base64.b64encode(status).decode()}]})}})
+    assert ble.get(700).state["states"]["runStatus"] == 1
+    assert "connect" not in _services(bridge), "hung up on the settings reply"
+
+    settings = bytes.fromhex("030300780" + "4b001030000" + "0100")
+    await bridge._handle_event(reg.get(10), "ble_response", {"params": {
+        "event_id": "100000001_1794949774",
+        "content": json.dumps({"device": {"type": 24, "mac": "a4c138aabbcc"},
+                               "payload": [{"cmd": 211,
+                                            "data": base64.b64encode(settings).decode()}]})}})
+    assert ble.get(700).state["states"]["brightness"] == 3
+    assert json.loads(bridge._client.sent[-1][1])["params"]["connect_action"] == 0
+
+
+async def test_a_pushed_230_answers_both_reads_at_once():
+    bridge, reg, ble = _t4_with_ctw3()
+    await bridge._handle_event(reg.get(10), "ble_relay_over", RELAY["over_link_up"])
+    await bridge._handle_event(reg.get(10), "ble_response", {"params": {
+        "content": json.dumps({"device": {"mac": "a4c138aabbcc"},
+                               "payload": [{"cmd": 230, "data": CTW3_CMD230}]})}})
+    assert json.loads(bridge._client.sent[-1][1])["params"]["connect_action"] == 0
+
+
+async def test_a_session_that_ends_forgets_its_unanswered_reads():
+    """Otherwise the NEXT link's first reading would wait on a read that went
+    unanswered on this one."""
+    bridge, reg, ble = _t4_with_ctw3()
+    await bridge._handle_event(reg.get(10), "ble_relay_over", RELAY["over_link_up"])
+    await bridge._handle_event(reg.get(10), "ble_relay_over", RELAY["over_closed"])
+    assert bridge._ble_relay._pending_reads == {}
+
+
+async def test_no_broker_means_no_reads_and_no_error():
+    bridge, reg, _ = _t4_with_ctw3()
+    bridge._client = None
+    await bridge._handle_event(reg.get(10), "ble_relay_over", RELAY["over_link_up"])
+    assert bridge._ble_relay._pending_reads[700] == set()
+
+
+def test_a_read_is_not_a_write_and_a_write_is_not_a_read():
+    """Two sets, two builders: a read sent through the write path would open a
+    session first, and a write sent as a read would go out with no payload."""
+    from petkit_local.devices.ble import ble_command_frame, ble_read_frame
+
+    assert ble_read_frame(210, 0) is not None
+    assert ble_command_frame(210, 0, b"") is None
+    assert ble_read_frame(220, 0) is None
+    assert ble_read_frame(252, 0) is None
 
 
 def test_a_ctw3_settings_reply_decodes_with_no_new_offsets():

@@ -6,7 +6,7 @@ here. Keeping it separate is what lets the panel's Debug view show *why* a
 label says what it says: the confidence grade and the firmware provenance are
 fields, not comments.
 
-Seven namespaces, deliberately never merged
+Eight namespaces, deliberately never merged
 -------------------------------------------
 NS1 `HTTP_EVENT_CODES`  -- numeric `event_type` on `POST /dev_event_report`.
 NS2 `CLOUD_RECORD_TYPES`-- the PetKit *cloud*'s `LitterRecord.subContent[]
@@ -20,6 +20,9 @@ NS5 `WORK_MODES` etc.   -- `state.workState.workMode`, the CURRENT operation.
 NS6 `FEED_SRC` etc.     -- feeder dispensing sub-fields.
 NS7 `ERROR_FLAGS`       -- the named bits inside a state report's `err{}`
                            object. Per device family, like NS1.
+NS8 `BLE_OPCODES`       -- the `cmd` of a frame relayed to or from a BLE
+                           fountain. Not an event code at all; listed here
+                           because what we send an accessory is protocol too.
 
 Where the two evidence sources disagree
 ---------------------------------------
@@ -1730,6 +1733,144 @@ def error_flag_label(flag: str, device_type: str | None = None) -> str:
         if codename in members:
             return table.get(flag, flag)
     return flag
+
+
+# --- NS8: BLE accessory opcodes -------------------------------------------
+# The `cmd` of a frame between a fountain and the parent relaying it: the MQTT
+# `cmd` beside `thing/service/ble`'s data and `ble_response`'s payload, and the
+# opcode byte inside the `FA FC FD` frame (`devices/ble/framing.py`) -- the
+# SAME number both ways, 220 is 0xDC. One numbering for every EverSweet; only
+# the DATA block inside a frame differs per family (`w5.py`, `ctw3.py`).
+#
+# Not an event namespace and not to be merged with one: 210 here is a fountain
+# opcode, and nothing stops a future firmware from sending `event_type=210`.
+#
+# The sources are not firmware RE of the parents: a parent forwards these bytes
+# without interpreting them, so what each one means comes from the accessory's
+# side -- mr-ransel's W5 protocol notes, aavdberg/ha-petkit's direct GATT
+# client, PetKit's app (13.8.1) -- and from what came back over our relay.
+
+#: Who sends a frame with this opcode.
+BLE_TO_ACCESSORY = "to_accessory"
+BLE_FROM_ACCESSORY = "from_accessory"
+#: A request we send and the reply that comes back on the same opcode.
+BLE_BOTH_WAYS = "both"
+
+#: What `devices/ble/framing.py` may build a frame for. A read carries an empty
+#: payload; a write restates a whole block. Anything else is refused there
+#: rather than sent as a frame whose payload we would be inventing.
+BLE_SEND_READ = "read"
+BLE_SEND_WRITE = "write"
+
+
+@dataclass(frozen=True)
+class BleOpcode:
+    """One BLE accessory opcode, graded like every other row in this module.
+
+    Attributes:
+        name: Short identifier, used in logs.
+        label: Human label.
+        direction: One of `BLE_TO_ACCESSORY`, `BLE_FROM_ACCESSORY`,
+            `BLE_BOTH_WAYS`.
+        grade: Evidence grade, from `GRADES`.
+        send: `BLE_SEND_READ`, `BLE_SEND_WRITE`, or "" for an opcode we never
+            send.
+        source: Where the meaning comes from, verbatim.
+        note: Caveat, or what is still unknown.
+    """
+
+    name: str
+    label: str
+    direction: str
+    grade: str
+    send: str = ""
+    source: str = ""
+    note: str = ""
+
+
+BLE_OPCODES: dict[int, BleOpcode] = {
+    210: BleOpcode(
+        name="get_state", label="Get state", direction=BLE_BOTH_WAYS,
+        grade=INFERRED, send=BLE_SEND_READ,
+        source="mr-ransel W5 protocol notes; aavdberg/ha-petkit (direct GATT)",
+        note="An empty request answered with the status block: 12-18 bytes on "
+             "the W5 family, 30 on a CTW3 (26 on older firmware) -- the long "
+             "230's first 30 bytes without the config tail. Never yet seen "
+             "answered over a parent's relay: until 2026-11 nothing here sent "
+             "it, on the strength of a D4SH whose CTW3 pushed its status "
+             "unasked."),
+    211: BleOpcode(
+        name="get_config", label="Get settings", direction=BLE_BOTH_WAYS,
+        grade=CONFIRMED, send=BLE_SEND_READ,
+        source="mr-ransel W5 protocol notes; a live CTW3 over the relay",
+        note="The reply is the settings block a 221 writes: 12 bytes on a "
+             "CTW3 (`03 03 00 78 04 b0 01 03 00 00 01 00` off a live one), "
+             "13-14 on the W5 family. A CTW3 is silent to it over direct GATT "
+             "on firmware 111, which is why aavdberg/ha-petkit never asks."),
+    220: BleOpcode(
+        name="set_mode", label="Set power / mode", direction=BLE_TO_ACCESSORY,
+        grade=INFERRED, send=BLE_SEND_WRITE,
+        source="aavdberg/ha-petkit; PetKit app CTW3HomePresenter.changeDeviceMode",
+        note="Answered with a bare `01` on the same cmd. A CTW3 adds a suspend "
+             "byte the W5 family does not have."),
+    221: BleOpcode(
+        name="set_config", label="Write settings", direction=BLE_TO_ACCESSORY,
+        grade=INFERRED, send=BLE_SEND_WRITE,
+        source="PetKit app CTW3DataConvertor.changeSmartMode / changeBatteryMode",
+        note="The whole settings block, restated. The one 221 in the "
+             "2026-08-11 capture hit a session that died (result 6) and did "
+             "not take, so no write is proven applied over the relay."),
+    222: BleOpcode(
+        name="reset_filter", label="Reset filter", direction=BLE_TO_ACCESSORY,
+        grade=INFERRED, send=BLE_SEND_WRITE,
+        source="mr-ransel W5 protocol notes; PetKit app getCTW3ResetFilterElement",
+        note="Empty payload. aavdberg/ha-petkit sends one zero byte instead."),
+    230: BleOpcode(
+        name="device_status", label="Status", direction=BLE_FROM_ACCESSORY,
+        grade=CONFIRMED,
+        source="issue #4 (a real CTW3 frame); mr-ransel W5 protocol notes",
+        note="The status the accessory pushes: 42 bytes on a CTW3, the 30 of a "
+             "210 plus the 12-byte settings block."),
+    251: BleOpcode(
+        name="link_notice_251", label="Unknown (seen on link-up)",
+        direction=BLE_FROM_ACCESSORY, grade=INFERRED,
+        source="a CTW3 behind a D4SH (@strxno)",
+        note="A short frame right after a session opens, before the CTW3's "
+             "own run-info pass. Meaning unknown; its place in the exchange "
+             "is all that is known."),
+    252: BleOpcode(
+        name="link_notice_252", label="Unknown (seen on link-up)",
+        direction=BLE_FROM_ACCESSORY, grade=INFERRED,
+        source="a CTW3 (type 24) behind a T4 Pura Max, firmware 1.652, 2026-11-17",
+        note="`00 01`, unframed, ~0.3 s after `ble_relay_over` reports the "
+             "link up (`action 1, result 0`), sharing its `event_id` -- and "
+             "then nothing, on 4 of 4 link-ups, until the parent hangs up "
+             "100-130 s later. Meaning unknown. Also seen from a D4SH."),
+}
+
+#: What is asked of a fountain each time its parent reports the BLE link up:
+#: its status, then its settings -- both reads, empty payloads, and once per
+#: link-up.
+#:
+#: INFERRED, and the evidence is what NOT asking produced. A T4 (1.652) relaying
+#: a CTW3 brought the link up on 4 of 4 sessions and passed on nothing but one
+#: 252, where a D4SH's CTW3 had pushed its run-info unasked (the observation
+#: everything before this relied on). Whether the CTW3 answers a 210 sent over
+#: a T4's relay is exactly what has not been seen yet; a 211 has been answered
+#: over a relay before.
+BLE_LINK_UP_READS: tuple[int, ...] = (210, 211)
+BLE_LINK_UP_READS_GRADE = INFERRED
+
+#: The accessory's own side of a link-up: a frame seen only right after the
+#: link comes up. Read as a link-up in its own right, because it can arrive
+#: without the parent's `ble_relay_over` ahead of it.
+BLE_LINK_NOTICES = frozenset({251, 252})
+
+
+def ble_opcode_label(cmd: object) -> str:
+    """`cmd 252 (Unknown (seen on link-up))`-style text for a log line."""
+    op = BLE_OPCODES.get(cmd) if isinstance(cmd, int) else None
+    return f"cmd {cmd} ({op.label})" if op else f"cmd {cmd}"
 
 
 # --- derived views ---------------------------------------------------------

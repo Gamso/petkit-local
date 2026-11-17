@@ -27,9 +27,10 @@ from petkit_local.devices.ble.ctw3 import (
 )
 from petkit_local.devices.ble.framing import (
     _ble_decode_data, _ble_unframe, _iter_ble_frames, BLE_FRAME_HEADER,
-    BLE_FRAME_HEADER_LEN, BLE_FRAME_TRAILER, BLE_SENDABLE, BLE_TYPE_REQUEST,
+    BLE_FRAME_HEADER_LEN, BLE_FRAME_TRAILER, BLE_READABLE, BLE_SENDABLE, BLE_TYPE_REQUEST,
     CMD_DEVICE_STATUS, CMD_GET_CONFIG, CMD_GET_STATE, CMD_RESET_FILTER,
-    CMD_SET_CONFIG, CMD_SET_MODE, FOUNTAIN_MODES, ble_command_frame, build_ble_frame,
+    CMD_SET_CONFIG, CMD_SET_MODE, FOUNTAIN_MODES, ble_command_frame, ble_read_frame,
+    build_ble_frame,
 )
 from petkit_local.devices.ble.registry import (
     _cloud_binding, BLE_TYPE_CONFIRMED, BLE_TYPE_MAP, BLE_TYPES, BLEDevice,
@@ -114,6 +115,7 @@ __all__ = [
     "BLE_FRAME_HEADER_LEN",
     "BLE_FRAME_TRAILER",
     "BLE_PARSERS",
+    "BLE_READABLE",
     "BLE_SENDABLE",
     "BLE_TYPES",
     "BLE_TYPE_CONFIRMED",
@@ -162,6 +164,7 @@ __all__ = [
     "_w5_command_for",
     "ble_command_for",
     "ble_command_frame",
+    "ble_read_frame",
     "build_ble_frame",
     "cloud_bindings",
     "ctw3_config_payload",

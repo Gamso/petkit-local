@@ -555,6 +555,10 @@ class MQTTBridge:
         elif event_type == "ble_response":
             await self._ble_relay._handle_ble_response(device, params)
 
+        elif event_type == "ble_relay_over":
+            # The link coming up is when an accessory is asked to report.
+            await self._ble_relay._handle_relay_over(device, params)
+
         # Fire the matching HA event entity (momentary). `content`, not
         # `params`: everything in the payload besides `event_type` becomes an
         # attribute of the HA event, and `params` is the transport envelope —

@@ -380,3 +380,46 @@ def test_every_timed_end_has_a_start_that_opens_it_on_the_same_models():
     for start in starts:
         assert start.role == codes.ROLE_START, start
         assert start.opens in codes.TIMED_DONE_WORDS, start
+
+
+# --- NS8: BLE accessory opcodes ---------------------------------------------
+
+def test_every_ble_opcode_is_graded_and_says_who_sends_it():
+    directions = {codes.BLE_TO_ACCESSORY, codes.BLE_FROM_ACCESSORY, codes.BLE_BOTH_WAYS}
+    for cmd, op in codes.BLE_OPCODES.items():
+        assert op.grade in codes.GRADES, f"BLE {cmd} has grade {op.grade!r}"
+        assert op.direction in directions, f"BLE {cmd} has direction {op.direction!r}"
+        assert op.label and op.source, f"BLE {cmd} names no label or source"
+        # Something we send has to go TO the accessory.
+        if op.send:
+            assert op.send in (codes.BLE_SEND_READ, codes.BLE_SEND_WRITE)
+            assert op.direction != codes.BLE_FROM_ACCESSORY, f"BLE {cmd} is sent by us"
+
+
+def test_every_ble_command_name_has_a_graded_row():
+    """The `CMD_*` handles in `devices/ble/framing.py` are only names; what each
+    one means and how sure that is lives in NS8. A handle with no row is a code
+    known in one place and graded in none -- the drift NS1 was built to end."""
+    from petkit_local.devices.ble import framing
+
+    handles = {v for k, v in vars(framing).items() if k.startswith("CMD_")}
+    assert handles and handles <= set(codes.BLE_OPCODES)
+
+
+def test_what_we_send_an_accessory_is_derived_from_the_table():
+    from petkit_local.devices.ble import BLE_READABLE, BLE_SENDABLE
+
+    assert BLE_SENDABLE == {220, 221, 222}
+    assert BLE_READABLE == {210, 211}
+    assert set(codes.BLE_LINK_UP_READS) <= BLE_READABLE
+    # The link-up read is a working assumption until a reply to it is seen.
+    assert codes.BLE_LINK_UP_READS_GRADE == codes.INFERRED
+
+
+def test_the_link_up_notices_are_documented_as_unknown():
+    """251 and 252 are seen, never explained. Their rows must say so rather than
+    pass for understood."""
+    for cmd in codes.BLE_LINK_NOTICES:
+        op = codes.BLE_OPCODES[cmd]
+        assert op.direction == codes.BLE_FROM_ACCESSORY and not op.send
+        assert "unknown" in op.label.lower() and "unknown" in op.note.lower()
