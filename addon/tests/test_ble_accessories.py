@@ -1424,6 +1424,46 @@ async def test_no_broker_means_no_reads_and_no_error():
     assert bridge._ble_relay._pending_reads[700] == set()
 
 
+async def test_a_frame_that_decodes_to_nothing_is_still_heard():
+    """The T4's CTW3 said nothing but a 252 on every link-up. That is not
+    silence: the pairing works and the link comes up. `last_seen` cannot say so
+    -- nothing decoded -- so a second clock does."""
+    bridge, reg, ble = _t4_with_ctw3()
+    await bridge._handle_event(reg.get(10), "ble_response", RELAY["response_252"])
+    dev = ble.get(700)
+    assert dev.last_heard > 0
+    assert dev.last_seen == 0.0, "a 252 is not a reading"
+
+    from petkit_local.devices.ble import BLEDevice
+    assert BLEDevice.from_dict(dev.to_dict()).last_heard == dev.last_heard
+    # A record written before the field existed loads as "never heard".
+    old = {k: v for k, v in dev.to_dict().items() if k != "last_heard"}
+    assert BLEDevice.from_dict(old).last_heard == 0.0
+
+
+async def test_a_frame_for_nobody_stamps_nobody():
+    bridge, reg, ble = _t4_with_ctw3()
+    stranger = json.loads(json.dumps(RELAY["response_252"]))
+    stranger["params"]["content"] = stranger["params"]["content"].replace(
+        "a4c138aabbcc", "a4c138000000")
+    await bridge._handle_event(reg.get(10), "ble_response", stranger)
+    assert ble.get(700).last_heard == 0.0
+
+
+async def test_the_panel_shows_both_clocks():
+    app, reg, ble = _panel()
+    reg.get_or_create(petkit_id=10, device_type="t4", serial_number="SN10")
+    ble.register(ble_type="ctw3", petkit_id=700, mac="A4C138AABBCC", link_with=10)
+    ble.get(700).last_heard = 1794949774.5
+    c = await _client(app)
+    try:
+        row = (await (await c.get("/api/ble")).json())["accessories"][0]
+        assert row["last_heard"] == 1794949774.5
+        assert row["last_seen"] == 0.0
+    finally:
+        await c.close()
+
+
 def test_a_read_is_not_a_write_and_a_write_is_not_a_read():
     """Two sets, two builders: a read sent through the write path would open a
     session first, and a write sent as a read would go out with no payload."""

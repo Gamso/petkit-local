@@ -92,7 +92,10 @@ def _ble_view(dev: BLEDevice, reg: DeviceRegistry | None = None) -> dict[str, An
         "parent_name": device_display_name(parent.device_type) if parent else "",
         "parent_type": parent.device_type if parent else "",
         "parent_online": bool(parent and parent.online),
+        # A reading, and any frame at all. A fountain that answers its link-up
+        # but has never reported is the case the second one exists for.
         "last_seen": dev.last_seen,
+        "last_heard": dev.last_heard,
         "entities": [{
             "component": e.component, "key": e.key, "name": e.name,
             "value_path": e.value_path, "unit": e.unit, "device_class": e.device_class,

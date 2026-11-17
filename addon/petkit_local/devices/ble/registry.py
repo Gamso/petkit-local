@@ -95,9 +95,10 @@ class BLEDevice:
     `link_with` is the `petkit_id` of that parent, and is what every lookup here
     keys on: the accessory has no network identity of its own, so it has no
     credentials, no heartbeat and no liveness of its own either — `state` is
-    only ever updated as a side effect of the parent reporting. `last_seen` is
-    the one exception and is about the accessory itself: when it last said
-    anything at all, through whoever relayed it.
+    only ever updated as a side effect of the parent reporting. `last_seen` and
+    `last_heard` are the exception and are about the accessory itself: when it
+    last reported a reading, and when it last said anything at all, through
+    whoever relayed it.
     """
 
     ble_type: str
@@ -120,6 +121,12 @@ class BLEDevice:
     #: about a relayed device: has it ever spoken, and how long ago. With a
     #: `scan_type` that may be a guess, "never" is the symptom to look for.
     last_seen: float = 0.0
+    #: When ANY frame under this accessory's MAC last arrived, reading or not —
+    #: a write ack, a link-up 252, a block too short to decode. Kept apart from
+    #: `last_seen` because the two failures they separate need different fixes:
+    #: never heard is the pairing (scan type, MAC, relay list), heard but never
+    #: read is the conversation once the link is up.
+    last_heard: float = 0.0
     state: dict[str, Any] = field(default_factory=dict)
     #: The K3's operating parameters, served as the parent's
     #: `settings.k3Config.config` (see `K3_DEFAULT_CONFIG`). Unused by the
@@ -201,6 +208,7 @@ class BLEDevice:
             "interval": self.interval,
             "scan_type": self.scan_type,
             "last_seen": self.last_seen,
+            "last_heard": self.last_heard,
             "state": self.state,
             "config": self.config,
             "settings": self.settings,

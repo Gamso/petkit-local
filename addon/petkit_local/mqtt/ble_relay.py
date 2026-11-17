@@ -457,6 +457,11 @@ class BLERelay:
             log.debug("BLE response with no matching accessory (mac=%s)", ble_mac)
             return
 
+        # Heard, whatever it said: the frame came from this MAC through its
+        # parent, which is proof of the pairing even when nothing decodes.
+        ble_dev.last_heard = time.time()
+        self._ble_registry.mark_dirty()
+
         frames = list(_iter_ble_frames(content))
         parse = parser_for(ble_dev.ble_type)
         fragment = parse(content) if parse is not None else {}
