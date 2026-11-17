@@ -362,3 +362,21 @@ def test_a_cat_finishing_its_meal_is_not_a_feed():
     device = Device(device_type="d4sh", petkit_id=1)
     ingest.apply_derived_state(device, "6", {})
     assert "lastFeed" not in device.state
+
+
+def test_every_timed_end_has_a_start_that_opens_it_on_the_same_models():
+    """`opens` is how a start is paired with its end. An end no start opens
+    could only ever be timed from its own content; a start opening a word no
+    end closes is a typo that silently times nothing."""
+    tables = (codes.FEEDER_HTTP_CODES, codes.FOUNTAIN_HTTP_CODES, codes.MQTT_EVENT_TOPICS)
+    rows = [code for table in tables for code in table.values()]
+    ends = [c for c in rows if c.role == codes.ROLE_DONE
+            and c.done_word in codes.TIMED_DONE_WORDS]
+    starts = [c for c in rows if c.opens]
+    assert ends and starts
+    for end in ends:
+        assert any(s.opens == end.done_word and s.families & end.families
+                   for s in starts), end
+    for start in starts:
+        assert start.role == codes.ROLE_START, start
+        assert start.opens in codes.TIMED_DONE_WORDS, start

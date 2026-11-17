@@ -185,6 +185,19 @@ ROLE_DETECTION = "detection"
 #: treat it as a litter clean or read its `result` from the litter table.
 DEEP_CLEAN_DONE_WORD = "deep cleaning"
 
+#: The episodes, other than a toilet visit, whose Timeline card carries a
+#: duration: the `done_word` of the report that closes them. A pet drinking
+#: at a fountain and a pet eating at a camera feeder are spans of a pet's
+#: behaviour, the same as a visit; a feed is the motor's, and is not timed.
+#:
+#: `events/sessions.py::_episode_duration` reads them, from the closing
+#: report's own span when it has one, else from the start report of the same
+#: episode (the start that `opens` this word), else from the closing report's
+#: own start against its arrival -- and never from anything else. How far
+#: each source is evidenced is in the rows: the fountain's pair is captured on
+#: both transports, the feeder's eating codes are `inferred`.
+TIMED_DONE_WORDS = frozenset({"drinking", "eating"})
+
 
 @dataclass(frozen=True)
 class EventCode:
@@ -229,6 +242,12 @@ One row per code, carrying everything known about it — which is what
     #: exists for -- the switch-on and the switch-off are byte-identical
     #: payloads and only `state.lightState` tells them apart.
     state_label: tuple[str, str, str] | None = None
+    #: For a `ROLE_START` code: the `done_word` of the completion that closes
+    #: its episode. It is what pairs a start with its end when a card is timed
+    #: (`TIMED_DONE_WORDS`); a start naming nothing is paired with nothing. It
+    #: has to be said per code because kind and role do not separate them: a
+    #: camera feeder's `feed_start` and `eat_start` are both a feeding start.
+    opens: str = ""
 
 
 # --- NS1: HTTP dev_event_report numeric codes ------------------------------
@@ -517,6 +536,7 @@ FEEDER_HTTP_CODES: dict[str, EventCode] = {
     "5": EventCode(
         kind=KIND_FEEDING, label="Eating started", detail=True,
         role=ROLE_START, grade=INFERRED, families=FEEDER_CAMERA,
+        opens="eating",
         note="Snapshot event on a live D4SH (fw 248, HTTP), content "
              "{img, aesKey, mark, start_time} — same shape as codes 7 and 8. "
              "Read as `eat_start` by the device's OWNER from the attached "
@@ -527,7 +547,8 @@ FEEDER_HTTP_CODES: dict[str, EventCode] = {
              "is not literal in the binary, so the number-to-name link is the "
              "owner's, not the RE's. NOTE codes are PER CATEGORY: 5 is "
              "`drink_start` on a fountain and something else again on a litter "
-             "box.",
+             "box. Times the eating card code 6 heads (`opens`): the span "
+             "from this report's arrival to 6's, both of them inferred.",
     ),
     "6": EventCode(
         kind=KIND_FEEDING, label="Eating done", anchor=True,
@@ -544,7 +565,11 @@ FEEDER_HTTP_CODES: dict[str, EventCode] = {
              "drink_start/drink_over, which IS captured. The firmware pack "
              "function exists, but its HTTP event_type is not literal in the "
              "binary. `done_word` is 'eating', so `is_feed_done` does not "
-             "date Last Feed from it.",
+             "date Last Feed from it. Its card's duration is the span back to "
+             "the code 5 of the same event_id, or of the one its "
+             "content.related_event names; without a 5, its own "
+             "start_time/mark against its arrival (5 carries both, 6's "
+             "content is not captured); with neither, none.",
     ),
     "7": EventCode(
         kind=KIND_MOTION, label="Motion detected", anchor=True,
@@ -624,7 +649,7 @@ FOUNTAIN_HTTP_CODES: dict[str, EventCode] = {
     ),
     "5": EventCode(
         kind=KIND_DRINKING, label="Drinking started", detail=True,
-        role=ROLE_START, families=FOUNTAIN_NEXT_GEN,
+        role=ROLE_START, families=FOUNTAIN_NEXT_GEN, opens="drinking",
         note="Confirmed on a W7H (fw 456, HTTP capture). Content "
              "{event_start} matches MQTT drink_start/post shape.",
     ),
@@ -634,7 +659,11 @@ FOUNTAIN_HTTP_CODES: dict[str, EventCode] = {
         note="Confirmed on a W7H (fw 456, HTTP capture). Content "
              "{img, aesKey, mark, start_time, event_start, event_end, "
              "drink_time, media, upload, drinkDetection, pet_id, "
-             "tracker_info, vomit_info} matches MQTT drink_over/post.",
+             "tracker_info, vomit_info} matches MQTT drink_over/post. "
+             "The only drinking report carrying a span of its own, so its "
+             "card is timed event_end - event_start, both the device's "
+             "clock. `drink_time` is not read as one: in the device block "
+             "the same name is a timestamp (state_tables.py).",
     ),
     "12": EventCode(
         kind=KIND_CLEANING, label="Deep clean done", anchor=True,
@@ -843,18 +872,21 @@ MQTT_EVENT_TOPICS: dict[str, EventCode] = {
         families=FEEDER),
     "eat_start": EventCode(
         kind=KIND_FEEDING, label="Eating started", detail=True,
-        role=ROLE_START, families=FEEDER_CAMERA),
+        role=ROLE_START, families=FEEDER_CAMERA, opens="eating"),
     "eat_over": EventCode(
         kind=KIND_FEEDING, label="Eating done", anchor=True, role=ROLE_DONE,
-        done_word="eating", families=FEEDER_CAMERA),
+        done_word="eating", families=FEEDER_CAMERA,
+        note="No content of it is captured here, on either transport. Its "
+             "card is timed as feeder code 6's is: back to the eat_start of "
+             "the same episode, else its own start_time/mark, else not at "
+             "all."),
     # -- fountain
     # CONFIRMED on a real W7H (capture 2026-07-31): two `drink_start` frames,
     # each carrying `content.event_start` and the standard state snapshot. The
-    # matching `drink_over` has still never been seen, so it keeps its grade —
-    # the pair is not evidence for itself.
+    # matching `drink_over` was captured later (see its row).
     "drink_start": EventCode(
         kind=KIND_DRINKING, label="Drinking started", detail=True,
-        role=ROLE_START, families=FOUNTAIN_NEXT_GEN),
+        role=ROLE_START, families=FOUNTAIN_NEXT_GEN, opens="drinking"),
     # CONFIRMED on a real W7H (live log, 2026-08-01), where it arrived one
     # second after a `drink_start`. The meaning is the device's own vocabulary
     # rather than a guess: the reverse-engineered field map names
@@ -874,7 +906,10 @@ MQTT_EVENT_TOPICS: dict[str, EventCode] = {
         families=FOUNTAIN_NEXT_GEN,
         note="188 in one W7H capture (2026-08-11), with content "
              "{event_start, img, aesKey, upload, media, mark}. The note that "
-             "this had never been seen is gone with them."),
+             "this had never been seen is gone with them. No event_end, so "
+             "its card is timed from the drink_start of the same event_id "
+             "(arrival to arrival), else from its own event_start against "
+             "its arrival, which adds the report's latency."),
     # The two water-treatment jobs, from the same capture: 3 and 2 frames,
     # content `{img, aesKey, mark, upload, media, event_start, event_end}` --
     # the `add_water_over` shape, which is what they are siblings of.

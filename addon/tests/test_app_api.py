@@ -770,6 +770,37 @@ async def test_timeline_filters_and_rejects_bad_parameters(ready: Env):
         assert r.status == 400, bad
 
 
+async def test_a_drink_and_a_meal_eaten_carry_their_duration(ready: Env):
+    """Issue #97: only a visit was timed, so the app's fountain page had no
+    drink durations against a real server. A drink is timed from its start
+    report; a dispensed feed is not timed at all."""
+    t = START - 3600
+    for row in (
+        {"device_id": 101, "device_type": "w7h", "event_type": "drink_start",
+         "event_kind": "drinking", "ts": t, "related_event": "d",
+         "content_json": json.dumps({"event_start": t - 3})},
+        {"device_id": 101, "device_type": "w7h", "event_type": "drink_over",
+         "event_kind": "drinking", "ts": t + 24, "related_event": "d",
+         "content_json": json.dumps({"event_start": t - 3, "mark": t - 3})},
+        {"device_id": 102, "device_type": "d4sh", "event_type": "6",
+         "event_kind": "feeding", "ts": t + 600, "related_event": "m",
+         "content_json": json.dumps({"start_time": t + 560})},
+        {"device_id": 102, "device_type": "d4sh", "event_type": "4",
+         "event_kind": "feeding", "ts": t + 1200, "related_event": "f",
+         "content_json": json.dumps({"start_time": t + 1190, "real_amount1": 1,
+                                     "real_amount2": 0, "result": 0})},
+    ):
+        await ready.store.upsert_event({**row, "event_uid": f"{row['related_event']}:"
+                                                            f"{row['event_type']}"})
+    token = await ready.login()
+    items = (await (await ready.get("/timeline", token)).json())["items"]
+    by_type = {i["event_type"]: i for i in items}
+    assert set(by_type) == {"drink_over", "6", "4"}
+    assert by_type["drink_over"]["duration_sec"] == 24
+    assert by_type["6"]["duration_sec"] == 40
+    assert by_type["4"]["duration_sec"] is None
+
+
 async def test_a_pet_shows_its_weight_and_recent_visits(ready: Env):
     pet = await ready.pets.create("Appka", device_ids=[100], weight=4.2)
     now = time.time()
