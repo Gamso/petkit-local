@@ -79,6 +79,86 @@ def _duration_of(anchor: dict, pet_in: dict | None) -> float | None:
     return None
 
 
+#: Where a drinking or eating report says when its episode began, most
+#: specific first. `event_start` is the fountain's own word for it: it is the
+#: whole content of a `drink_start`, and the `drink_over` (MQTT) and code 6
+#: (HTTP) that close the drink carry it again. `start_time` and `mark` are the
+#: episode mark the camera feeder's snapshot codes carry (code 5 has both, and
+#: they agree on every capture that has the two).
+_EPISODE_START_KEYS = ("event_start", "start_time", "mark")
+
+
+def _code_of(event: dict) -> codes.EventCode | None:
+    """The row's `EventCode`, read in its own device's category."""
+    return codes.lookup(event.get("event_type"), event.get("device_type"))
+
+
+def _content_start(event: dict) -> float | None:
+    """When the episode began, by the report's own content; None if unsaid."""
+    content = _content_of(event)
+    for key in _EPISODE_START_KEYS:
+        value = to_float(content.get(key), None)
+        if value is not None and value > 0:
+            return value
+    return None
+
+
+def _opening_report(end: dict, word: str, candidates: list[dict]) -> dict | None:
+    """The start report that opened the episode `end` closes, if one arrived.
+
+    Paired by `EventCode.opens`, never by kind and role alone: a camera
+    feeder's `feed_start` is a feeding start too, and timing a cat's meal from
+    the motor starting would be a different number with the same name.
+    """
+    starts = []
+    for e in candidates:
+        code = _code_of(e)
+        ts = to_float(e.get("ts"), None)
+        if (e is not end and code is not None and code.role == codes.ROLE_START
+                and code.opens == word and ts is not None
+                and e.get("device_id") == end.get("device_id")):
+            starts.append((ts, e))
+    return min(starts, key=lambda pair: pair[0])[1] if starts else None
+
+
+def _episode_duration(end: dict, candidates: list[dict]) -> float | None:
+    """How long a pet drank or ate, for the card `end` heads; None if unknown.
+
+    Only a report that CLOSES a timed episode (`codes.TIMED_DONE_WORDS`) has
+    one -- a card headed by its start report, because the end never arrived,
+    has nothing to measure to. Three sources, best first:
+
+    1. the closing report's own span, `event_end` minus its start -- both the
+       device's clock, so no report latency in it (a W7H's HTTP code 6);
+    2. the start report of the same episode among `candidates`: the end's
+       arrival minus the start's, the same pairing a visit falls back to;
+    3. the closing report's own start against its arrival, when the start
+       report is missing. That includes the report's latency (a few seconds),
+       which is an overstatement, not a guess.
+
+    Nothing else: with no start at all the duration stays None. A negative
+    span means the clocks disagree and is None too, rather than a 0 nobody
+    measured.
+    """
+    code = _code_of(end)
+    if (code is None or code.role != codes.ROLE_DONE
+            or code.done_word not in codes.TIMED_DONE_WORDS):
+        return None
+    began = _content_start(end)
+    ended = to_float(_content_of(end).get("event_end"), None)
+    arrived = to_float(end.get("ts"), None)
+    start = _opening_report(end, code.done_word, candidates)
+    if began is not None and ended is not None and ended > 0:
+        span = ended - began
+    elif start is not None and arrived is not None:
+        span = arrived - to_float(start.get("ts"), 0.0)
+    elif began is not None and arrived is not None:
+        span = arrived - began
+    else:
+        return None
+    return span if span >= 0 else None
+
+
 def _started_at(anchor: dict, pet_in: dict | None) -> float | None:
     """When the visit BEGAN, for display. Same source order as `_duration_of`.
 
@@ -304,11 +384,16 @@ def _cards_from_episodes(by_related: dict[str, list[dict]],
         used_ids.add(anchor["id"])
         session = _session_from_visit(anchor, pet_in, anchor.get("media") or [])
         if not is_visit:
-            # An "appeared" or error card: no duration and no weighing, just
-            # the event and whatever it recorded.
+            # An "appeared", error, feeding or drinking card: no weighing.
+            # Only a drink or a meal eaten is timed (`_episode_duration`); its
+            # start is looked for in the episode, and in the one the end's
+            # own link names -- a camera feeder's eating end is reported to
+            # name its start that way (codes.py, feeder code 6).
             kind = anchor.get("event_kind") or codes.KIND_PET
+            candidates = group + by_related.get(anchor.get("parent_event") or "", [])
             session.update(kind=kind, event_kind=kind,
-                           duration_sec=None, weight=None)
+                           duration_sec=_episode_duration(anchor, candidates),
+                           weight=None)
         # Every OTHER member of the episode is a step of this card. Marking
         # them used without rendering them — which is what this did — silently
         # discarded all 23 mid-visit weight samples in the reference corpus,
@@ -464,7 +549,9 @@ def _standalone_rows(events: list[dict], used_ids: set) -> list[dict]:
             "pet_id": e.get("pet_id"),
             "event_type": e.get("event_type"),
             "event_kind": e.get("event_kind"),
-            "duration_sec": None,
+            # A drink or a meal that reported no episode id can still say
+            # when it began in its own content.
+            "duration_sec": _episode_duration(e, []),
             "weight": None,
             "content": _content_of(e),
             "state": state_of_row(e),

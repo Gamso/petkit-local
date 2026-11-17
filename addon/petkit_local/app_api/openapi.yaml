@@ -1606,7 +1606,20 @@ components:
           oneOf:
             - { $ref: "#/components/schemas/PetRef" }
             - { type: "null" }
-        duration_sec: { type: [integer, "null"] }
+        duration_sec:
+          type: [integer, "null"]
+          minimum: 0
+          description: |
+            How long the episode lasted, in whole seconds. Set on three kinds of card:
+            a toilet visit (`visit`), a drink (`event_kind` `drinking`, closed by a
+            fountain's drinking-done report) and a meal eaten at a camera feeder
+            (`event_kind` `feeding`, closed by an eating-done report). A drink or a meal
+            eaten is measured from the device's own start and end when its closing
+            report carries both; otherwise from its start report to its end report;
+            otherwise from the start the closing report states to when it arrived,
+            which adds a few seconds of report latency. Null when the start is not
+            known at all, on a card whose end never arrived, and on every other card,
+            a dispensed feed included. Never estimated.
         weight_g: { type: [integer, "null"] }
         facts:
           type: array
