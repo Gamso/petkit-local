@@ -29,7 +29,7 @@ from petkit_local.ai.pets import learned_weight_in_use, pet_weight_grams, refere
 from petkit_local.devices.base import Device
 from petkit_local.devices.ble import BLEDevice
 from petkit_local.events import decode
-from petkit_local.events.sessions import content_of_row, session_filters
+from petkit_local.events.sessions import content_of_row, served_amounts, session_filters
 from petkit_local.ha.commands import DESTRUCTIVE_ACTIONS, device_actions
 from petkit_local.ha.discovery import EntityDef
 from petkit_local.ha.schedules import is_dual_hopper
@@ -346,7 +346,8 @@ def timeline_item(session: dict[str, Any], device_type: str | None,
     """One card of the timeline: a grouped session (`events/sessions.py`).
 
     `label` is None for a visit, whose card the app builds from `pet`,
-    `duration_sec` and `weight_g`, exactly as the panel does.
+    `duration_sec` and `weight_g`, exactly as the panel does. `served` is a
+    finished feed's output, so the app need not read each meal's event for it.
     """
     content = session.get("content") or {}
     weight = to_float(session.get("weight"), None)
@@ -367,6 +368,7 @@ def timeline_item(session: dict[str, Any], device_type: str | None,
         "pet": pet_ref(pets, session.get("pet_id")),
         "duration_sec": round(duration) if duration is not None else None,
         "weight_g": round(weight) if weight is not None else None,
+        "served": served_amounts(session, device_type),
         "facts": decode.summary_bits(session.get("event_type"), content),
         "media": media_slots(session.get("media") or [], media_root),
         "steps": [{
