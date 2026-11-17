@@ -28,6 +28,9 @@ Two fields must come from the device rather than from us, and both are why
 What this is NOT allowed to become: a poller. Every call here is a button in
 the panel. The add-on talking to PetKit on its own schedule is the thing proxy
 mode already avoids by only ever relaying what a device sent anyway.
+`x_device_header` is also what `http/presence.py` signs the opt-in keep-online
+heartbeat with — the one request that is neither a button nor a relay, and is
+paced by the device's own MQTT packets rather than by any timer.
 """
 from __future__ import annotations
 

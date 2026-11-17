@@ -50,8 +50,9 @@ from typing import TYPE_CHECKING, Any
 from aiohttp import web
 
 from petkit_local.devices.base import QUEUED_AT_KEY
-from petkit_local.http.appkeys import EVENT_HUB
+from petkit_local.http.appkeys import EVENT_HUB, REGISTRY
 from petkit_local.http.handlers._common import request_device
+from petkit_local.http.presence import remember_heartbeat
 from petkit_local.utils.coerce import to_bool
 
 if TYPE_CHECKING:
@@ -311,6 +312,27 @@ def note_iot_status(device: Device, request: web.Request) -> None:
                     f"no MQTT session (device reports iotStatus={raw})")
 
 
+async def _remember_shape(device: Device, request: web.Request) -> None:
+    """Record this heartbeat for the keep-online feature (`http/presence.py`).
+
+    The device stops sending it once it is on MQTT, so the last one seen here
+    is what PetKit is sent in its name later. Persisted when its shape changes.
+    Never fails the poll: a heartbeat that cannot be recorded is still answered.
+    """
+    try:
+        body = await request.read()
+    except Exception:
+        body = b""
+    try:
+        if remember_heartbeat(device, request, body):
+            registry = request.app.get(REGISTRY)
+            if registry is not None:
+                registry.mark_dirty()
+    except Exception:
+        log.debug("Could not record the heartbeat shape of device %d",
+                  device.petkit_id, exc_info=True)
+
+
 async def handle_heartbeat(request: web.Request) -> web.Response:
     """Answer the device's poll, delivering any commands queued for it.
 
@@ -339,6 +361,9 @@ async def handle_heartbeat(request: web.Request) -> web.Response:
     if device:
         device.last_heartbeat = time.time()
         note_iot_status(device, request)
+        # Before `pop_commands`, like the line above: the read is the cached
+        # payload, but it is an await, and nothing may await after the pop.
+        await _remember_shape(device, request)
 
         cmds = still_wanted(device, device.pop_commands(),
                             request.app.get(EVENT_HUB))

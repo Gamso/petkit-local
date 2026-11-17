@@ -22,10 +22,14 @@ from petkit_local.ai.pets import (
     LEARNED_WEIGHT_MIN_SAMPLES, WEIGHT_MATCH_SETTINGS, clamp_weight_setting,
 )
 from petkit_local.events.store import WEIGHT_MEDIAN_SAMPLES
+from petkit_local.http.presence import (
+    MIN_INTERVAL_SECONDS, blocker, heartbeat_request,
+)
+from petkit_local.http.presence import SETTING as KEEP_ONLINE
 from petkit_local.http.proxy import DEFAULT_UPSTREAM, UPSTREAM_PRESETS
 from petkit_local.utils.coerce import to_int
 from petkit_local.utils.const import (
-    DEVICE_NAMES, DEVICE_TYPES_AI, VERSION,
+    DEVICE_NAMES, DEVICE_TYPES_AI, VERSION, device_display_name,
 )
 from petkit_local.utils.jsonio import atomic_write_json, read_json
 from petkit_local.web.api._common import MAX_EVENT_LIMIT, _json_body, _limit_param, _live
@@ -58,6 +62,7 @@ LIVE_SETTINGS = {
     "proxy_media_real_oss": bool,
     "proxy_local_cvr_window": bool,
     "proxy_mqtt_bridge": bool,
+    "proxy_keep_online": bool,
     "proxy_only": str,
     "capture": bool,
     **dict.fromkeys(WEIGHT_MATCH_SETTINGS, int),
@@ -76,6 +81,9 @@ LIVE_SETTING_DEFAULTS = {
     "proxy_media_real_oss": False,
     "proxy_local_cvr_window": False,
     "proxy_mqtt_bridge": True,
+    # Off: the one setting that has the add-on reach PetKit unprompted
+    # (`http/presence.py`), so it is never on by surprise.
+    "proxy_keep_online": False,
     "proxy_only": "",
     "capture": False,
     **{key: default for key, (_low, _high, default) in WEIGHT_MATCH_SETTINGS.items()},
@@ -333,7 +341,39 @@ async def api_info(request: web.Request) -> web.Response:
         # anything?", which nothing else answers once a taken-over device
         # settles into polling only the heartbeat.
         "upstream": request.app[HUB].upstream_counts(),
+        "presence": _presence(request),
+        # So the switch's warning states the pace the sender actually keeps.
+        "presence_interval": MIN_INTERVAL_SECONDS,
     })
+
+
+def _presence(request: web.Request) -> list[dict[str, Any]]:
+    """One row per device the keep-online heartbeat has served or would serve.
+
+    A device is listed once a heartbeat has been sent for it, or while the
+    switch is on and it is on local MQTT — then with `waiting` saying what is
+    missing (`presence.blocker`, the same check the sender makes), so "nothing
+    is happening" always comes with a reason. `shape` says whether the request
+    is the device's own recorded heartbeat or the default guess.
+    """
+    live = _live(request)
+    stats = request.app[HUB].presence_stats()
+    rows = []
+    for device in request.app[REGISTRY].all():
+        sent = stats.get(device.petkit_id)
+        if sent is None and not (live.get(KEEP_ONLINE) and device.mqtt_connected):
+            continue
+        rows.append({
+            "device_id": device.petkit_id,
+            "device_type": device.device_type,
+            "name": device_display_name(device.device_type),
+            "count": 0, "withheld": 0, "last_at": None, "last_status": None,
+            "last_outcome": None, "last_error": None,
+            **(sent or {}),
+            "shape": heartbeat_request(device)["shape"],
+            "waiting": blocker(live, device),
+        })
+    return rows
 
 
 def _upstream_choices() -> list[dict[str, str | bool]]:

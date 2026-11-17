@@ -32,7 +32,8 @@ petkit_local/
 │   ├── proxy.py       upstream session + forward()
 │   ├── bucket.py      unauthenticated OSS sink, listening on 0.0.0.0
 │   ├── dns.py         resolver for upstream lookups only
-│   └── cloud_fetch.py signs as the device to ask PetKit something directly
+│   ├── cloud_fetch.py signs as the device to ask PetKit something directly
+│   └── presence.py    proxy mode's opt-in keep-online heartbeat, paced by MQTT packets
 ├── mqtt/          broker.py (amqtt) · auth.py (Aliyun HMAC) · topics.py
 │                  bridge.py (device <-> us) · ble_relay.py (accessories through a parent)
 │                  upstream.py (us <-> real Aliyun)
@@ -165,6 +166,16 @@ device --HTTP--> http/server.py          route table; /{path:.*} is registered L
 
 That the local handler runs even in proxy mode is deliberate: it is what makes "the upstream is
 unreachable, slow, or refuses this device" a non-event rather than an outage.
+
+Proxy mode only relays what a device sends, so a device that moves to MQTT stops being heard over
+HTTP — and PetKit's app, which judges "online" by the HTTP heartbeat, then shows it disconnected.
+The opt-in **keep-online heartbeat** (`http/presence.py`, the Setup switch "Keep online in PetKit's
+app") fills that one gap: `handlers/heartbeat.py` records each heartbeat a device sends, and once
+the device is on our broker, `mqtt/auth.py::on_mqtt_packet_received` hands every packet it sends to
+`CloudPresence`, which replays that heartbeat upstream signed as the device (`cloud_fetch.py`'s
+`X-Device`), at most once per 30s. It is the only request to PetKit that a device did not make and
+no button asked for, and it is paced by the device, never by a timer. The reply is redacted and
+recorded for the panel like a proxied one, then dropped: the device never sees it.
 
 A command for a device on this transport waits in `Device.command_queue` until the device polls
 `dev_heartbeat` and is handed it in the reply.
