@@ -1464,6 +1464,84 @@ async def test_the_panel_shows_both_clocks():
         await c.close()
 
 
+# --- a K3 reports through its parent, and only through it --------------------
+
+async def test_a_k3_reading_moves_its_last_seen_on_either_transport():
+    """Its parent's state report IS its reading: the panel said "never" for a
+    spray whose battery and liquid had been arriving all along."""
+    from petkit_local.mqtt.ble_relay import update_linked_k3
+
+    reg = DeviceRegistry()
+    parent = reg.get_or_create(petkit_id=10, device_type="t4", serial_number="SN10")
+    ble = BLERegistry()
+    ble.register(ble_type="k3", petkit_id=555, mac="A4C138DDEEFF", link_with=10)
+    bridge = MQTTBridge(reg, _FakePublisher(), ble)
+
+    # MQTT: the T4's own property post, as captured (battery 90, liquid 50).
+    await bridge._handle_event(parent, "property", {"params": {
+        "k3Id": 555, "liquid": 50, "battery": 90, "device": {"k3LightSwitch": 0}}})
+    first = ble.get(555).last_seen
+    assert first > 0
+    assert ble.get(555).last_heard == 0.0, "a K3 sends no frame of its own"
+
+    # HTTP: the same keys at the top of a state report.
+    ble.get(555).last_seen = 0.0
+    assert update_linked_k3(parent, {"battery": 89}, ble) is not None
+    assert ble.get(555).last_seen > 0
+
+    # A report without them says nothing about the spray.
+    ble.get(555).last_seen = 0.0
+    assert update_linked_k3(parent, {"sandPercent": 40}, ble) is None
+    assert ble.get(555).last_seen == 0.0
+
+
+async def test_a_k3_is_never_asked_for_a_reading_even_on_request():
+    """`request_ble_reading` bypassed the rule the periodic poll keeps, and
+    "Read now" on a K3 pushed `connect` with `type: 0` (seen on a T4)."""
+    bridge, reg, ble = _t4_with_ctw3()
+    ble.register(ble_type="k3", petkit_id=555, mac="A4C138DDEEFF", link_with=10)
+    assert await bridge.request_ble_reading(reg.get(10), ble.get(555)) is False
+    assert bridge._client.sent == []
+
+    # Nor is an accessory through a parent that does not relay it.
+    reg.get_or_create(petkit_id=11, device_type="t4", serial_number="SN11")
+    assert await bridge.request_ble_reading(reg.get(11), ble.get(700)) is False
+    assert bridge._client.sent == []
+
+    # Its own parent still asks for it.
+    assert await bridge.request_ble_reading(reg.get(10), ble.get(700)) is True
+    assert _services(bridge) == ["connect"]
+
+
+async def test_read_now_on_a_k3_is_refused_with_the_reason():
+    from petkit_local.web import appkeys as panel_keys
+
+    app, reg, ble = _panel()
+    parent = reg.get_or_create(petkit_id=10, device_type="t4", serial_number="SN10")
+    parent.mqtt_connected = True
+    ble.register(ble_type="k3", petkit_id=555, mac="A4C138DDEEFF", link_with=10)
+
+    class _Bridge:
+        _client = object()
+        asked = False
+
+        async def request_ble_reading(self, parent, dev):
+            _Bridge.asked = True
+            return True
+
+    app[panel_keys.BRIDGE] = _Bridge()
+    c = await _client(app)
+    try:
+        r = await c.post("/api/ble/555/poll")
+        assert r.status == 409
+        assert "reports inside its parent" in (await r.json())["error"]
+        assert _Bridge.asked is False
+        row = (await (await c.get("/api/ble")).json())["accessories"][0]
+        assert row["reports_via_parent"] is True
+    finally:
+        await c.close()
+
+
 def test_a_read_is_not_a_write_and_a_write_is_not_a_read():
     """Two sets, two builders: a read sent through the write path would open a
     session first, and a write sent as a read would go out with no payload."""

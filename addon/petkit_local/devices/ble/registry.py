@@ -176,6 +176,17 @@ class BLEDevice:
         return self.scan_type or BLE_TYPE_MAP.get(self.ble_type, 0)
 
     @property
+    def reports_via_parent(self) -> bool:
+        """Whether this accessory's readings ride on its parent's own report.
+
+        A K3: its `battery` and `liquid` arrive in the parent's state report
+        over either transport (`mqtt/ble_relay.py::update_linked_k3`), and it
+        sends no frame of its own — so there is nothing to ask it for and no
+        relay session to open, and its `last_seen` is its parent's report.
+        """
+        return self.ble_type == "k3"
+
+    @property
     def scan_type_is_guessed(self) -> bool:
         """Whether this accessory is being scanned for on an invented number."""
         return not self.scan_type and self.ble_type not in BLE_TYPE_CONFIRMED \

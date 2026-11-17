@@ -96,6 +96,9 @@ def _ble_view(dev: BLEDevice, reg: DeviceRegistry | None = None) -> dict[str, An
         # but has never reported is the case the second one exists for.
         "last_seen": dev.last_seen,
         "last_heard": dev.last_heard,
+        # A K3: it has no relay session to read, and `last_seen` is when its
+        # parent last reported it.
+        "reports_via_parent": dev.reports_via_parent,
         "entities": [{
             "component": e.component, "key": e.key, "name": e.name,
             "value_path": e.value_path, "unit": e.unit, "device_class": e.device_class,
@@ -479,6 +482,14 @@ async def api_ble_poll(request: web.Request) -> web.Response:
     dev = ble.get(to_int(request.match_info.get("id"), 0) or 0)
     if dev is None:
         return web.json_response({"error": "not found"}, status=404)
+    if dev.reports_via_parent:
+        # Before any transport check: no parent and no transport would make
+        # this one work. A `connect` for a K3 asks the parent to scan for a
+        # device it was never told to relay.
+        return web.json_response(
+            {"error": f"a {device_display_name(dev.ble_type)} has nothing to read on its own: "
+                      f"it reports inside its parent's state, on the parent's schedule"},
+            status=409)
     parent = reg.get(dev.link_with) if dev.link_with else None
     if parent is None:
         return web.json_response(

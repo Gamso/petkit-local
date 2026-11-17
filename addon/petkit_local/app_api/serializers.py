@@ -142,8 +142,8 @@ def accessory_summary(a: BLEDevice, parent: Device | None) -> dict[str, Any]:
     It has no network identity of its own (`devices/ble/registry.py`): it is
     reachable while its parent is, over whichever transport the parent uses,
     and has no firmware version we know. `last_seen` is its own — when a frame
-    from it last decoded — and stays null for a K3, whose readings ride on its
-    parent's reports rather than arriving as frames.
+    from it last decoded, or for a K3, whose readings ride on its parent's
+    reports rather than arriving as frames, when that report last carried them.
     """
     return {
         "id": a.petkit_id,

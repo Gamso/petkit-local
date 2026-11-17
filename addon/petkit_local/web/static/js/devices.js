@@ -174,9 +174,30 @@ onToggle('acc-panel', el => {
 // pairing (scan type, MAC, relay list), heard but never read is what happens
 // once the link is up — a fountain that answers its parent and has not
 // reported yet is the case that used to look exactly like one never paired.
+//
+// A K3 has only the second: it sends no frame of its own, and its reading is
+// whatever its parent's last state report carried.
 function accClocks(a) {
+  if (a.reports_via_parent) return 'last reading ' + relTime(a.last_seen) + ' (via its parent)';
   const heard = a.last_heard ? 'heard ' + relTime(a.last_heard) : 'never heard';
   return heard + ' · last reading ' + relTime(a.last_seen);
+}
+
+// "Read now" asks the parent to open a Bluetooth session, which is meaningless
+// for a K3: it is in no relay list, and its battery and liquid already arrive
+// inside the parent's own state report, over either transport.
+function accActions(a, actions) {
+  if (a.reports_via_parent)
+    return `<div class="card"><h3>Actions</h3><p class="mut" style="margin:0">Nothing to read on its own: a ${esc(a.name)} reports inside ${esc(a.parent_name || 'its parent')}’s state, on the parent’s schedule.</p></div>`;
+  return `<div class="card"><h3>Actions${help(
+    'Read now is about the relay rather than the accessory: it speaks only when its parent is told to open a Bluetooth session, and otherwise that happens on a timer up to the poll interval away. The rest are the accessory’s own — a filter reset carries no settings and is the one write that works before it has ever reported.',
+  )}</h3>
+    <div><button class="act" data-action="ble-read-now" data-id="${esc(a.petkit_id)}">Read now</button>${actions
+      .map(
+        e =>
+          `<button class="act" data-action="press-entity" data-id="${esc(a.petkit_id)}" data-key="${esc(e.key)}" data-kind="ble" data-name="${esc(e.name)}">${esc(e.name)}</button>`,
+      )
+      .join('')}</div></div>`;
 }
 
 // `linkBadge`'s two answers — MQTT or HTTP heartbeat — are both untrue of an
@@ -205,7 +226,7 @@ function accBody(a) {
     <div><div class="m-k">Bluetooth address</div><div class="m-v"><code>${esc(a.mac)}</code></div></div>
     <div><div class="m-k">Relayed by</div><div class="m-v">${a.parent_name ? esc(a.parent_name) + ' #' + esc(a.link_with) : '—'}</div></div>
     <div><div class="m-k">Serial</div><div class="m-v">${esc(a.serial_number || '—')}</div></div>
-    <div><div class="m-k">Last heard</div><div class="m-v">${esc(relTime(a.last_heard))}</div></div>
+    <div><div class="m-k">Last heard</div><div class="m-v">${a.reports_via_parent ? 'through its parent' : esc(relTime(a.last_heard))}</div></div>
     <div><div class="m-k">Last reading</div><div class="m-v">${esc(relTime(a.last_seen))}</div></div>
     <div><div class="m-k">Poll interval</div><div class="m-v">${esc(a.interval)}s</div></div>
     <div><div class="m-k">Scan type</div><div class="m-v">${esc(a.wire_entry ? a.wire_entry.type : '—')}</div></div>
@@ -219,15 +240,7 @@ function accBody(a) {
     and please say which value worked.</p></div>`
       : ''
   }
-  <div class="card"><h3>Actions${help(
-    'Read now is about the relay rather than the accessory: it speaks only when its parent is told to open a Bluetooth session, and otherwise that happens on a timer up to the poll interval away. The rest are the accessory’s own — a filter reset carries no settings and is the one write that works before it has ever reported.',
-  )}</h3>
-    <div><button class="act" data-action="ble-read-now" data-id="${esc(a.petkit_id)}">Read now</button>${actions
-      .map(
-        e =>
-          `<button class="act" data-action="press-entity" data-id="${esc(a.petkit_id)}" data-key="${esc(e.key)}" data-kind="ble" data-name="${esc(e.name)}">${esc(e.name)}</button>`,
-      )
-      .join('')}</div></div>
+  ${accActions(a, actions)}
   ${
     sensors.length
       ? `<div class="card"><h3>State</h3>

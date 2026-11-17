@@ -92,6 +92,10 @@ def update_linked_k3(device: "Device", params: dict,
     only one of them works on whichever frames happen to carry it and
     silently does nothing on the other.
 
+    A reading that arrives here is the K3's reading, so it moves the K3's own
+    `last_seen` — the only clock it has, since it never sends a frame of its own
+    and so is never "heard" (`BLEDevice.reports_via_parent`).
+
     Returns:
         The K3 BLEDevice if anything changed (the caller re-publishes it to
         HA), else None.
@@ -112,6 +116,7 @@ def update_linked_k3(device: "Device", params: dict,
 
     if not updated:
         return None
+    k3.last_seen = time.time()
     ble_registry.mark_dirty()
     log.info("Updated K3 (id=%d) from parent device %d: battery=%s liquid=%s",
              k3.petkit_id, device.petkit_id,
@@ -281,8 +286,16 @@ class BLERelay:
         making them wait up to four minutes for the timer is the opposite of an
         answer. The throttle is then re-armed so the periodic loop does not
         immediately ask again.
+
+        Held to the poll's own rule (`non_k3_for_parent`): only an accessory in
+        this parent's relay list is asked for. A K3 is in no relay list — a
+        `connect` for one names `type: 0`, a scan for a device the parent was
+        never told about — and it reports inside its parent's state anyway.
         """
-        if not self._bridge.connected:
+        if not self._bridge.connected or not self._ble_registry:
+            return False
+        relayed = {b.petkit_id for b in self._ble_registry.non_k3_for_parent(device.petkit_id)}
+        if ble.petkit_id not in relayed:
             return False
         await self._ble_connect(device, ble, action=1)
         self._ble_poll_ts[ble.petkit_id] = time.time()

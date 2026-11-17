@@ -136,7 +136,7 @@ async def test_accessories_are_listed_as_devices_linked_both_ways(a: AccessoryEn
         ("ble", 300, "purifier", "k3")
     assert k3["model"] == "Pura Air K3"
     assert k3["firmware"] is None and k3["is_camera"] is False and k3["accessories"] == []
-    # A K3's readings ride on its parent's reports: no frame, no last_seen.
+    # Its parent has not reported it yet, and it sends nothing of its own.
     assert k3["last_seen"] is None
 
     orphan = devices[ORPHAN_ID]
