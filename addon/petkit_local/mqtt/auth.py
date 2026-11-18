@@ -176,9 +176,9 @@ class AliyunAuthPlugin(BaseAuthPlugin):
         # fail-open so a sign/algorithm mismatch never blocks a real device;
         # set strict=True to actually enforce.
         self._strict = False
-        #: petkit_id -> the Session we last accepted for it. Only used to tell a
-        #: take-over's teardown apart from a real disconnect; see
-        #: `on_broker_client_disconnected`.
+        #: petkit_id -> the Session we last accepted for it: whose packets stamp
+        #: liveness, and whose end is a real disconnect rather than a replaced
+        #: connection's; see `on_broker_client_disconnected`.
         self._live_sessions: dict[int, Session] = {}
         #: `http/presence.py::CloudPresence`, told of every packet a device
         #: sends so the opt-in keep-online heartbeat follows the device's own
@@ -425,12 +425,17 @@ class AliyunAuthPlugin(BaseAuthPlugin):
         reachable over HTTP, and `devices/liveness.py::offline_watchdog` owns
         that flag.
 
-        The session check is not defensive noise: a device that reconnects while
-        the broker still holds its old session triggers amqtt's take-over, which
-        authenticates the NEW session first and only then tears the old one down
-        (`Broker._handle_client_session`). Both carry the same client id, so
-        without comparing the objects this hook would clear the flag it had just
-        set and leave a live device permanently on the slow path.
+        The session check is not defensive noise. A device that reconnects
+        under the client id of a connection that is still open — a patched
+        ESP32 does, its SDK sends a fixed `timestamp=` — is authenticated
+        BEFORE the connection it replaces is torn down, and both carry the same
+        client id; without comparing the objects this hook would clear the flag
+        it had just set. It is not the whole answer, though: on a resumed
+        session amqtt hands the new connection the old `Session` OBJECT, so the
+        objects compare equal too. `mqtt/broker.py::DeviceBroker` therefore
+        keeps a replaced connection's teardown from firing this hook at all; the
+        comparison is what still covers a clean CONNECT, whose superseded
+        `Session` is a different object.
         """
         device = self._device_for_client(client_id)
         if device is None or not device.mqtt_connected:
@@ -546,8 +551,10 @@ class AliyunAuthPlugin(BaseAuthPlugin):
             # uses it verbatim as the read timeout, and 0 means "wait forever",
             # which leaves a rebooted device's socket ESTABLISHED for the life of
             # the process. Observed on a T5 whose reconnect made a second
-            # session rather than a take-over — the client id carries a
-            # timestamp, so a returning device is never the same client.
+            # session rather than a take-over — its client id carries the real
+            # time, so a returning T5 is never the same client. (A patched
+            # ESP32's carries a fixed one, and its reconnect IS a take-over;
+            # `broker.DeviceBroker` closes the connection it replaces.)
             log.info("MQTT auth OK: %s (device id=%d, %s, keep_alive=%ss)",
                      dn, device.petkit_id, signmethod,
                      getattr(session, "keep_alive", "?"))
