@@ -32,7 +32,6 @@ from petkit_local.http.appkeys import (
     BACKGROUND_TASKS, BLE_REGISTRY, EVENT_HUB, EVENT_STORE, HA_PUBLISHER, ON_DEVICE_SEEN, ON_SIGNUP,
     ON_STATE_REPORT, PET_REGISTRY, PROXY_UPSTREAM_CREDS,
 )
-from petkit_local.http.presence import CloudPresence
 from petkit_local.http.redact import RedactionPolicy
 from petkit_local.http.server import create_app
 from petkit_local.media.crypto import resolve_key_string
@@ -79,7 +78,6 @@ class Services:
     ha_addon: bool
     no_mqtt: bool
     notifier: Notifier | None = None
-    cloud_presence: CloudPresence | None = None
 
 
 async def _republish_camera_state(ha_publisher: HAPublisher | None,
@@ -278,13 +276,6 @@ def build_services(config: Config, args: argparse.Namespace) -> Services:
         app[ON_STATE_REPORT] = partial(_on_state_report, ha_publisher, ble_registry)
 
     app[ON_SIGNUP] = partial(_on_signup, ha_publisher)
-
-    # Proxy mode's opt-in keep-online heartbeat (`http/presence.py`). Built
-    # whatever the setting: it reads the live config on every packet, so the
-    # panel switch takes effect without a restart. Only the broker drives it.
-    cloud_presence = None if args.no_mqtt else CloudPresence(
-        app, app_config, policy_factory=partial(_proxy_policy, app_config),
-        hub=hub, event_store=event_store)
     app[ON_DEVICE_SEEN] = partial(_on_device_seen, ha_publisher)
 
     cert_path = config.mqtt_cert or f"{config.data_dir}/certs/broker.crt"
@@ -315,7 +306,6 @@ def build_services(config: Config, args: argparse.Namespace) -> Services:
         go2rtc=go2rtc,
         app_auth=app_auth,
         notifier=notifier,
-        cloud_presence=cloud_presence,
         app_config=app_config,
         media_root=media_root,
         cert_path=cert_path,

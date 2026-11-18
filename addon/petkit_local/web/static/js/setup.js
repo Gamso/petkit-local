@@ -1,6 +1,6 @@
 import { loadAppAccess } from './appaccess.js';
 import { loadAppNotify } from './appnotify.js';
-import { api, esc, relTime, toast } from './core.js';
+import { api, esc, toast } from './core.js';
 import { onAction, onChange } from './delegate.js';
 import { help } from './help.js';
 
@@ -122,13 +122,10 @@ async function loadSetup() {
       ${guard('proxy_block_ota', 'proxy_block_ota' in s ? s.proxy_block_ota : true, 'Block OTA push <span class="badge warn">firmware guard</span>', 'answer the OTA endpoints locally; drop firmware images found elsewhere')}
       ${guard('proxy_block_log_upload', 'proxy_block_log_upload' in s ? s.proxy_block_log_upload : true, 'Block log upload <span class="badge warn">privacy</span>', 'withhold the token the device needs to send its debug log to PetKit')}
       ${guard('proxy_mqtt_bridge', 'proxy_mqtt_bridge' in s ? s.proxy_mqtt_bridge : true, 'Upstream MQTT bridge', 'also bridge the device’s MQTT session to the real Aliyun broker')}
-      ${guard('proxy_keep_online', !!s.proxy_keep_online, `Keep online in PetKit’s app ${help(keepOnlineWarning(i.presence_interval))}`, 'a device on local MQTT stops its HTTP heartbeat, and PetKit’s app then calls it offline — this sends that heartbeat for it')}
-      <p class="ctrl-warn${on ? '' : ' disabled'}"><span class="badge warn">warning</span> ${esc(keepOnlineWarning(i.presence_interval))}</p>
       ${guard('proxy_media_real_oss', !!s.proxy_media_real_oss, 'Media → real OSS', 'let the device upload recordings to PetKit instead of us — nothing lands locally')}
       ${guard('proxy_local_cvr_window', !!s.proxy_local_cvr_window, 'Keep recording locally', 'ignore the cloud’s subscription window and tell the camera its storage is active — a lapsed PetKit plan otherwise stops recording with no error anywhere')}
     </div>
     ${on ? upstreamStatus(i.upstream || {}) : ''}
-    ${on ? presenceStatus(i.presence || []) : ''}
     ${on ? `<div id="blockedView" style="margin-top:14px"></div>` : ''}
   </div>
   <div class="card" id="appAccessView">…</div>
@@ -269,50 +266,6 @@ function upstreamStatus(counts) {
       '<p class="sub mut">The cloud is refusing every session-bearing call — expected once this app ' +
       'has taken the device over, since the session it presents is one we issued. The device is served our own answers throughout.</p>';
   return html;
-}
-
-// The keep-online switch's warning, shown beside it and in its `?`. One
-// string, so the two can never say different things.
-function keepOnlineWarning(interval) {
-  const every = Math.round(interval || 30);
-  return (
-    'While a device is on local MQTT, petkit-local sends PetKit a heartbeat in that device’s name, ' +
-    'signed with the device’s real credentials. It is sent only when the device itself is active on the ' +
-    `local broker — never on a timer of its own — and at most once per device every ${every} s. ` +
-    'PetKit then sees the device online and may send it commands through the upstream MQTT bridge, ' +
-    'still subject to the guards here (OTA blocked, run_cmd stripped…). Turning this off stops it at once. ' +
-    'It does nothing unless proxy mode is on, the device is on local MQTT and its real API secret has been adopted.'
-  );
-}
-
-// One line per device the keep-online heartbeat serves: "Kept online for Pura
-// Max · last heartbeat 40s ago · 200", or what it is waiting for.
-function presenceStatus(rows) {
-  if (!rows.length) return '';
-  return rows
-    .map(r => {
-      const who = `${esc(r.name && r.name !== 'Unknown' ? r.name : r.device_type)} <span class="mut">(${esc(r.device_id)})</span>`;
-      const shape =
-        r.shape === 'default'
-          ? ' <span class="badge warn" title="No HTTP heartbeat from this device seen yet; restart it once so its own is recorded">default request shape</span>'
-          : '';
-      const waiting = r.waiting ? ` · <span class="badge">waiting: ${esc(r.waiting)}</span>` : '';
-      if (!r.count)
-        return `<p class="sub" style="margin-top:6px">Keep-online for ${who}: nothing sent yet${waiting}${shape}</p>`;
-      const ok = r.last_outcome === 'ok';
-      const status =
-        r.last_status == null
-          ? `<span class="badge bad">${esc(r.last_outcome)}</span>`
-          : `<span class="badge ${ok ? 'ok' : 'warn'}">${esc(r.last_status)}${ok ? '' : ' ' + esc(r.last_outcome)}</span>`;
-      const withheld = r.withheld
-        ? ` · <span class="badge warn">${esc(r.withheld)} command(s) in replies, not delivered</span>`
-        : '';
-      return (
-        `<p class="sub" style="margin-top:6px">Kept online for ${who} · last heartbeat ${esc(relTime(r.last_at))} · ${status}` +
-        ` · <span class="mut">${esc(r.count)} sent</span>${withheld}${waiting}${shape}</p>`
-      );
-    })
-    .join('');
 }
 
 // Blocked attempts are the persisted ones only. The routine rewrites — every

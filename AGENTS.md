@@ -103,14 +103,7 @@ Two rules about placement that the map does not make obvious:
   `T5` and `t5` are different requests. It is recorded from live traffic and persisted, because a
   restart that lost it would sign the next fetch with our lowercase codename and be refused.
   **This must never become a poller**: nothing in the add-on may reach PetKit on a schedule of its
-  own, or without a button or a device request. The ONE exception is proxy mode's opt-in keep-online
-  heartbeat (`http/presence.py`, panel switch `proxy_keep_online`, off by default): a device on
-  local MQTT stops sending its HTTP heartbeat, PetKit's app then calls it offline, so its last
-  recorded heartbeat is sent for it, signed the same way — but only from
-  `mqtt/auth.py::on_mqtt_packet_received`, i.e. paced by that device's own packets (PINGREQ
-  included), at most once per `MIN_INTERVAL_SECONDS`, gated on proxy mode, a live local MQTT
-  session and an adopted real `api_secret`. PetKit's reply is recorded and never applied: no
-  command, setting or address from it reaches the device. Nothing may be added beside it. A pet imports under a NEW local id with PetKit's id bound as a `device_pet_ids_json` alias,
+  own. A pet imports under a NEW local id with PetKit's id bound as a `device_pet_ids_json` alias,
   because that foreign id is what a box matching against cloud-cached faces actually reports
   (`resolve_pet_ref`); `bind_pet_ref` then names the history retroactively.
 - **An ESP32 is offered firmware only while a job armed in the panel says so.** `dev_ota_check`

@@ -316,12 +316,7 @@ the box — useful if you want to add a model, or are just curious.
   cloud's own reply, so both the payloads and the firmware's reaction to them are observable. Shell
   commands, firmware pushes, credentials and anything else that would hand the device back to PetKit
   are stripped on the way through — matched by content, not by endpoint, so a hostile field is caught
-  on an endpoint nobody expected it on. An opt-in switch, **Keep online in PetKit's app**, keeps a
-  device that moved to local MQTT showing as online in the official app: it sends PetKit the HTTP
-  heartbeat the device no longer sends, in its name and signed with its real credentials, but only
-  when the device itself is active on the local broker and at most every 30 s. PetKit's reply is
-  never passed on — though PetKit may then send commands through the upstream MQTT bridge, under the
-  same guards.
+  on an endpoint nobody expected it on.
 - **Payload capture** to JSONL, browsable and downloadable from the panel.
 - **The device's own debug log** — the firmware uploads `devRun.log` here instead of to PetKit.
 - **On-device patchers**: MQTT certificate bypass, local media storage, CA trust, local camera

@@ -44,7 +44,6 @@ PANEL_LIVE_KEYS = (
     "proxy_media_real_oss",
     "proxy_local_cvr_window",
     "proxy_mqtt_bridge",
-    "proxy_keep_online",
     "proxy_only",
     "capture",
     "weight_match_tolerance_pct",
@@ -388,12 +387,6 @@ class Config:
     #: (`mqtt/upstream.py`). Only has an effect while proxy mode is on and the
     #: real credentials have been learned from a proxied dev_iot_device_info.
     proxy_mqtt_bridge: bool = True
-    #: Send PetKit the HTTP heartbeat a device on local MQTT no longer sends,
-    #: signed as that device, so the official app keeps showing it online
-    #: (`http/presence.py`). Off by default: it is the one thing that reaches
-    #: PetKit without a button or a device request — paced by the device's own
-    #: MQTT packets, never by a timer — and it invites PetKit to send commands.
-    proxy_keep_online: bool = False
 
     ha_mqtt_host: str = "localhost"
     ha_mqtt_port: int = 1883
@@ -502,7 +495,6 @@ class Config:
             "proxy_media_real_oss": self.proxy_media_real_oss,
             "proxy_local_cvr_window": self.proxy_local_cvr_window,
             "proxy_mqtt_bridge": self.proxy_mqtt_bridge,
-            "proxy_keep_online": self.proxy_keep_online,
             "proxy_only": self.proxy_only,
             "capture": self.capture,
             "weight_match_tolerance_pct": self.weight_match_tolerance_pct,

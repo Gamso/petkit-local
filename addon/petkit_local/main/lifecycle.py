@@ -376,7 +376,6 @@ async def start_background(services: Services, app_instance: web.Application) ->
             certfile=cert_path,
             keyfile=config.mqtt_key or f"{config.data_dir}/certs/broker.key",
             strict_auth=config.mqtt_strict_auth, hub=hub, data_dir=config.data_dir,
-            presence=services.cloud_presence,
         )
         app_instance[device_keys.MQTT_BROKER] = broker
         # The panel is a separate application, and its device view reports
@@ -483,11 +482,6 @@ async def cleanup_background(services: Services, app_instance: web.Application) 
     # to Aliyun.
     if upstream_mqtt:
         await upstream_mqtt.stop()
-
-    # A keep-online heartbeat still in flight holds the shared upstream session
-    # that `close_proxy_session` is about to close.
-    if services.cloud_presence is not None:
-        await services.cloud_presence.close()
 
     # Before go2rtc goes: a phone watching live is then told the server is
     # stopping (1001), not that its stream ended and is worth retrying.
