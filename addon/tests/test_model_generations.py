@@ -10,6 +10,7 @@ choice always wins. What is held here:
 * a proxied reply teaches `typeCode` without changing what is relayed, and
   nothing is learned with proxy mode off;
 * a D4SH's own `hardware: 2` teaches it, a T4's `hardware: 1` does not;
+* Home Assistant's device model, the panel and the app API all use the name;
 * a gen-2 YumShare supports recognition before it has asked for anything.
 """
 import json
@@ -18,12 +19,16 @@ from pathlib import Path
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
+from petkit_local.app_api import serializers
 from petkit_local.devices.base import GENERATION_KEY, GENERATION_LEARNED_KEY, Device
 from petkit_local.devices.ble import BLERegistry
 from petkit_local.devices.registry import DeviceRegistry
 from petkit_local.events import codes
 from petkit_local.events.normalize import apply_state_snapshot
+from petkit_local.ha.discovery import build_discovery_payload
+from petkit_local.ha.entities.sensors import LITTER_SENSORS
 from petkit_local.ha.learn import learn_generation
+from petkit_local.ha.publisher import HAPublisher
 from petkit_local.http import appkeys as device_keys
 from petkit_local.http.proxy import close_proxy_session
 from petkit_local.http.server import create_app
@@ -33,6 +38,7 @@ from petkit_local.utils.const import (
 )
 from petkit_local.web.api.config_import import import_device
 from petkit_local.web.hub import EventHub
+from tests._fakes import FakeMqttClient
 
 # --- the table ---------------------------------------------------------------
 
@@ -307,3 +313,65 @@ def test_an_imported_device_info_teaches_the_generation():
         "type": "t4", "dev_device_info": {"result": {"id": 300000001, "typeCode": 2}}})
     assert device.generation_and_source == (2, "typeCode")
     assert "model (Pura Max 2)" in summary["imported"]
+
+
+# --- Home Assistant ------------------------------------------------------------
+
+
+def test_the_ha_device_model_is_the_product_name():
+    payload = build_discovery_payload(LITTER_SENSORS[0], 1, "t4", "PetKit T4 SN", "SN",
+                                      "petkit-local/1/state", model="Pura Max 2")
+    assert payload["device"]["model"] == "Pura Max 2"
+    # Without one, what every device showed before.
+    payload = build_discovery_payload(LITTER_SENSORS[0], 1, "t4", "PetKit T4 SN", "SN",
+                                      "petkit-local/1/state")
+    assert payload["device"]["model"] == "T4"
+
+
+def _models(client: FakeMqttClient) -> set[str]:
+    return {json.loads(p)["device"]["model"] for t, p, _ in client.published
+            if t.endswith("/config") and p}
+
+
+async def test_a_learned_generation_renames_the_ha_device_on_the_next_state_publish():
+    reg = DeviceRegistry()
+    dev = reg.get_or_create(petkit_id=1, device_type="t4", serial_number="SN")
+    pub = HAPublisher(reg, {})
+    pub._client = FakeMqttClient()
+    pub._connected = True
+    await pub.publish_discovery(dev)
+    assert _models(pub._client) == {"Pura Max"}
+
+    pub._client.published.clear()
+    await pub.publish_state(dev)
+    assert _models(pub._client) == set(), "no re-announce while nothing changed"
+
+    dev.record_generation("typeCode", 2)
+    await pub.publish_state(dev)
+    assert _models(pub._client) == {"Pura Max 2"}
+
+    pub._client.published.clear()
+    await pub.publish_state(dev)
+    assert _models(pub._client) == set()
+
+
+async def test_a_codename_with_no_product_name_keeps_its_codename_as_ha_model():
+    reg = DeviceRegistry()
+    dev = reg.get_or_create(petkit_id=1, device_type="zz9", serial_number="SN")
+    pub = HAPublisher(reg, {})
+    pub._client = FakeMqttClient()
+    pub._connected = True
+    await pub.publish_discovery(dev)
+    assert _models(pub._client) <= {"ZZ9"}
+
+
+# --- the app API -----------------------------------------------------------------
+
+
+def test_the_app_api_names_the_generation_and_keeps_model():
+    d = Device(device_type="t4", petkit_id=1)
+    s = serializers.device_summary(d)
+    assert (s["model"], s["model_name"], s["generation"]) == ("Pura Max", "Pura Max", None)
+    d.record_generation("typeCode", 2)
+    s = serializers.device_summary(d)
+    assert (s["model"], s["model_name"], s["generation"]) == ("Pura Max", "Pura Max 2", 2)

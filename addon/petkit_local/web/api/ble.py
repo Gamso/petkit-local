@@ -92,7 +92,7 @@ def _ble_view(dev: BLEDevice, reg: DeviceRegistry | None = None) -> dict[str, An
         "name": device_display_name(dev.ble_type),
         # Who relays for it. An accessory with no reachable parent is not
         # merely offline, it is unaddressable, and the panel says which.
-        "parent_name": device_display_name(parent.device_type) if parent else "",
+        "parent_name": parent.model_name if parent else "",
         "parent_type": parent.device_type if parent else "",
         "parent_online": bool(parent and parent.online),
         "parent_mqtt": bool(parent and parent.mqtt_connected),

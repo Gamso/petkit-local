@@ -143,6 +143,7 @@ def build_discovery_payload(
     command_topic: str | None = None,
     identifiers: list[str] | None = None,
     availability_topic: str | None = None,
+    model: str = "",
 ) -> dict[str, Any]:
     """Build the JSON config HA's MQTT discovery expects for one entity.
 
@@ -157,6 +158,11 @@ def build_discovery_payload(
             (e.g. pet id 1 vs. device id 1).
         command_topic: Overrides the per-entity default from
             `command_topic_for`; ignored for read-only components.
+        model: The HA device's model text -- the product name, generation
+            included ("Pura Max 2", `Device.model_name`). Empty falls back to
+            the upper-cased codename, which is what every device showed before
+            and what a codename with no product name still shows. Only text:
+            no entity key or unique_id depends on it, so it can change.
 
     Returns:
         A dict always carrying `name`, `unique_id`, `object_id`, `device`
@@ -185,7 +191,7 @@ def build_discovery_payload(
             "identifiers": ids,
             "name": device_name,
             "manufacturer": "PetKit",
-            "model": device_type.upper(),
+            "model": model or device_type.upper(),
             "serial_number": serial_number,
         },
         "availability": [

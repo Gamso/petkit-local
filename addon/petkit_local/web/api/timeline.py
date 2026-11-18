@@ -17,7 +17,6 @@ from aiohttp import web
 
 from petkit_local.events import codes, decode, ingest
 from petkit_local.utils.coerce import to_int
-from petkit_local.utils.const import device_display_name
 from petkit_local.utils.timeutil import local_day_bounds, local_offset_hours
 from petkit_local.web.api._common import _pet_fields, _pets_by_id
 from petkit_local.web.api.media import _has_media, _session_media_urls
@@ -96,7 +95,7 @@ async def api_timeline(request: web.Request) -> web.Response:
         payload.append({
             "kind": s["kind"], "id": s["id"], "related_event": s.get("related_event"),
             "device_id": s.get("device_id"),
-            "device_name": device_display_name(dev.device_type) if dev else "",
+            "device_name": dev.model_name if dev else "",
             "ts": s.get("ts"),
             # What to SHOW. For a visit this is when the pet entered; `ts` is
             # when the closing report reached us, several seconds later.

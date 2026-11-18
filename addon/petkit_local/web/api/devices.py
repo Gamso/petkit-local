@@ -28,7 +28,6 @@ from petkit_local.media.go2rtc import stream_urls_with_rtsp
 from petkit_local.mqtt.broker import delivery_view
 from petkit_local.utils.coerce import to_float
 from petkit_local.utils.timeutil import offset_hours_for_locale
-from petkit_local.utils.const import device_display_name
 from petkit_local.utils.dicts import dig_path
 from petkit_local.web.api._common import (
     _deliver, _device_log_reason, _device_or_404, _json_body,
@@ -65,7 +64,10 @@ def _device_summary(d: Device, ble_registry: BLERegistry | None, hub: EventHub,
     return {
         "id": d.petkit_id,
         "type": d.device_type,
-        "name": device_display_name(d.device_type),
+        # The product name, generation included ("Pura Max 2"); the codename's
+        # own name while the generation is unknown.
+        "name": d.model_name,
+        "generation": d.generation,
         "sn": d.serial_number,
         "mac": d.mac,
         "firmware": d.firmware,

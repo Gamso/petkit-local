@@ -114,6 +114,10 @@ def device_summary(d: Device, accessories: list[BLEDevice] | tuple = ()) -> dict
     A device on MQTT stops polling HTTP altogether (AGENTS.md), so the HTTP
     timestamps alone would make the healthiest device look abandoned.
 
+    `model` stays the codename's own name whatever the generation, as released
+    apps read it; `model_name` is the full product name ("Pura Max 2") and
+    `generation` the number behind it, null while unknown (`Device.generation`).
+
     `accessories` are the Bluetooth accessories it relays, in the order the
     registry holds them — which is also the order `BLERegistry.get_linked_k3`
     picks the one K3 the firmware has a slot for.
@@ -124,6 +128,8 @@ def device_summary(d: Device, accessories: list[BLEDevice] | tuple = ()) -> dict
         "id": d.petkit_id,
         "type": d.device_type,
         "model": device_display_name(d.device_type),
+        "model_name": d.model_name,
+        "generation": d.generation,
         "kind": device_kind(d),
         "online": bool(d.online),
         "transport": "mqtt" if d.mqtt_connected else "http",
@@ -149,6 +155,8 @@ def accessory_summary(a: BLEDevice, parent: Device | None) -> dict[str, Any]:
         "id": a.petkit_id,
         "type": a.ble_type,
         "model": device_display_name(a.ble_type),
+        "model_name": device_display_name(a.ble_type),
+        "generation": None,
         "kind": accessory_kind(a),
         "online": bool(parent and parent.online),
         "transport": "mqtt" if parent and parent.mqtt_connected else "http",
