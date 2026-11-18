@@ -29,7 +29,7 @@ from petkit_local.http.presence import SETTING as KEEP_ONLINE
 from petkit_local.http.proxy import DEFAULT_UPSTREAM, UPSTREAM_PRESETS
 from petkit_local.utils.coerce import to_int
 from petkit_local.utils.const import (
-    DEVICE_NAMES, DEVICE_TYPES_AI, VERSION, device_display_name,
+    AI_GENERATIONS, DEVICE_NAMES, DEVICE_TYPES_AI, VERSION, device_display_name,
 )
 from petkit_local.utils.jsonio import atomic_write_json, read_json
 from petkit_local.web.api._common import MAX_EVENT_LIMIT, _json_body, _limit_param, _live
@@ -329,9 +329,12 @@ async def api_info(request: web.Request) -> web.Response:
         # The products that do on-device recognition, so the AI/Pets tab can
         # name them instead of carrying its own copy of the list. Sorted for a
         # stable UI; a codename with no marketing name is skipped rather than
-        # shown as "Unknown".
+        # shown as "Unknown". The YumShares are named per generation, since
+        # only their "2" does it (`AI_GENERATIONS`).
         "ai_device_names": sorted(
-            DEVICE_NAMES[c] for c in DEVICE_TYPES_AI if c in DEVICE_NAMES),
+            [DEVICE_NAMES[c] for c in DEVICE_TYPES_AI if c in DEVICE_NAMES]
+            + [device_display_name(c, g) for c, gens in AI_GENERATIONS.items()
+               for g in gens]),
         "upstreams": _upstream_choices(),
         # Per-rule totals since start. The routine substitutions live only here
         # and in the capture files — see events/models.py::BlockedAttempt for
@@ -366,7 +369,7 @@ def _presence(request: web.Request) -> list[dict[str, Any]]:
         rows.append({
             "device_id": device.petkit_id,
             "device_type": device.device_type,
-            "name": device_display_name(device.device_type),
+            "name": device.model_name,
             "count": 0, "withheld": 0, "last_at": None, "last_status": None,
             "last_outcome": None, "last_error": None,
             **(sent or {}),

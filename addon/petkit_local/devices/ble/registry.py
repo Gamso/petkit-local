@@ -17,7 +17,6 @@ from typing import TYPE_CHECKING, Any
 
 from petkit_local.devices.registry import PersistedRegistry
 from petkit_local.utils.coerce import to_int
-from petkit_local.utils.const import device_display_name
 from petkit_local.utils.dicts import dig
 
 if TYPE_CHECKING:
@@ -258,7 +257,7 @@ def relay_blocker(accessory: BLEDevice, parent: Device | None) -> str:
         return "No registered device relays this accessory"
     if parent.mqtt_connected:
         return ""
-    name = device_display_name(parent.device_type)
+    name = parent.model_name
     if not parent.online:
         return (f"{name} is offline: an accessory can only be read or set while its "
                 f"parent is on MQTT")

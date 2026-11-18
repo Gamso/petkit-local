@@ -21,6 +21,10 @@ payload is not ours to store, and a stored setting is served back to the device
 by `to_device_info`. `timezone` is never learned even if an entity ever claims
 it: `Device.timezone_offset` has its own precedence, and a cloud value stored
 as the `config["timezone"]` override would outrank the device's own statement.
+
+The same reply also says WHICH product the device is: its `typeCode` is the
+generation of the codename, 2 for a Pura Max 2 (`learn_generation`). That is
+not a setting and is never served back; it only names the device.
 """
 from __future__ import annotations
 
@@ -93,6 +97,27 @@ def _scalar(value: Any) -> Any:
     if isinstance(value, (int, float, str)):
         return value
     return None
+
+
+def learn_generation(device: Device, result: Any) -> bool:
+    """Record the generation a proxied `dev_device_info` result names.
+
+    `result.typeCode` is PetKit's own number for the generation (2 for a Pura
+    Max 2 and for a YumShare Dual-Hopper 2, `utils/const.py::MODEL_GENERATIONS`).
+    Stored as a LEARNED value, which the owner's choice in the panel always
+    outranks (`Device.generation`), so this never fills over the owner. Unlike
+    a setting it is not a snapshot that can lag a local write -- nothing here
+    writes a generation to PetKit -- so a changed value replaces the old one.
+
+    A value the table does not list for this codename (a D4 sends one too, and
+    no D4 generation is named) is ignored.
+
+    Returns:
+        Whether the stored value changed, so the caller can skip the save.
+    """
+    if not isinstance(result, dict) or "typeCode" not in result:
+        return False
+    return device.record_generation("typeCode", result.get("typeCode"))
 
 
 def learn_settings(device: Device, params: Any, *, source: str,

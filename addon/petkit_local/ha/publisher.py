@@ -36,6 +36,7 @@ from petkit_local.ha.discovery import STATUS_TOPIC, build_discovery_payload, dis
 from petkit_local.devices.state_parsers import apply_consumable_state
 from petkit_local.events.normalize import MQTT_ENVELOPE_KEYS, apply_feed_plan_state
 from petkit_local.ha.commands import LOCAL_DEFAULTS, multi_config_texts
+from petkit_local.utils.const import DEVICE_NAMES, device_display_name
 from petkit_local.utils.jsonio import read_bytes
 
 if TYPE_CHECKING:
@@ -50,6 +51,15 @@ log = logging.getLogger(__name__)
 
 #: How long shutdown waits for the broker to take the final `offline`.
 STOP_PUBLISH_TIMEOUT_SECONDS = 3.0
+
+
+def ha_model(device: Device) -> str:
+    """The HA device `model` for a device: its product name, generation included.
+
+    Empty for a codename with no product name, which `build_discovery_payload`
+    turns into the upper-cased codename, as every device showed before.
+    """
+    return device.model_name if device.device_type in DEVICE_NAMES else ""
 
 
 class HAPublisher:
@@ -100,6 +110,11 @@ class HAPublisher:
         self._commands = CommandRouter(self, registry, ble_registry)
         self._pets: PetRegistry | None = None
         self._pet_store: EventStore | None = None
+        #: The HA device model each device was last announced with. A model
+        #: learned or chosen later (`Device.generation`) changes only text in
+        #: the discovery configs, so `publish_state` compares against this and
+        #: re-announces, rather than every place that can learn one having to.
+        self._announced_model: dict[int, str] = {}
 
     @property
     def connected(self) -> bool:
@@ -252,6 +267,7 @@ class HAPublisher:
         entities = get_entities_for_device(device)
         state_topic = f"petkit-local/{device.petkit_id}/state"
         device_name = f"PetKit {device.device_type.upper()} {device.serial_number}"
+        model = ha_model(device)
 
         # Rebuild the command-routing index for this device.
         self._commands.set_entities(device.petkit_id, entities)
@@ -265,8 +281,10 @@ class HAPublisher:
                 device_name=device_name,
                 serial_number=device.serial_number,
                 state_topic=state_topic,
+                model=model,
             )
             await self._emit(topic, json.dumps(payload), retain=True)
+        self._announced_model[device.petkit_id] = model
 
         # An empty retained config is how HA is told an entity is gone; leaving
         # an entity out of the list above only stops announcing it.
@@ -285,6 +303,7 @@ class HAPublisher:
 
         entities = get_entities_for_device(device)
         self._commands.clear_entities(device.petkit_id)
+        self._announced_model.pop(device.petkit_id, None)
 
         for entity in entities:
             topic = discovery_topic(entity, device.petkit_id, self._prefix)
@@ -325,9 +344,18 @@ class HAPublisher:
             return False
 
     async def publish_state(self, device: Device) -> None:
-        """Publish the device's full state document (retained, one topic)."""
+        """Publish the device's full state document (retained, one topic).
+
+        A device announced under a model it no longer has -- its generation was
+        learned or chosen since (`Device.generation`) -- is announced again
+        first, so Home Assistant names it "Pura Max 2" without a restart.
+        """
         if not self._client or not self._connected:
             return
+
+        announced = self._announced_model.get(device.petkit_id)
+        if announced is not None and announced != ha_model(device):
+            await self.publish_discovery(device)
 
         state_topic = f"petkit-local/{device.petkit_id}/state"
         state_data = self._build_state(device)
@@ -518,6 +546,8 @@ class HAPublisher:
                 device_name=device_name,
                 serial_number=ble_dev.serial_number,
                 state_topic=state_topic,
+                model=device_display_name(ble_dev.ble_type)
+                if ble_dev.ble_type in DEVICE_NAMES else "",
             )
             await self._emit(topic, json.dumps(payload), retain=True)
         if entities:

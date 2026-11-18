@@ -9,6 +9,9 @@ payload builders, entity tables and parsers that ask these questions.
 The sets are the raw data; `devices/base.py` exposes them as the `Device.is_*`
 predicates the rest of the code actually reads.
 """
+from __future__ import annotations
+
+from dataclasses import dataclass
 
 #: The running version, shown in the panel's Setup tab and served by /api/info.
 #:
@@ -137,8 +140,9 @@ DEVICE_TYPES_NEXT_GEN = {"t5", "t6", "t7", "d4h", "d4sh", "w7h"}
 #     recognition — and both generations share one codename (`d4h` / `d4sh`;
 #     localkit's own gen-2 branch handles the newer one as plain `d4sh` and
 #     introduces no new name). So no list keyed on codename can be right for the
-#     feeders, and they are deliberately absent: a gen-2 earns `supports_ai` by
-#     polling, a gen-1 never does.
+#     feeders, and they are deliberately absent from THIS set: a gen-2 earns
+#     `supports_ai` by polling, a gen-1 never does -- or up front, once its
+#     generation is known (`AI_GENERATIONS` below, `Device.generation`).
 #   * "Purobot Max Pro" (without the 2) maps to no codename in this repo or in
 #     localkit. Same resolution — it will identify itself by asking.
 #   * `t7` is ours but is NOT on PetKit's list. Left in rather than removed:
@@ -151,11 +155,14 @@ DEVICE_TYPES_AI = {"t5", "t6", "t7", "w7h"}
 # Purobot Max Pro 2). A codename that is not listed here is still supported —
 # see `device_display_name` for what is shown for it.
 #
-# Two entries are known to be imprecise, and are left as they are because the
-# alternative is a guess:
-#   * `d4h`/`d4sh` — PetKit sells a "2" of each (YumShare Solo 2, Dual-Hopper 2)
-#     that shares the codename, so one name here covers two products that differ
-#     in whether they can recognise a pet at all. See DEVICE_TYPES_AI above.
+# These are the names of a codename's FIRST generation. PetKit keeps one codename
+# across generations (Pura Max / Pura Max 2 / Pura Max 3, YumShare Solo / Solo
+# 2, Dual-Hopper / Dual-Hopper 2), so a later generation is named from
+# `MODEL_GENERATIONS` below once it is known (`Device.generation`), and by the
+# entry here while it is not.
+#
+# Entries known to be imprecise, left as they are because the alternative is a
+# guess:
 #   * `t7` — localkit calls it "Purobot Crystal"; pypetkitapi says "Crystal Duo".
 #     Unresolved without hardware.
 #   * `k2` — the generation before the K3, named by analogy. PetKit's own listing
@@ -200,8 +207,133 @@ DEVICE_NAMES = {
 DEVICE_LOG_KEY_PREFIX = "devlog"
 
 
-def device_display_name(code: str) -> str:
+@dataclass(frozen=True)
+class ModelGeneration:
+    """One generation of a codename: its product name, and how we know it.
+
+    `grade` uses the vocabulary of `events/codes.py` (`confirmed`, `inferred`,
+    `unverified`, `conflicted`); it cannot import those constants, because
+    `events/codes.py` imports this module.
+    """
+
+    name: str
+    grade: str
+    note: str
+
+
+# Product names per generation, for the codenames PetKit sells more than one
+# generation of. The generation is a small integer, and it is the number PetKit
+# itself uses:
+#
+#   * PetKit's `dev_device_info` reply carries `typeCode`, and a proxied one
+#     read `typeCode: 2` for a T4 that PetKit's app names "PURAMAX 2" and for a
+#     D4SH that is a Dual-Hopper 2 (one install, 2026-11-18). Proxy mode learns
+#     it (`ha/learn.py::learn_generation`).
+#   * PetKit's app bundles its device pictures under the same numbers:
+#     `t4_home_device_icon`, `t4_2_*`, `t4_3_*`, `d4sh_*`, `d4sh_2_*`,
+#     `d4sh_3_*`, `d4h_2_*`, `d4h_3_*` -- the unsuffixed one being generation 1.
+#
+# A generation not listed here is not named: `d4sh_3`/`d4h_3` pictures exist,
+# but no product name for them has been seen, and inventing "Dual-Hopper 3"
+# would be exactly the guess this table exists to avoid. Such a value is not
+# even stored (`valid_generation`), so the device keeps its codename's name.
+MODEL_GENERATIONS: dict[str, dict[int, ModelGeneration]] = {
+    "t4": {
+        1: ModelGeneration("Pura Max", "inferred",
+                           "The codename's name before generations were told apart; "
+                           "the unsuffixed `t4_home_device_icon` in PetKit's app."),
+        2: ModelGeneration("Pura Max 2", "confirmed",
+                           "Proxied dev_device_info `typeCode: 2` on a T4 that PetKit's "
+                           "app names PURAMAX 2 (2026-11-18)."),
+        3: ModelGeneration("Pura Max 3", "inferred",
+                           "`t4_3_*` pictures in PetKit's app; never seen on the wire."),
+    },
+    "d4sh": {
+        1: ModelGeneration("YumShare Dual-Hopper", "inferred",
+                           "The codename's name before generations were told apart."),
+        2: ModelGeneration("YumShare Dual-Hopper 2", "confirmed",
+                           "Proxied dev_device_info `typeCode: 2`, and `hardware: 2` in "
+                           "its own state report, on a Dual-Hopper 2 (2026-11-18)."),
+    },
+    "d4h": {
+        1: ModelGeneration("YumShare Solo", "inferred",
+                           "The codename's name before generations were told apart."),
+        2: ModelGeneration("YumShare Solo 2", "inferred",
+                           "PetKit sells a Solo 2 under this codename and its app has "
+                           "`d4h_2_*` pictures; no D4H has been seen to report it."),
+    },
+}
+
+# What the device's OWN state report says, `hardware`, read as its generation --
+# only where that is known to be what the field means. On a T4 it is not: the
+# Pura Max 2 above reports `hardware: 1`. A row is acted on only when graded
+# `confirmed` or `inferred` (`generation_from_hardware`); the others record what
+# has been seen without acting on it.
+HARDWARE_GENERATIONS: dict[str, dict[int, tuple[int, str, str]]] = {
+    "d4sh": {
+        2: (2, "confirmed", "A Dual-Hopper 2 (typeCode 2) reports hardware 2, 2026-11-18."),
+        1: (1, "unverified",
+            "Issue #2's D4SH on firmware 867 reported hardware 1, but which generation "
+            "it was is not known, so 1 is not read as the first."),
+    },
+    "d4h": {
+        2: (2, "unverified",
+            "By analogy with the D4SH only; no D4H state report has been seen to "
+            "carry it."),
+    },
+}
+
+#: Grades that are acted on. `unverified` and `conflicted` rows are documentation.
+USABLE_GRADES = frozenset({"confirmed", "inferred"})
+
+# Generations whose NPU does facial recognition, for the codenames where the
+# codename alone cannot say (see DEVICE_TYPES_AI). PetKit's own "Pet
+# Identification" screen lists the YumShare Solo 2 and Dual-Hopper 2, and says
+# the earlier ones do not recognise pets.
+AI_GENERATIONS: dict[str, frozenset[int]] = {
+    "d4h": frozenset({2}),
+    "d4sh": frozenset({2}),
+}
+
+
+def generation_choices(code: str) -> dict[int, str]:
+    """`{generation: product name}` for a codename; empty if it has only one."""
+    rows = MODEL_GENERATIONS.get((code or "").lower(), {})
+    return {gen: row.name for gen, row in sorted(rows.items())}
+
+
+def valid_generation(code: str, value: object) -> int | None:
+    """`value` as a generation this codename has, or None.
+
+    Device and cloud input: anything that is not a listed generation of this
+    codename (a bool, a float, a 3 for a D4SH, a codename with one generation)
+    is None rather than an error. A string of digits is accepted.
+    """
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, str) and value.strip().isdigit():
+        value = int(value.strip())
+    if not isinstance(value, int):
+        return None
+    return value if value in MODEL_GENERATIONS.get((code or "").lower(), {}) else None
+
+
+def generation_from_hardware(code: str, hardware: object) -> int | None:
+    """The generation a state report's `hardware` names, where that is known."""
+    if isinstance(hardware, bool) or not isinstance(hardware, int):
+        return None
+    row = HARDWARE_GENERATIONS.get((code or "").lower(), {}).get(hardware)
+    if row is None or row[1] not in USABLE_GRADES:
+        return None
+    return valid_generation(code, row[0])
+
+
+def device_display_name(code: str, generation: int | None = None) -> str:
     """The commercial product name for a device codename.
+
+    With a `generation` this codename has (`MODEL_GENERATIONS`), the name of
+    that generation -- "Pura Max 2". Without one, or with one that is not
+    listed, the codename's own name, which is its first generation's.
 
     An unlisted codename yields "Unknown" rather than the code itself: such a
     device is still fully supported (it registers, connects and publishes
@@ -211,4 +343,8 @@ def device_display_name(code: str) -> str:
     """
     if not code:
         return ""
-    return DEVICE_NAMES.get(code.lower(), "Unknown")
+    code = code.lower()
+    row = MODEL_GENERATIONS.get(code, {}).get(generation) if generation is not None else None
+    if row is not None:
+        return row.name
+    return DEVICE_NAMES.get(code, "Unknown")

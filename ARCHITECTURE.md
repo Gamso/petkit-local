@@ -46,7 +46,7 @@ petkit_local/
 │                  publisher.py (the one HA-broker connection, outbound)
 │                  command_router.py + commands.py (inbound: HA write -> device command)
 │                  schedules.py (what a valid schedule is; the panel's and the app's writes)
-│                  learn.py (proxy mode: settings the real cloud tells a device)
+│                  learn.py (proxy mode: settings and generation the real cloud tells a device)
 │                  timezone_sync.py (re-pushes a locale-derived UTC offset across DST)
 │                  state_doc.py (the document every value_path is read from, for HA's readers)
 │                  entities/ one module per component

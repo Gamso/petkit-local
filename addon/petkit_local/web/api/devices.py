@@ -5,7 +5,7 @@ there appears in both. The detail then inlines everything a device panel needs â
 resolved entity values, actions, and the three sidecar views â€” because the panel
 renders one device from one request and refreshes on every WebSocket tick.
 
-The per-device toggles (capabilities, AI, log upload) keep their own endpoints
+The per-device toggles (capabilities, AI, log upload, model) keep their own endpoints
 for anything scripting the API, and share their bodies with the detail.
 """
 from __future__ import annotations
@@ -16,7 +16,9 @@ from typing import TYPE_CHECKING, Any
 from aiohttp import web
 
 from petkit_local.devices import defaults
-from petkit_local.devices.base import TIMEZONE_PUSHED_KEY, Device
+from petkit_local.devices.base import (
+    GENERATION_KEY, GENERATION_LEARNED_KEY, TIMEZONE_PUSHED_KEY, Device,
+)
 from petkit_local.events import codes
 from petkit_local.ha.categories import get_entities_for_device
 from petkit_local.ha.commands import (
@@ -28,7 +30,9 @@ from petkit_local.media.go2rtc import stream_urls_with_rtsp
 from petkit_local.mqtt.broker import delivery_view
 from petkit_local.utils.coerce import to_float
 from petkit_local.utils.timeutil import offset_hours_for_locale
-from petkit_local.utils.const import device_display_name
+from petkit_local.utils.const import (
+    MODEL_GENERATIONS, device_display_name, valid_generation,
+)
 from petkit_local.utils.dicts import dig_path
 from petkit_local.web.api._common import (
     _deliver, _device_log_reason, _device_or_404, _json_body,
@@ -65,7 +69,10 @@ def _device_summary(d: Device, ble_registry: BLERegistry | None, hub: EventHub,
     return {
         "id": d.petkit_id,
         "type": d.device_type,
-        "name": device_display_name(d.device_type),
+        # The product name, generation included ("Pura Max 2"); the codename's
+        # own name while the generation is unknown.
+        "name": d.model_name,
+        "generation": d.generation,
         "sn": d.serial_number,
         "mac": d.mac,
         "firmware": d.firmware,
@@ -140,6 +147,33 @@ def _timezone_view(d: Device) -> dict[str, Any]:
         "source": "override" if override is not None
         else "locale" if from_locale is not None
         else "device" if reported is not None else "server",
+    }
+
+
+def _model_view(d: Device) -> dict[str, Any] | None:
+    """Which generation of its codename this device is, and why we think so.
+
+    None for a codename PetKit sells in one generation only: there is nothing
+    to choose. `override` is the owner's choice (None for "Automatic"),
+    `learned` what proxy mode or the device's own report said, by source, and
+    `source` which of them is in force (`Device.generation_and_source`).
+    """
+    rows = MODEL_GENERATIONS.get(d.device_type, {})
+    if not rows:
+        return None
+    generation, source = d.generation_and_source
+    learned = d.config.get(GENERATION_LEARNED_KEY)
+    return {
+        "generation": generation,
+        "source": source,
+        "name": d.model_name,
+        "default_name": device_display_name(d.device_type),
+        "override": valid_generation(d.device_type, d.config.get(GENERATION_KEY)),
+        "learned": {k: v for k, v in learned.items()
+                    if valid_generation(d.device_type, v) is not None}
+        if isinstance(learned, dict) else {},
+        "choices": [{"generation": gen, "name": row.name, "grade": row.grade,
+                     "note": row.note} for gen, row in sorted(rows.items())],
     }
 
 
@@ -224,6 +258,7 @@ async def api_device_detail(request: web.Request) -> web.Response:
         # the difference between idle and a steady stream of them.
         "capInfo": _capabilities_view(d) if d.is_camera else None,
         "timezoneInfo": _timezone_view(d),
+        "modelInfo": _model_view(d),
         "logInfo": _log_settings_view(d, request),
         "aiInfo": _ai_view(d) if d.supports_ai else None,
     })
@@ -383,6 +418,51 @@ async def api_timezone(request: web.Request) -> web.Response:
     reg.save()
 
     return web.json_response({"ok": True, "delivered": delivered, **_timezone_view(d)})
+
+
+async def api_model(request: web.Request) -> web.Response:
+    """GET/POST which generation of its codename this device is.
+
+    POST takes `{"generation": 2}` -- a generation `utils/const.py::
+    MODEL_GENERATIONS` lists for this codename -- or `{"generation": null}` for
+    "Automatic", which hands the name back to whatever was learned, or to the
+    codename's own name. The owner's choice always wins over a learned value
+    (`Device.generation`). Persisted in `devices.json` with the rest of
+    `config`; nothing is sent to the device, which has no such setting. The HA
+    device is renamed on the state publish that follows.
+
+    Answers `_model_view`; 400 for a codename with one generation, or a value
+    it does not have.
+    """
+    reg = request.app[REGISTRY]
+    d = _device_or_404(request)
+    view = _model_view(d)
+    if view is None:
+        return web.json_response(
+            {"error": f"a {device_display_name(d.device_type)} comes in one model only"},
+            status=400)
+    if request.method == "GET":
+        return web.json_response(view)
+
+    body = await _json_body(request)
+    if "generation" not in body:
+        return web.json_response({"error": "need generation"}, status=400)
+    raw = body["generation"]
+    if raw is None or (isinstance(raw, str) and raw.strip() in ("", "auto")):
+        d.config.pop(GENERATION_KEY, None)
+    else:
+        value = valid_generation(d.device_type, raw)
+        if value is None:
+            return web.json_response(
+                {"error": f"{raw!r} is not a model of a {d.device_type}"}, status=400)
+        d.config[GENERATION_KEY] = value
+    reg.save()
+    log.info("Device %d: model set to %s by the owner", d.petkit_id, d.model_name)
+
+    ha_publisher = request.app.get(HA_PUBLISHER)
+    if ha_publisher is not None:
+        await ha_publisher.publish_state(d)
+    return web.json_response({"ok": True, **_model_view(d)})
 
 
 async def api_capabilities(request: web.Request) -> web.Response:

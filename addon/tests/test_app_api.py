@@ -676,6 +676,27 @@ async def test_every_response_has_exactly_its_schemas_keys(ready: Env):
     assert r.status == 200 and await r.read() == JPEG
 
 
+
+async def test_a_device_summary_names_its_generation(ready: Env):
+    """`model_name` and `generation` are additive (issue #107): `model` keeps the
+    codename's own name, which released apps already read."""
+    schemas = _Schemas()
+    t4 = ready.registry.get_or_create(petkit_id=101, device_type="t4", serial_number="SN101")
+    t4.record_generation("typeCode", 2)
+    token = await ready.login()
+    devices = {d["id"]: d for d in
+               (await (await ready.get("/devices", token)).json())["devices"]}
+    for d in devices.values():
+        schemas.check(d, "DeviceSummary")
+    assert (devices[101]["model"], devices[101]["model_name"], devices[101]["generation"])         == ("Pura Max", "Pura Max 2", 2)
+    assert (devices[100]["model_name"], devices[100]["generation"]) == ("Purobot Max Pro 2", None)
+    detail = (await (await ready.get("/devices/101", token)).json())["device"]
+    schemas.check(detail, "DeviceDetail")
+    assert (detail["model_name"], detail["generation"]) == ("Pura Max 2", 2)
+    spec = _spec()["components"]["schemas"]["DeviceSummary"]
+    assert spec["properties"]["generation"]["type"] == ["integer", "null"]
+    assert {"model_name", "generation"} <= set(spec["required"])
+
 async def test_info_says_little_without_a_token(ready: Env):
     r = await ready.get("/info")
     assert r.status == 200

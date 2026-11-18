@@ -162,6 +162,7 @@ async def handle_state_report(request: web.Request) -> web.Response:
         device.state.update(parse_state_report(device.device_type, body))
         device.state.update(normalize_property_params(device.device_type, body))
         addresses.note(device, addresses.CLAIMED, reported_ip(body))
+        device.note_hardware(body)
         if not device.state.get("ip") and request.remote:
             device.state["ip"] = request.remote
         apply_consumable_state(device)

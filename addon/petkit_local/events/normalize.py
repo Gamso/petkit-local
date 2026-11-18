@@ -461,6 +461,7 @@ def apply_state_snapshot(device: Device, state: Any) -> bool:
     device.state.update(parse_state_report(device.device_type, state))
     device.state.update(normalize_property_params(device.device_type, state))
     addresses.note(device, addresses.CLAIMED, reported_ip(state))
+    device.note_hardware(state)
     if derived_used_times is not None:
         device.state["usedTimes"] = derived_used_times
     _clear_completed_t4_calibration(device)
