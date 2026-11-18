@@ -12,6 +12,8 @@ import urllib.parse
 from collections.abc import Iterator
 from typing import Any
 
+from petkit_local.events.codes import BLE_OPCODES, BLE_SEND_READ, BLE_SEND_WRITE
+
 # The framing both fountain families share, carried as urlencode(base64(...))
 # inside a relayed `ble_response`:
 #
@@ -42,6 +44,10 @@ BLE_TYPE_REQUEST = 0x01
 # the opcode inside the frame are THE SAME NUMBER — 220 is 0xDC — which is
 # worth stating because mapping one to the other as though they were different
 # numbers makes 222 look like a value nobody has.
+#
+# What each one means, how sure that is and where it came from is graded in
+# `events/codes.py::BLE_OPCODES` (NS8); these names are only the handles the
+# decoders and builders use, and a test holds every one of them to a row there.
 CMD_GET_STATE = 210         # short status block, on request
 CMD_GET_CONFIG = 211        # settings block. A CTW3 answers it over the relay.
 CMD_SET_MODE = 220          # power / mode. CTW3 adds a suspend byte.
@@ -49,9 +55,17 @@ CMD_SET_CONFIG = 221        # the settings block, written whole
 CMD_RESET_FILTER = 222      # filter life back to 100%
 CMD_DEVICE_STATUS = 230     # status the accessory pushes unasked
 
-#: The commands we know how to build a frame for. Anything else is refused
+#: The WRITES we know how to build a frame for. Anything else is refused
 #: rather than sent as a frame whose length or payload we would be inventing.
-BLE_SENDABLE = frozenset({CMD_SET_MODE, CMD_SET_CONFIG, CMD_RESET_FILTER})
+BLE_SENDABLE = frozenset(
+    cmd for cmd, op in BLE_OPCODES.items() if op.send == BLE_SEND_WRITE)
+
+#: The READS: an empty payload, asking the accessory to report. Kept apart from
+#: `BLE_SENDABLE` because the two travel differently — a write opens its own
+#: session (`mqtt/ble_relay.py`), a read is sent into one the parent has just
+#: reported up, and opening another there would restart the link it asks over.
+BLE_READABLE = frozenset(
+    cmd for cmd, op in BLE_OPCODES.items() if op.send == BLE_SEND_READ)
 
 #: The mode values that are real, on EVERY fountain. Anything else is the
 #: device saying "not running right now" in a field that has no way to say it,
@@ -163,3 +177,13 @@ def ble_command_frame(cmd: int, seq: int, payload: bytes) -> str | None:
     if cmd not in BLE_SENDABLE:
         return None
     return build_ble_frame(cmd, seq, payload)
+
+
+def ble_read_frame(cmd: int, seq: int) -> str | None:
+    """The encoded frame for one read, or None if it is not a read we send.
+
+    Always an empty payload: `fa fc fd d2 01 00 00 00 fb` is a 210 at seq 0.
+    """
+    if cmd not in BLE_READABLE:
+        return None
+    return build_ble_frame(cmd, seq, b"")

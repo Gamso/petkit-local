@@ -32,7 +32,7 @@ Two rules about placement that the map does not make obvious:
 
 ## Invariants — do not break these
 
-- **All protocol knowledge lives in `events/codes.py`** — seven namespaces, each row graded
+- **All protocol knowledge lives in `events/codes.py`** — eight namespaces, each row graded
   (`confirmed`/`inferred`/`unverified`/`conflicted`) and carrying the firmware function behind it.
   Add a code there, not in a private set somewhere: the nine parallel collections this replaced are
   exactly why seven real codes were classified by none of them. `events/decode.py` renders values;

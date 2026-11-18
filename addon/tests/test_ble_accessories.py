@@ -208,7 +208,8 @@ async def test_nothing_paired_omits_the_list_key_entirely():
     used to be no `nextTick` either, which left a parent with nothing paired
     holding neither a list nor a time to ask again.
 
-    Both transports must agree, and they have drifted apart once already."""
+    Over MQTT the same answer is no answer at all: wrapped in the envelope
+    the real cloud uses for `user/get` it would be long enough to be parsed."""
     reg = DeviceRegistry()
     reg.get_or_create(petkit_id=10, device_type="t5", serial_number="SN10")
     app = create_app(reg, dict(DEVICE_CONFIG))
@@ -222,8 +223,29 @@ async def test_nothing_paired_omits_the_list_key_entirely():
         await c.close()
 
     bridge = MQTTBridge(reg, None, BLERegistry())
-    mqtt_body = bridge._user_get_payload(reg.get(10), "dev_ble_device")
-    assert mqtt_body == http_body, "the two transports answer the same question differently"
+    assert bridge._user_get_payload(reg.get(10), "dev_ble_device") is None
+
+
+async def test_both_transports_list_the_same_accessories():
+    """They have drifted apart once already. Over MQTT the list is carried in
+    the `user/get` envelope, but what is in it is the HTTP `result`."""
+    reg = DeviceRegistry()
+    reg.get_or_create(petkit_id=10, device_type="t5", serial_number="SN10")
+    ble = BLERegistry()
+    ble.register(ble_type="w5", petkit_id=700, mac="AABBCCDDEEFF",
+                 secret="s3cret", interval=240, link_with=10)
+    app = create_app(reg, dict(DEVICE_CONFIG))
+    app[device_keys.BLE_REGISTRY] = ble
+    c = await _client(app)
+    try:
+        http_body = await (await c.get("/6/t5/dev_ble_device", headers=HDR)).json()
+    finally:
+        await c.close()
+
+    frame = MQTTBridge(reg, None, ble)._user_get_payload(reg.get(10), "dev_ble_device")
+    payload = dict(frame["payload"])
+    assert payload.pop("dataType") == "dev_ble_device"
+    assert payload == http_body["result"]
 
 
 async def test_a_k3_is_never_put_in_the_relay_list():
@@ -1205,7 +1227,10 @@ async def test_a_frame_that_is_not_a_reading_does_not_end_the_session():
         "content": json.dumps({"device": {"mac": "AABBCCDDEEFF"},
                                "payload": [{"cmd": 252, "data": ack}]}),
     })
-    assert bridge._client.sent == [], "hung up before the accessory had spoken"
+    # A 252 is a link-up, so it is answered with reads -- and with no
+    # `connect` of either kind: neither a hang-up nor a re-open.
+    topics = [t.rsplit("/", 1)[-1] for t, _ in bridge._client.sent]
+    assert "connect" not in topics, "hung up before the accessory had spoken"
 
     # A real decode still closes it — the radio is not left on for ever.
     await bridge._ble_relay._handle_ble_response(reg.get(10), {
@@ -1227,6 +1252,415 @@ async def test_a_write_opens_the_session_it_needs():
     assert topics == ["connect", "ble"], topics
     opened = json.loads(bridge._client.sent[0][1])["params"]
     assert opened["connect_action"] == 1 and "time" in opened
+
+
+# --- reading a fountain once its link is up ----------------------------------
+#
+# A T4 (1.652) relaying a CTW3 brought the link up on 4 of 4 sessions, passed
+# on one 252 and then nothing until it hung up. The D4SH observation everything
+# relied on -- the CTW3 pushing its run-info unasked -- did not hold there. The
+# frames below are that T4's own, from `fixtures/`.
+
+T4_CAPTURE = json.loads(
+    (Path(__file__).parent / "fixtures" / "t4_ble_relay_and_data_get.json")
+    .read_text(encoding="utf-8"))
+RELAY = T4_CAPTURE["relay"]
+
+
+def _t4_with_ctw3():
+    reg = DeviceRegistry()
+    reg.get_or_create(petkit_id=10, device_type="t4", serial_number="SN10")
+    ble = BLERegistry()
+    # The capture's MAC, so the captured frames match it unchanged.
+    ble.register(ble_type="ctw3", petkit_id=700, mac="A4C138AABBCC",
+                 secret="s", interval=240, link_with=10)
+    bridge = MQTTBridge(reg, None, ble)
+    bridge._client = _FakeClient()
+    return bridge, reg, ble
+
+
+def _sent_ble(bridge):
+    """`(cmd, decoded frame)` for every `thing/service/ble` publish, in order."""
+    out = []
+    for topic, body in bridge._client.sent:
+        if topic.endswith("/thing/service/ble"):
+            payload = json.loads(body)["params"]["payload"]
+            out.append((payload["cmd"], _decode_frame(payload["data"])))
+    return out
+
+
+def _services(bridge):
+    return [t.rsplit("/", 1)[-1] for t, _ in bridge._client.sent]
+
+
+async def test_a_link_up_is_followed_by_a_state_read_and_a_settings_read():
+    bridge, reg, _ = _t4_with_ctw3()
+    await bridge._handle_event(reg.get(10), "ble_relay_over", RELAY["over_link_up"])
+
+    sent = _sent_ble(bridge)
+    assert [cmd for cmd, _ in sent] == [210, 211]
+    # Exactly the bytes, header to trailer: an empty request, seq per accessory.
+    assert sent[0][1] == bytes.fromhex("fafcfdd201000000fb")
+    assert sent[1][1] == bytes.fromhex("fafcfdd301010000fb")
+    # Into the session the parent has just reported up -- a `connect` here would
+    # ask it to bring the link up all over again.
+    assert "connect" not in _services(bridge)
+
+
+async def test_a_read_goes_out_as_the_writes_do():
+    bridge, reg, _ = _t4_with_ctw3()
+    await bridge._handle_event(reg.get(10), "ble_relay_over", RELAY["over_link_up"])
+    topic, body = bridge._client.sent[0]
+    env = json.loads(body)
+    assert topic.endswith("/thing/service/ble")
+    assert env["method"] == "thing.service.ble"
+    assert env["params"]["device"] == {"type": 24, "mac": "a4c138aabbcc"}
+    # URL-encoded base64, the inverse of what `_ble_decode_data` undoes.
+    assert env["params"]["payload"]["data"] == "%2Bvz90gEAAAD7"
+
+
+async def test_the_252_behind_the_link_up_is_the_same_link_up():
+    """Both carry one `event_id`; reading twice would double every poll."""
+    bridge, reg, _ = _t4_with_ctw3()
+    await bridge._handle_event(reg.get(10), "ble_relay_over", RELAY["over_link_up"])
+    await bridge._handle_event(reg.get(10), "ble_response", RELAY["response_252"])
+    await bridge._handle_event(reg.get(10), "ble_relay_over", RELAY["over_link_up"])
+    assert [cmd for cmd, _ in _sent_ble(bridge)] == [210, 211]
+
+
+async def test_a_252_on_its_own_still_gets_the_reads():
+    """Either half of the link-up may arrive alone."""
+    bridge, reg, _ = _t4_with_ctw3()
+    await bridge._handle_event(reg.get(10), "ble_response", RELAY["response_252"])
+    assert [cmd for cmd, _ in _sent_ble(bridge)] == [210, 211]
+
+
+async def test_the_next_link_up_is_read_again(monkeypatch):
+    from petkit_local.mqtt import ble_relay
+
+    bridge, reg, _ = _t4_with_ctw3()
+    clock = [1794949774.0]
+    monkeypatch.setattr(ble_relay.time, "time", lambda: clock[0])
+    await bridge._handle_event(reg.get(10), "ble_relay_over", RELAY["over_link_up"])
+
+    clock[0] += 240
+    later = json.loads(json.dumps(RELAY["over_link_up"]))
+    later["params"]["event_id"] = "100000001_1794950014"
+    await bridge._handle_event(reg.get(10), "ble_relay_over", later)
+    assert [cmd for cmd, _ in _sent_ble(bridge)] == [210, 211, 210, 211]
+
+
+async def test_a_link_up_without_an_event_id_is_still_read_once(monkeypatch):
+    from petkit_local.mqtt import ble_relay
+
+    bridge, reg, _ = _t4_with_ctw3()
+    monkeypatch.setattr(ble_relay.time, "time", lambda: 1794949774.0)
+    bare = json.loads(json.dumps(RELAY["over_link_up"]))
+    del bare["params"]["event_id"]
+    await bridge._handle_event(reg.get(10), "ble_relay_over", bare)
+    await bridge._handle_event(reg.get(10), "ble_relay_over", bare)
+    assert [cmd for cmd, _ in _sent_ble(bridge)] == [210, 211]
+
+
+@pytest.mark.parametrize("frame", ["start", "over_failed", "over_closed"])
+async def test_nothing_is_read_when_the_link_is_not_up(frame):
+    """`result 6` is a link that never came up; `action 0` is one going down;
+    `ble_relay_start` is the parent only starting to try."""
+    bridge, reg, _ = _t4_with_ctw3()
+    await bridge._handle_event(reg.get(10), f"ble_relay_{frame.split('_')[0]}",
+                               RELAY[frame])
+    assert bridge._client.sent == []
+
+
+async def test_a_k3_or_a_stranger_is_never_read():
+    """A K3 has no frame decoder to read a reply with; a MAC nobody paired is
+    nobody's."""
+    bridge, reg, ble = _t4_with_ctw3()
+    ble.remove(700)
+    await bridge._handle_event(reg.get(10), "ble_relay_over", RELAY["over_link_up"])
+    ble.register(ble_type="k3", petkit_id=555, mac="A4C138AABBCC", link_with=10)
+    await bridge._handle_event(reg.get(10), "ble_relay_over", RELAY["over_link_up"])
+    assert bridge._client.sent == []
+
+
+@pytest.mark.parametrize("content", [
+    "not json", "[1, 2]", json.dumps({"action": "x", "result": None,
+                                      "device": {"mac": 42}}), None,
+])
+async def test_a_garbled_relay_report_is_ignored_not_raised(content):
+    bridge, reg, _ = _t4_with_ctw3()
+    await bridge._handle_event(reg.get(10), "ble_relay_over",
+                               {"params": {"content": content}})
+    assert bridge._client.sent == []
+
+
+async def test_the_session_stays_open_until_both_reads_are_answered():
+    """The status and the settings come back as two replies. Hanging up on the
+    first -- as every decoded frame used to -- loses the second."""
+    import base64
+
+    bridge, reg, ble = _t4_with_ctw3()
+    await bridge._handle_event(reg.get(10), "ble_relay_over", RELAY["over_link_up"])
+
+    status = base64.b64decode(CTW3_CMD230)[:30]
+    await bridge._handle_event(reg.get(10), "ble_response", {"params": {
+        "event_id": "100000001_1794949774",
+        "content": json.dumps({"device": {"type": 24, "mac": "a4c138aabbcc"},
+                               "payload": [{"cmd": 210,
+                                            "data": base64.b64encode(status).decode()}]})}})
+    assert ble.get(700).state["states"]["runStatus"] == 1
+    assert "connect" not in _services(bridge), "hung up on the settings reply"
+
+    settings = bytes.fromhex("030300780" + "4b001030000" + "0100")
+    await bridge._handle_event(reg.get(10), "ble_response", {"params": {
+        "event_id": "100000001_1794949774",
+        "content": json.dumps({"device": {"type": 24, "mac": "a4c138aabbcc"},
+                               "payload": [{"cmd": 211,
+                                            "data": base64.b64encode(settings).decode()}]})}})
+    assert ble.get(700).state["states"]["brightness"] == 3
+    assert json.loads(bridge._client.sent[-1][1])["params"]["connect_action"] == 0
+
+
+async def test_a_pushed_230_answers_both_reads_at_once():
+    bridge, reg, ble = _t4_with_ctw3()
+    await bridge._handle_event(reg.get(10), "ble_relay_over", RELAY["over_link_up"])
+    await bridge._handle_event(reg.get(10), "ble_response", {"params": {
+        "content": json.dumps({"device": {"mac": "a4c138aabbcc"},
+                               "payload": [{"cmd": 230, "data": CTW3_CMD230}]})}})
+    assert json.loads(bridge._client.sent[-1][1])["params"]["connect_action"] == 0
+
+
+async def test_a_session_that_ends_forgets_its_unanswered_reads():
+    """Otherwise the NEXT link's first reading would wait on a read that went
+    unanswered on this one."""
+    bridge, reg, ble = _t4_with_ctw3()
+    await bridge._handle_event(reg.get(10), "ble_relay_over", RELAY["over_link_up"])
+    await bridge._handle_event(reg.get(10), "ble_relay_over", RELAY["over_closed"])
+    assert bridge._ble_relay._pending_reads == {}
+
+
+async def test_no_broker_means_no_reads_and_no_error():
+    bridge, reg, _ = _t4_with_ctw3()
+    bridge._client = None
+    await bridge._handle_event(reg.get(10), "ble_relay_over", RELAY["over_link_up"])
+    assert bridge._ble_relay._pending_reads[700] == set()
+
+
+async def test_a_frame_that_decodes_to_nothing_is_still_heard():
+    """The T4's CTW3 said nothing but a 252 on every link-up. That is not
+    silence: the pairing works and the link comes up. `last_seen` cannot say so
+    -- nothing decoded -- so a second clock does."""
+    bridge, reg, ble = _t4_with_ctw3()
+    await bridge._handle_event(reg.get(10), "ble_response", RELAY["response_252"])
+    dev = ble.get(700)
+    assert dev.last_heard > 0
+    assert dev.last_seen == 0.0, "a 252 is not a reading"
+
+    from petkit_local.devices.ble import BLEDevice
+    assert BLEDevice.from_dict(dev.to_dict()).last_heard == dev.last_heard
+    # A record written before the field existed loads as "never heard".
+    old = {k: v for k, v in dev.to_dict().items() if k != "last_heard"}
+    assert BLEDevice.from_dict(old).last_heard == 0.0
+
+
+async def test_a_frame_for_nobody_stamps_nobody():
+    bridge, reg, ble = _t4_with_ctw3()
+    stranger = json.loads(json.dumps(RELAY["response_252"]))
+    stranger["params"]["content"] = stranger["params"]["content"].replace(
+        "a4c138aabbcc", "a4c138000000")
+    await bridge._handle_event(reg.get(10), "ble_response", stranger)
+    assert ble.get(700).last_heard == 0.0
+
+
+async def test_the_panel_shows_both_clocks():
+    app, reg, ble = _panel()
+    reg.get_or_create(petkit_id=10, device_type="t4", serial_number="SN10")
+    ble.register(ble_type="ctw3", petkit_id=700, mac="A4C138AABBCC", link_with=10)
+    ble.get(700).last_heard = 1794949774.5
+    c = await _client(app)
+    try:
+        row = (await (await c.get("/api/ble")).json())["accessories"][0]
+        assert row["last_heard"] == 1794949774.5
+        assert row["last_seen"] == 0.0
+    finally:
+        await c.close()
+
+
+# --- a K3 reports through its parent, and only through it --------------------
+
+async def test_a_k3_reading_moves_its_last_seen_on_either_transport():
+    """Its parent's state report IS its reading: the panel said "never" for a
+    spray whose battery and liquid had been arriving all along."""
+    from petkit_local.mqtt.ble_relay import update_linked_k3
+
+    reg = DeviceRegistry()
+    parent = reg.get_or_create(petkit_id=10, device_type="t4", serial_number="SN10")
+    ble = BLERegistry()
+    ble.register(ble_type="k3", petkit_id=555, mac="A4C138DDEEFF", link_with=10)
+    bridge = MQTTBridge(reg, _FakePublisher(), ble)
+
+    # MQTT: the T4's own property post, as captured (battery 90, liquid 50).
+    await bridge._handle_event(parent, "property", {"params": {
+        "k3Id": 555, "liquid": 50, "battery": 90, "device": {"k3LightSwitch": 0}}})
+    first = ble.get(555).last_seen
+    assert first > 0
+    assert ble.get(555).last_heard == 0.0, "a K3 sends no frame of its own"
+
+    # HTTP: the same keys at the top of a state report.
+    ble.get(555).last_seen = 0.0
+    assert update_linked_k3(parent, {"battery": 89}, ble) is not None
+    assert ble.get(555).last_seen > 0
+
+    # A report without them says nothing about the spray.
+    ble.get(555).last_seen = 0.0
+    assert update_linked_k3(parent, {"sandPercent": 40}, ble) is None
+    assert ble.get(555).last_seen == 0.0
+
+
+async def test_a_k3_is_never_asked_for_a_reading_even_on_request():
+    """`request_ble_reading` bypassed the rule the periodic poll keeps, and
+    "Read now" on a K3 pushed `connect` with `type: 0` (seen on a T4)."""
+    bridge, reg, ble = _t4_with_ctw3()
+    ble.register(ble_type="k3", petkit_id=555, mac="A4C138DDEEFF", link_with=10)
+    assert await bridge.request_ble_reading(reg.get(10), ble.get(555)) is False
+    assert bridge._client.sent == []
+
+    # Nor is an accessory through a parent that does not relay it.
+    reg.get_or_create(petkit_id=11, device_type="t4", serial_number="SN11")
+    assert await bridge.request_ble_reading(reg.get(11), ble.get(700)) is False
+    assert bridge._client.sent == []
+
+    # Its own parent still asks for it.
+    assert await bridge.request_ble_reading(reg.get(10), ble.get(700)) is True
+    assert _services(bridge) == ["connect"]
+
+
+async def test_read_now_on_a_k3_is_refused_with_the_reason():
+    from petkit_local.web import appkeys as panel_keys
+
+    app, reg, ble = _panel()
+    parent = reg.get_or_create(petkit_id=10, device_type="t4", serial_number="SN10")
+    parent.mqtt_connected = True
+    ble.register(ble_type="k3", petkit_id=555, mac="A4C138DDEEFF", link_with=10)
+
+    class _Bridge:
+        _client = object()
+        asked = False
+
+        async def request_ble_reading(self, parent, dev):
+            _Bridge.asked = True
+            return True
+
+    app[panel_keys.BRIDGE] = _Bridge()
+    c = await _client(app)
+    try:
+        r = await c.post("/api/ble/555/poll")
+        assert r.status == 409
+        assert "reports inside its parent" in (await r.json())["error"]
+        assert _Bridge.asked is False
+        row = (await (await c.get("/api/ble")).json())["accessories"][0]
+        assert row["reports_via_parent"] is True
+    finally:
+        await c.close()
+
+
+# --- an accessory under a parent that cannot be asked (issue #99) -------------
+
+def _row_for(parent_type="t4", *, mqtt=False, online=True, linked=True, ble_type="ctw3"):
+    from petkit_local.web.api.ble import _ble_view
+
+    reg = DeviceRegistry()
+    parent = reg.get_or_create(petkit_id=10, device_type=parent_type, serial_number="SN10")
+    parent.mqtt_connected = mqtt
+    parent.online = online
+    ble = BLERegistry()
+    dev = ble.register(ble_type=ble_type, petkit_id=700, mac="A4C138AABBCC",
+                       link_with=10 if linked else 0)
+    return _ble_view(dev, reg)
+
+
+def test_the_row_says_whether_the_accessory_can_be_reached():
+    on_mqtt = _row_for(mqtt=True)
+    assert on_mqtt["reachable"] is True and on_mqtt["unreachable_reason"] == ""
+    assert on_mqtt["parent_mqtt"] is True
+
+    on_http = _row_for(mqtt=False)
+    assert on_http["reachable"] is False and on_http["parent_mqtt"] is False
+    assert on_http["unreachable_reason"] == (
+        "Pura Max talks HTTP: an accessory can only be read or set while its "
+        "parent is on MQTT")
+
+    offline = _row_for(mqtt=False, online=False)
+    assert offline["reachable"] is False
+    assert offline["unreachable_reason"].startswith("Pura Max is offline:")
+
+    unknown = _row_for(linked=False)
+    assert unknown["reachable"] is False
+    assert unknown["unreachable_reason"] == "No registered device relays this accessory"
+
+
+def test_the_row_points_at_the_firmware_job_only_where_there_is_one():
+    """`patchers/esp32_ota.py` is what puts a T4 on the local broker; a T5 gets
+    there with its own patchers, and pointing it at the job would be wrong."""
+    assert _row_for("t4")["parent_firmware_job"] is True
+    assert _row_for("t5")["parent_firmware_job"] is False
+    assert _row_for(linked=False)["parent_firmware_job"] is False
+
+
+def test_a_k3_is_never_unreachable_on_its_parents_transport():
+    """Nothing is sent to it; its readings come over HTTP as well as MQTT."""
+    row = _row_for(mqtt=False, ble_type="k3")
+    assert row["reachable"] is True and row["unreachable_reason"] == ""
+
+
+async def test_read_now_and_a_write_refuse_in_the_rows_words():
+    from petkit_local.web import appkeys as panel_keys
+
+    app, reg, ble = _panel()
+    parent = reg.get_or_create(petkit_id=10, device_type="t4", serial_number="SN10")
+    parent.online = True
+    ble.register(ble_type="ctw3", petkit_id=700, mac="A4C138AABBCC", link_with=10)
+    app[panel_keys.BRIDGE] = type("B", (), {"_client": object()})()
+    c = await _client(app)
+    try:
+        reason = (await (await c.get("/api/ble")).json())["accessories"][0]["unreachable_reason"]
+        r = await c.post("/api/ble/700/poll")
+        assert r.status == 409 and (await r.json())["error"] == reason
+        r = await c.post("/api/ble/700/command", json={"entity": "ctw3_power", "value": "OFF"})
+        assert r.status == 409 and (await r.json())["error"] == reason
+    finally:
+        await c.close()
+
+
+def test_the_panel_offers_no_button_that_would_fail():
+    """The JS half of #99: the row's actions are decided before any button is
+    drawn, the controls are switched off rather than left to fail, and the
+    firmware job is linked only where the server says there is one."""
+    js = (Path(__file__).resolve().parents[1] / "petkit_local" / "web" / "static"
+          / "js" / "devices.js").read_text(encoding="utf-8")
+    actions = js[js.index("function accActions("):]
+    actions = actions[: actions.index("\n}\n")]
+    read_now = actions.index("ble-read-now")
+    assert actions.index("if (a.reports_via_parent)") < read_now
+    assert actions.index("if (!a.reachable)") < read_now
+    assert "a.unreachable_reason" in actions
+    assert "a.parent_firmware_job" in actions and 'data-tab="patchers"' in actions
+
+    body = js[js.index("function accBody("):]
+    body = body[: body.index("\n}\n")]
+    assert "accActions(a, actions)" in body and "ble-read-now" not in body
+    assert "a.reachable ? '' : 'disabled'" in body
+
+
+def test_a_read_is_not_a_write_and_a_write_is_not_a_read():
+    """Two sets, two builders: a read sent through the write path would open a
+    session first, and a write sent as a read would go out with no payload."""
+    from petkit_local.devices.ble import ble_command_frame, ble_read_frame
+
+    assert ble_read_frame(210, 0) is not None
+    assert ble_command_frame(210, 0, b"") is None
+    assert ble_read_frame(220, 0) is None
+    assert ble_read_frame(252, 0) is None
 
 
 def test_a_ctw3_settings_reply_decodes_with_no_new_offsets():
@@ -1290,6 +1724,14 @@ def test_the_empty_ble_list_answer_stays_under_the_firmware_length_gate():
 
     empty = {"result": {"nextTick": 3600}}
     http_len = len(_json.dumps(empty).encode())
-    mqtt_len = len(_json.dumps(empty, separators=(",", ":")).encode())
     assert http_len < 40, f"HTTP empty answer is {http_len} B and now reaches the parser"
-    assert mqtt_len < 40, f"MQTT empty answer is {mqtt_len} B and now reaches the parser"
+
+    # Over MQTT there is no short form to send: the captured `user/get`
+    # envelope alone is past the gate. So nothing is sent at all.
+    reg = DeviceRegistry()
+    reg.get_or_create(petkit_id=10, device_type="t4", serial_number="SN10")
+    bridge = MQTTBridge(reg, None, BLERegistry())
+    assert bridge._user_get_payload(reg.get(10), "dev_ble_device") is None
+    from petkit_local.devices.payloads import to_data_get_reply
+    wrapped = to_data_get_reply(reg.get(10), "dev_ble_device", {"nextTick": 3600}, now=0)
+    assert len(_json.dumps(wrapped, separators=(",", ":")).encode()) >= 40

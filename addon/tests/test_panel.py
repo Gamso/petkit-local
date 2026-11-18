@@ -1696,7 +1696,7 @@ async def test_an_accessory_write_says_why_it_cannot_be_delivered():
         r = await c.post("/api/ble/700/command",
                          json={"entity": "ctw3_power", "value": "OFF"})
         assert r.status == 409
-        assert "not on MQTT" in (await r.json())["error"]
+        assert "only be read or set while its parent is on MQTT" in (await r.json())["error"]
     finally:
         await c.close()
 

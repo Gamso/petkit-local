@@ -136,7 +136,7 @@ async def test_accessories_are_listed_as_devices_linked_both_ways(a: AccessoryEn
         ("ble", 300, "purifier", "k3")
     assert k3["model"] == "Pura Air K3"
     assert k3["firmware"] is None and k3["is_camera"] is False and k3["accessories"] == []
-    # A K3's readings ride on its parent's reports: no frame, no last_seen.
+    # Its parent has not reported it yet, and it sends nothing of its own.
     assert k3["last_seen"] is None
 
     orphan = devices[ORPHAN_ID]
@@ -230,6 +230,19 @@ async def test_a_write_is_refused_not_queued_while_the_parent_is_off_mqtt(a: Acc
     r = await a.call("PUT", f"/devices/{CTW3_ID}/entities/ctw3_mode", {"value": "smart"})
     await _refused(r, 409, "accessory_unreachable")
     assert "mode" not in a.ctw3.state.get("states", {})
+
+
+async def test_an_unreachable_accessory_is_explained_as_the_panel_explains_it(
+        a: AccessoryEnv):
+    """Issue #99: the words a phone shows are the panel's, from one place."""
+    from petkit_local.devices.ble import relay_blocker
+
+    a.t4.online = True
+    r = await a.call("PUT", f"/devices/{CTW3_ID}/entities/ctw3_mode", {"value": "smart"})
+    await _refused(r, 409, "accessory_unreachable")
+    message = (await r.json())["message"]
+    assert message == relay_blocker(a.ctw3, a.t4)
+    assert message.startswith("Pura Max talks HTTP")
 
 
 async def test_an_accessory_with_no_parent_is_unreachable(a: AccessoryEnv):

@@ -8,6 +8,12 @@ piggybacked on the parent's own `property/post`. Nothing arrives unprompted:
 the parent opens its radio only while the server holds a session open with
 `thing/service/connect`, which is why this both polls and decodes.
 
+A session that is open is not yet a reading. The parent reports the link up
+(`ble_relay_over`, `action 1, result 0`), and a fountain may then say nothing
+of its own: a CTW3 behind a T4 sent one 252 and fell silent on every link-up
+observed. So each link-up is followed by reads of the fountain's status and
+settings (`codes.BLE_LINK_UP_READS`), once, into the session already open.
+
 It owns no broker connection. Every frame goes out through the bridge
 (`mqtt/bridge.py`), which holds the one client to the embedded broker, and
 every path here checks that connection first — a session opened for a publish
@@ -22,8 +28,12 @@ import logging
 import time
 from typing import TYPE_CHECKING
 
-from petkit_local.devices.ble import ble_command_frame, parser_for
+from petkit_local.devices.ble import (
+    CMD_DEVICE_STATUS, ble_command_frame, ble_read_frame, parser_for,
+)
 from petkit_local.devices.ble.framing import _iter_ble_frames
+from petkit_local.events.codes import BLE_LINK_NOTICES, BLE_LINK_UP_READS, ble_opcode_label
+from petkit_local.utils.coerce import to_int
 from petkit_local.utils.dicts import dig
 
 if TYPE_CHECKING:
@@ -39,6 +49,35 @@ log = logging.getLogger(__name__)
 #: Confirmed working at 30 on a CTW3 behind a D4SH; the unit is inferred.
 BLE_SESSION_HOLD_SECONDS = 30
 
+#: Two link-up reports for one accessory this close together are one link-up.
+#:
+#: The parent reports a link twice over — `ble_relay_over` and, ~0.3 s later, a
+#: 252 sharing its `event_id` — and either may arrive alone. The `event_id`
+#: settles it when both carry one; this window is for when they do not, and is
+#: far shorter than any poll interval, so it never swallows the next session.
+LINK_UP_DEDUP_SECONDS = 10.0
+
+
+def _relay_content(params: object) -> dict:
+    """The decoded `content` of a relay event, or {} for anything unreadable.
+
+    Device input: a `content` that is not a JSON object is treated as empty
+    rather than raised on.
+    """
+    content = params.get("content", {}) if isinstance(params, dict) else {}
+    if isinstance(content, str):
+        try:
+            content = json.loads(content)
+        except (ValueError, TypeError):
+            content = {}
+    return content if isinstance(content, dict) else {}
+
+
+def _event_id(params: object) -> str:
+    """The `event_id` a relay event carries, as text, or "" when it has none."""
+    value = params.get("event_id") if isinstance(params, dict) else None
+    return value if isinstance(value, str) else ""
+
 
 def update_linked_k3(device: "Device", params: dict,
                      ble_registry: "BLERegistry | None") -> "BLEDevice | None":
@@ -52,6 +91,10 @@ def update_linked_k3(device: "Device", params: dict,
     for the reason `_extract_feeder_next_gen` records: a mapping added to
     only one of them works on whichever frames happen to carry it and
     silently does nothing on the other.
+
+    A reading that arrives here is the K3's reading, so it moves the K3's own
+    `last_seen` — the only clock it has, since it never sends a frame of its own
+    and so is never "heard" (`BLEDevice.reports_via_parent`).
 
     Returns:
         The K3 BLEDevice if anything changed (the caller re-publishes it to
@@ -73,6 +116,7 @@ def update_linked_k3(device: "Device", params: dict,
 
     if not updated:
         return None
+    k3.last_seen = time.time()
     ble_registry.mark_dirty()
     log.info("Updated K3 (id=%d) from parent device %d: battery=%s liquid=%s",
              k3.petkit_id, device.petkit_id,
@@ -101,6 +145,34 @@ class BLERelay:
         self._ble_poll_ts: dict[int, float] = {}
         #: Per-accessory BLE frame sequence, wrapping at a byte.
         self._ble_seq: dict[int, int] = {}
+        #: Per accessory, the link-up last read on: `(event_id, when)`.
+        self._link_reads: dict[int, tuple[str, float]] = {}
+        #: Per accessory, the reads sent on the current link that have not been
+        #: answered yet. The session is closed only once this is empty, so a
+        #: status reply does not hang up on the settings reply behind it.
+        self._pending_reads: dict[int, set[int]] = {}
+
+    def _next_seq(self, ble: BLEDevice) -> int:
+        """This accessory's next frame sequence number, wrapping at a byte."""
+        seq = self._ble_seq.get(ble.petkit_id, 0)
+        self._ble_seq[ble.petkit_id] = (seq + 1) & 0xFF
+        return seq
+
+    async def _publish_frame(self, device: Device, ble: BLEDevice,
+                             cmd: int, data: str) -> None:
+        """One `thing/service/ble` publish carrying an encoded frame."""
+        now = int(time.time())
+        envelope = {
+            "method": "thing.service.ble",
+            "id": str(now),
+            "params": {
+                "device": {"type": ble.ble_type_int, "mac": ble.wire_mac},
+                "payload": {"cmd": cmd, "data": data},
+                "timestamp": now,
+            },
+            "version": "1.0.0",
+        }
+        await self._bridge.publish_service(device, "ble", envelope)
 
     async def publish_ble_command(self, device: Device, ble: BLEDevice,
                                  cmd: int, payload: bytes) -> bool:
@@ -123,28 +195,88 @@ class BLERelay:
         if not self._bridge.connected:
             return False
         await self._ble_connect(device, ble, action=1)
-        seq = self._ble_seq.get(ble.petkit_id, 0)
-        self._ble_seq[ble.petkit_id] = (seq + 1) & 0xFF
-        data = ble_command_frame(cmd, seq, payload)
+        data = ble_command_frame(cmd, self._next_seq(ble), payload)
         if data is None:
             log.warning("No BLE opcode known for cmd %s (%s id=%d)",
                         cmd, ble.ble_type, ble.petkit_id)
             return False
-        now = int(time.time())
-        envelope = {
-            "method": "thing.service.ble",
-            "id": str(now),
-            "params": {
-                "device": {"type": ble.ble_type_int, "mac": ble.wire_mac},
-                "payload": {"cmd": cmd, "data": data},
-                "timestamp": now,
-            },
-            "version": "1.0.0",
-        }
-        await self._bridge.publish_service(device, "ble", envelope)
+        await self._publish_frame(device, ble, cmd, data)
         log.info("BLE cmd %d -> %s (mac=%s) via parent %d",
                  cmd, ble.ble_type, ble.mac, device.petkit_id)
         return True
+
+    async def publish_ble_read(self, device: Device, ble: BLEDevice, cmd: int) -> bool:
+        """Ask an accessory to report, over the session its parent holds NOW.
+
+        The write path's twin with one difference that is the whole point: it
+        does NOT open a session first. It is sent because the parent has just
+        reported the link up, and a `connect` pushed into that link would ask
+        the parent to bring it up again rather than use it.
+
+        Returns False when nothing could be sent (no broker, or `cmd` is not a
+        read — `framing.BLE_READABLE`).
+        """
+        if not self._bridge.connected:
+            return False
+        data = ble_read_frame(cmd, self._next_seq(ble))
+        if data is None:
+            log.warning("cmd %s is not a BLE read (%s id=%d)",
+                        cmd, ble.ble_type, ble.petkit_id)
+            return False
+        await self._publish_frame(device, ble, cmd, data)
+        log.info("BLE read %s -> %s (mac=%s) via parent %d", ble_opcode_label(cmd),
+                 ble.ble_type, ble.mac, device.petkit_id)
+        return True
+
+    async def _read_on_link_up(self, device: Device, ble: BLEDevice,
+                               event_id: str) -> None:
+        """Ask a fountain for its status and its settings, once per link-up.
+
+        Only an accessory with a frame decoder is asked: that is the fountains,
+        and a reply nothing here can read would only be logged. Bounded twice —
+        two reads per link-up and no retry, so a fountain that does not answer
+        costs two frames per poll interval rather than a parent's radio held
+        busy (see `_handle_ble_response` on why a retry here would race the
+        next poll).
+        """
+        if parser_for(ble.ble_type) is None:
+            return
+        now = time.time()
+        last_event, last_at = self._link_reads.get(ble.petkit_id, ("", 0.0))
+        if (event_id and event_id == last_event) or now - last_at < LINK_UP_DEDUP_SECONDS:
+            return
+        self._link_reads[ble.petkit_id] = (event_id, now)
+        sent = set()
+        for cmd in BLE_LINK_UP_READS:
+            if await self.publish_ble_read(device, ble, cmd):
+                sent.add(cmd)
+        self._pending_reads[ble.petkit_id] = sent
+
+    async def _handle_relay_over(self, device: Device, params: dict) -> None:
+        """React to the parent reporting a BLE link up, failed, or closed.
+
+        `ble_relay_over` is the completion of the CONNECT, not of the data
+        exchange (see `_handle_ble_response`): `action 1, result 0` is the link
+        up and ready, which is when the reads go out. `result 6` on `action 1`
+        is a link that never came up; `action 0` is the session ending, which
+        abandons whatever read was still unanswered.
+        """
+        if not self._ble_registry:
+            return
+        content = _relay_content(params)
+        mac = dig(content, "device", "mac", default="")
+        ble_dev = self._ble_registry.get_by_mac(mac) if isinstance(mac, str) and mac else None
+        if ble_dev is None:
+            return
+        action = to_int(content.get("action"), None)
+        result = to_int(content.get("result"), None)
+        if action == 1 and result == 0:
+            await self._read_on_link_up(device, ble_dev, _event_id(params))
+        elif action == 1:
+            log.info("%s (id=%d): parent %d could not bring the BLE link up (result %s)",
+                     ble_dev.ble_type.upper(), ble_dev.petkit_id, device.petkit_id, result)
+        elif action == 0:
+            self._pending_reads.pop(ble_dev.petkit_id, None)
 
     async def request_ble_reading(self, device: Device, ble: BLEDevice) -> bool:
         """Ask the parent for a reading from this accessory, right now.
@@ -154,8 +286,16 @@ class BLERelay:
         making them wait up to four minutes for the timer is the opposite of an
         answer. The throttle is then re-armed so the periodic loop does not
         immediately ask again.
+
+        Held to the poll's own rule (`non_k3_for_parent`): only an accessory in
+        this parent's relay list is asked for. A K3 is in no relay list — a
+        `connect` for one names `type: 0`, a scan for a device the parent was
+        never told about — and it reports inside its parent's state anyway.
         """
-        if not self._bridge.connected:
+        if not self._bridge.connected or not self._ble_registry:
+            return False
+        relayed = {b.petkit_id for b in self._ble_registry.non_k3_for_parent(device.petkit_id)}
+        if ble.petkit_id not in relayed:
             return False
         await self._ble_connect(device, ble, action=1)
         self._ble_poll_ts[ble.petkit_id] = time.time()
@@ -320,20 +460,22 @@ class BLERelay:
         if not self._ble_registry:
             return
 
-        content = params.get("content", {})
-        if isinstance(content, str):
-            try:
-                content = json.loads(content)
-            except (ValueError, TypeError):
-                content = {}
+        content = _relay_content(params)
 
         ble_mac = dig(content, "device", "mac", default="")
 
-        ble_dev = self._ble_registry.get_by_mac(ble_mac) if ble_mac else None
+        ble_dev = (self._ble_registry.get_by_mac(ble_mac)
+                   if isinstance(ble_mac, str) and ble_mac else None)
         if not ble_dev:
             log.debug("BLE response with no matching accessory (mac=%s)", ble_mac)
             return
 
+        # Heard, whatever it said: the frame came from this MAC through its
+        # parent, which is proof of the pairing even when nothing decodes.
+        ble_dev.last_heard = time.time()
+        self._ble_registry.mark_dirty()
+
+        frames = list(_iter_ble_frames(content))
         parse = parser_for(ble_dev.ble_type)
         fragment = parse(content) if parse is not None else {}
         if fragment:
@@ -350,16 +492,22 @@ class BLERelay:
             # or a short 251/252, and dropping those in silence left "the
             # switch flipped back" as the only symptom of a frame the accessory
             # did not accept.
-            replies = [(cmd, bytes(data).hex() or "(empty)")
-                       for cmd, data in _iter_ble_frames(content)]
+            replies = [(cmd, bytes(data).hex() or "(empty)") for cmd, data in frames]
             if replies:
                 log.info("%s (id=%d) replied: %s", ble_dev.ble_type.upper(),
                          ble_dev.petkit_id,
-                         ", ".join(f"cmd {c} {d}" for c, d in replies))
+                         ", ".join(f"{ble_opcode_label(c)} {d}" for c, d in replies))
             else:
                 log.info("%s ble_response not decodable yet (id=%d) - turn capture on in the "
                          "panel (Setup -> Settings) to collect frames",
                          ble_dev.ble_type.upper(), ble_dev.petkit_id)
+
+        # A 251/252 is the accessory's side of a link-up. It shares its
+        # `event_id` with the parent's `ble_relay_over`, so whichever of the two
+        # arrives first sends the reads and the other is recognised as the same
+        # link-up.
+        if any(cmd in BLE_LINK_NOTICES for cmd, _ in frames):
+            await self._read_on_link_up(device, ble_dev, _event_id(params))
 
         # Hang up only once a reading is actually in. A session is also
         # answered with frames that are not status — a bare `01` write ack, a
@@ -367,7 +515,18 @@ class BLERelay:
         # accessory got to its run-info pass, which is most of why a CTW3 was so
         # hard to get anything out of. The hold above bounds the session, so
         # leaving it open costs a fixed number of seconds rather than for ever.
-        if fragment:
+        #
+        # And not while a read sent on this link is still unanswered: the
+        # status and the settings come back as separate replies, and hanging up
+        # on the first loses the second. A 230 carries both blocks.
+        pending = self._pending_reads.get(ble_dev.petkit_id)
+        if fragment and pending:
+            answered = {cmd for cmd, _ in frames}
+            pending -= answered
+            if CMD_DEVICE_STATUS in answered:
+                pending.clear()
+        if fragment and not pending:
+            self._pending_reads.pop(ble_dev.petkit_id, None)
             await self._ble_connect(device, ble_dev, action=0)
 
         if self._ha_publisher:

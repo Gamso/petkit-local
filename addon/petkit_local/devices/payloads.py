@@ -34,6 +34,7 @@ _DEVICE_TYPE_IDS: dict[str, int] = {
     "d4sh": 25,
 }
 from petkit_local.devices.state_tables import CONSUMABLE_RECORD_KEY, SPRAY_TOTAL_DAYS
+from petkit_local.events.codes import CONFIRMED, INFERRED
 from petkit_local.utils.coerce import to_float
 from petkit_local.utils.const import DEVICE_LOG_KEY_PREFIX, DEVICE_TYPES_DERIVED_BROKER
 
@@ -515,4 +516,64 @@ def to_oss_sts(device: Device, bucket_endpoint: str = "",
             "type": "oci",
             "capability": capability,
         }
+    }
+
+
+# --- the same bodies over MQTT ------------------------------------------------
+#
+# A device on MQTT asks for these with `thing/event/data_get/post`
+# (`params.dataType` names the endpoint) and is answered on `/{pk}/{dn}/user/get`
+# -- the channel `on_iot_recv_from_topic` reads, which dispatches on `msgType`
+# and `type` exactly as the heartbeat's `msgType 0` does. So the HTTP body is
+# not sent as it is. Captured from the real cloud answering a T4 (1.652) on
+# 2026-11-17, every reply is
+#
+#     {"msgType": 0, "type": "t4_data_get", "timestamp": <s>,
+#      "payload": {"dataType": "<the endpoint>", ...}}
+#
+# and what stands in for the HTTP `result` inside `payload` is per endpoint:
+# spread into it for some, nested under one key for others. Until then we
+# published `{"result": ...}` -- no `msgType`, no `type`, nothing for that
+# dispatcher to route.
+
+#: dataType -> `(key, grade)`: the key the HTTP `result` is nested under inside
+#: `payload`, or None when its fields are spread into `payload` beside
+#: `dataType`. Graded like every row in `events/codes.py`.
+#:
+#: The CONFIRMED rows are the T4 capture, one reply each (fixture:
+#: `tests/fixtures/t4_ble_relay_and_data_get.json`). `dev_k3_device_info` is
+#: recorded from it but not answered over MQTT here yet. `dev_feed_get` was not
+#: in it -- a T4 has no feed -- and is spread like the other object results
+#: that carry a `nextTick`; nothing has confirmed that.
+DATA_GET_REPLY_SHAPES: dict[str, tuple[str | None, str]] = {
+    "dev_device_info": ("device", CONFIRMED),
+    "dev_schedule_get": ("schedule", CONFIRMED),
+    "dev_k3_device_info": ("k3Device", CONFIRMED),
+    "dev_ble_device": (None, CONFIRMED),
+    "dev_multi_config": (None, CONFIRMED),
+    "dev_serverinfo": (None, CONFIRMED),
+    "dev_feed_get": (None, INFERRED),
+}
+
+
+def to_data_get_reply(device: Device, data_type: str, result: Any,
+                      now: float | None = None) -> dict[str, Any]:
+    """The `user/get` frame answering one MQTT `data_get` with `result`.
+
+    `result` is what the HTTP endpoint would put under `result`. `type` is the
+    device's own codename with `_data_get` -- `t4_data_get` on the T4 it was
+    captured from; the same rule for every other model is an inference.
+
+    Raises:
+        KeyError: for a dataType not in `DATA_GET_REPLY_SHAPES`. Only the
+            bridge calls this, and only with a type it has a result for.
+    """
+    key, _grade = DATA_GET_REPLY_SHAPES[data_type]
+    body: dict[str, Any] = {key: result} if key else dict(result)
+    body["dataType"] = data_type
+    return {
+        "msgType": 0,
+        "payload": body,
+        "type": f"{device.device_type.lower()}_data_get",
+        "timestamp": int(time.time() if now is None else now),
     }

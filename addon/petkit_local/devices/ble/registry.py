@@ -13,11 +13,15 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from petkit_local.devices.registry import PersistedRegistry
 from petkit_local.utils.coerce import to_int
+from petkit_local.utils.const import device_display_name
 from petkit_local.utils.dicts import dig
+
+if TYPE_CHECKING:
+    from petkit_local.devices.base import Device
 
 log = logging.getLogger(__name__)
 
@@ -95,9 +99,10 @@ class BLEDevice:
     `link_with` is the `petkit_id` of that parent, and is what every lookup here
     keys on: the accessory has no network identity of its own, so it has no
     credentials, no heartbeat and no liveness of its own either — `state` is
-    only ever updated as a side effect of the parent reporting. `last_seen` is
-    the one exception and is about the accessory itself: when it last said
-    anything at all, through whoever relayed it.
+    only ever updated as a side effect of the parent reporting. `last_seen` and
+    `last_heard` are the exception and are about the accessory itself: when it
+    last reported a reading, and when it last said anything at all, through
+    whoever relayed it.
     """
 
     ble_type: str
@@ -120,6 +125,12 @@ class BLEDevice:
     #: about a relayed device: has it ever spoken, and how long ago. With a
     #: `scan_type` that may be a guess, "never" is the symptom to look for.
     last_seen: float = 0.0
+    #: When ANY frame under this accessory's MAC last arrived, reading or not —
+    #: a write ack, a link-up 252, a block too short to decode. Kept apart from
+    #: `last_seen` because the two failures they separate need different fixes:
+    #: never heard is the pairing (scan type, MAC, relay list), heard but never
+    #: read is the conversation once the link is up.
+    last_heard: float = 0.0
     state: dict[str, Any] = field(default_factory=dict)
     #: The K3's operating parameters, served as the parent's
     #: `settings.k3Config.config` (see `K3_DEFAULT_CONFIG`). Unused by the
@@ -169,6 +180,17 @@ class BLEDevice:
         return self.scan_type or BLE_TYPE_MAP.get(self.ble_type, 0)
 
     @property
+    def reports_via_parent(self) -> bool:
+        """Whether this accessory's readings ride on its parent's own report.
+
+        A K3: its `battery` and `liquid` arrive in the parent's state report
+        over either transport (`mqtt/ble_relay.py::update_linked_k3`), and it
+        sends no frame of its own — so there is nothing to ask it for and no
+        relay session to open, and its `last_seen` is its parent's report.
+        """
+        return self.ble_type == "k3"
+
+    @property
     def scan_type_is_guessed(self) -> bool:
         """Whether this accessory is being scanned for on an invented number."""
         return not self.scan_type and self.ble_type not in BLE_TYPE_CONFIRMED \
@@ -201,6 +223,7 @@ class BLEDevice:
             "interval": self.interval,
             "scan_type": self.scan_type,
             "last_seen": self.last_seen,
+            "last_heard": self.last_heard,
             "state": self.state,
             "config": self.config,
             "settings": self.settings,
@@ -210,6 +233,36 @@ class BLEDevice:
     def from_dict(cls, data: dict[str, Any]) -> BLEDevice:
         """Rebuild from `to_dict`, ignoring keys this version no longer has."""
         return cls(**{k: v for k, v in data.items() if k in cls.__dataclass_fields__})
+
+
+def relay_blocker(accessory: BLEDevice, parent: Device | None) -> str:
+    """Why this accessory cannot be read or set right now, or "" when it can.
+
+    One answer for every place that has to give it — the panel's row, its read
+    and write handlers, the app API's `accessory_unreachable` — so a phone and
+    the panel say the same thing in the same words.
+
+    An accessory is reached only by a `thing/service/*` publish to its parent:
+    `connect` to open the link, `ble` for the frame. Those exist only over MQTT,
+    and there is no HTTP way to ask a parent for an accessory's reading — none
+    is known from any firmware. So a parent on HTTP is not a parent that is
+    slow to answer; it is one that cannot be asked at all.
+
+    A K3 is never blocked by this: nothing is ever sent to it, and its readings
+    arrive in its parent's own report over either transport
+    (`reports_via_parent`).
+    """
+    if accessory.reports_via_parent:
+        return ""
+    if parent is None:
+        return "No registered device relays this accessory"
+    if parent.mqtt_connected:
+        return ""
+    name = device_display_name(parent.device_type)
+    if not parent.online:
+        return (f"{name} is offline: an accessory can only be read or set while its "
+                f"parent is on MQTT")
+    return f"{name} talks HTTP: an accessory can only be read or set while its parent is on MQTT"
 
 
 #: The K3's operating parameters, as the parent's `settings.k3Config.config`.

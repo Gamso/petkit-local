@@ -37,6 +37,7 @@ from petkit_local.devices.state_parsers import (
 )
 from petkit_local.ha.categories import get_setting_fields
 from petkit_local.events import codes, ingest
+from petkit_local.http.handlers.feed import feed_push, migrate_minute_schedule
 from petkit_local.events.ingest import (apply_derived_state, apply_state_snapshot,
                                         entity_for_event, telemetry_only)
 from petkit_local.mqtt.auth import internal_credentials
@@ -555,6 +556,10 @@ class MQTTBridge:
         elif event_type == "ble_response":
             await self._ble_relay._handle_ble_response(device, params)
 
+        elif event_type == "ble_relay_over":
+            # The link coming up is when an accessory is asked to report.
+            await self._ble_relay._handle_relay_over(device, params)
+
         # Fire the matching HA event entity (momentary). `content`, not
         # `params`: everything in the payload besides `event_type` becomes an
         # attribute of the HA event, and `params` is the transport envelope —
@@ -646,16 +651,23 @@ class MQTTBridge:
 
     async def _reply_user_get(self, device: Device, params: dict) -> None:
         """Answer an MQTT data_get by publishing the requested resource to
-        /{pk}/{dn}/user/get (localkit UserGet)."""
+        /{pk}/{dn}/user/get, in the envelope the real cloud uses
+        (`payloads.to_data_get_reply`)."""
         if not self._client:
             return
         data_type = dig(params, "dataType", default="")
-        payload = self._user_get_payload(device, data_type)
+        payload = self._user_get_payload(device, data_type) if isinstance(data_type, str) \
+            else None
         if payload is None:
             log.debug("data_get: unsupported/empty dataType %r for device %d", data_type, device.petkit_id)
             return
         topic = user_get_topic(device.mqtt_product_key, device.mqtt_device_name)
         await self._client.publish(topic, _dumps(payload))
+        if self._hub is not None:
+            # The answer is half the conversation; without it the live log
+            # showed a device asking for its config and nothing coming back.
+            self._hub.record_mqtt(device.petkit_id, topic, _dumps(payload),
+                                  outbound=True, client=device.mqtt_device_name)
         log.info("Replied user/get %s for device %d", data_type, device.petkit_id)
 
     async def publish_user_get(self, device: Device, payload: dict) -> bool:
@@ -689,47 +701,66 @@ class MQTTBridge:
     def _user_get_payload(self, device: Device, data_type: str) -> dict | None:
         """Build the answer to one MQTT data_get.
 
-        `dataType` names the same resources the HTTP API serves, and the
-        payloads are deliberately the same objects those handlers return, so
-        a device gets identical config over either transport.
+        `dataType` names the same resources the HTTP API serves, and what is
+        sent is deliberately the same object those handlers put under
+        `result`, so a device gets identical config over either transport —
+        carried in the `user/get` envelope the real cloud uses, which is not
+        the HTTP body (`payloads.to_data_get_reply`, captured on a T4).
 
         Returns:
-            The resource dict, or None when the type is unsupported or the
-            resource simply isn't configured (no schedule, no server URL) —
-            the caller then stays silent rather than replying with an empty
-            resource the device would take as authoritative.
+            The whole `user/get` frame, or None when the type is unsupported
+            or the resource simply isn't configured (no schedule, no server
+            URL, nothing paired) — the caller then stays silent rather than
+            replying with an empty resource the device would take as
+            authoritative.
         """
+        result = self._data_get_result(device, data_type)
+        if result is None:
+            return None
+        return payloads.to_data_get_reply(device, data_type, result)
+
+    def _data_get_result(self, device: Device, data_type: str) -> Any:
+        """What the HTTP endpoint named `data_type` would put under `result`."""
         if data_type == "dev_device_info":
-            return payloads.to_device_info(device, self._ble_registry)
+            return payloads.to_device_info(device, self._ble_registry)["result"]
         if data_type == "dev_multi_config":
-            return payloads.to_multi_config(device)
+            return payloads.to_multi_config(device)["result"]
         if data_type == "dev_serverinfo":
-            return payloads.to_serverinfo(device, self._api_url) if self._api_url else None
+            return payloads.to_serverinfo(device, self._api_url)["result"] \
+                if self._api_url else None
         if data_type == "dev_schedule_get":
-            sched = device.config.get("schedule")
-            return {"result": sched} if sched is not None else None
+            return device.config.get("schedule")
         if data_type == "dev_feed_get":
             feed = device.config.get("feed_schedule")
-            if isinstance(feed, dict) and not device.feed_schedule_active:
-                # Paused: the same store with its recurring meals withheld,
-                # as `http/handlers/feed.py` does for the HTTP form of this ask.
-                feed = {**feed, "schedule": []}
-            return {"result": feed} if feed is not None else None
+            if feed is None:
+                return None
+            if isinstance(feed, dict) and migrate_minute_schedule(feed):
+                self._registry.mark_dirty()
+            # The plan as `dev_feed_get` serves it — countdowns recomputed, a
+            # paused plan's meals withheld, and our own `deferred` store and
+            # version stamp kept to ourselves, which the stored dict sent
+            # verbatim did not.
+            return feed_push(device)
         if data_type == "dev_ble_device":
-            # Deliberately identical to `http/handlers/ble_device.py` — the two
-            # answer the same question over different transports and have
-            # drifted apart once already. Neither sends `list` when it would be
-            # empty: 1.8.1 sent `[]` on both, matching PetKit's own cloud, and
-            # owners reported it crashing devices. See that handler for what is
-            # and is not known about those reports.
+            # Deliberately the same list as `http/handlers/ble_device.py` — the
+            # two answer the same question over different transports and have
+            # drifted apart once already.
             lst = []
             if self._ble_registry:
                 for b in self._ble_registry.non_k3_for_parent(device.petkit_id):
                     lst.append(b.to_ble_list_entry())
-            result: dict = {"nextTick": 3600}
-            if lst:
-                result["list"] = lst
-            return {"result": result}
+            if not lst:
+                # NO answer with nothing paired, where HTTP sends `nextTick`
+                # alone. That HTTP body is safe only because it is too short to
+                # be read: `pk_schmg_parse_ble_dev_list` drops anything under 40
+                # bytes, and the parser it never reaches is where owners
+                # reported a listless answer crashing devices (see that
+                # handler). The captured envelope is far past 40 bytes, so
+                # wrapped in it the same answer would be parsed. Silence is
+                # what the device got before: our unenveloped `{"result": ...}`
+                # had nothing for `user/get`'s dispatcher to route either.
+                return None
+            return {"nextTick": 3600, "list": lst}
         return None
 
     async def publish_to_device(self, device: Device, topic_suffix: str, payload: dict | str) -> None:

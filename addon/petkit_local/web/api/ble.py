@@ -17,10 +17,12 @@ from aiohttp import web
 
 from petkit_local.devices.ble import (
     BLE_TYPES, CLOUD_BINDING_ENDPOINTS, ble_command_for, cloud_bindings, normalize_mac,
+    relay_blocker,
 )
 from petkit_local.ha.commands import PROPERTY_SET_SUFFIX, Refused, make_mqtt_property_set
 from petkit_local.ha.entities.ble import get_ble_entities
 from petkit_local.http.cloud_fetch import CLOUD_TIMEOUT, CloudRefused, fetch_as_device
+from petkit_local.patchers.esp32_ota import PATCHABLE_TYPES
 from petkit_local.utils.coerce import to_int
 from petkit_local.utils.const import device_display_name
 from petkit_local.utils.dicts import dig_path
@@ -83,6 +85,7 @@ def _ble_view(dev: BLEDevice, reg: DeviceRegistry | None = None) -> dict[str, An
     """
     entities = get_ble_entities(dev.ble_type)
     parent = reg.get(dev.link_with) if (reg and dev.link_with) else None
+    blocker = relay_blocker(dev, parent)
     return {
         "petkit_id": dev.petkit_id,
         "ble_type": dev.ble_type,
@@ -92,7 +95,24 @@ def _ble_view(dev: BLEDevice, reg: DeviceRegistry | None = None) -> dict[str, An
         "parent_name": device_display_name(parent.device_type) if parent else "",
         "parent_type": parent.device_type if parent else "",
         "parent_online": bool(parent and parent.online),
+        "parent_mqtt": bool(parent and parent.mqtt_connected),
+        # Whether "Read now" and the writes can work at all right now, and if
+        # not, why — said on the row, instead of offering buttons that fail
+        # (issue #99). The row is rebuilt on every hub event, which includes
+        # the parent's MQTT connect and disconnect, so they come back by
+        # themselves.
+        "reachable": not blocker,
+        "unreachable_reason": blocker,
+        # A parent the ESP32 firmware job can put on the local broker: the
+        # one fix for "talks HTTP" there is, so the row points at it.
+        "parent_firmware_job": bool(parent and parent.device_type in PATCHABLE_TYPES),
+        # A reading, and any frame at all. A fountain that answers its link-up
+        # but has never reported is the case the second one exists for.
         "last_seen": dev.last_seen,
+        "last_heard": dev.last_heard,
+        # A K3: it has no relay session to read, and `last_seen` is when its
+        # parent last reported it.
+        "reports_via_parent": dev.reports_via_parent,
         "entities": [{
             "component": e.component, "key": e.key, "name": e.name,
             "value_path": e.value_path, "unit": e.unit, "device_class": e.device_class,
@@ -427,16 +447,11 @@ async def api_ble_command(request: web.Request) -> web.Response:
             {"error": f"unusable value for {entity.key}"}, status=400)
 
     parent = reg.get(dev.link_with) if dev.link_with else None
-    if parent is None:
-        return web.json_response(
-            {"error": "no registered parent to relay through"}, status=409)
+    blocker = relay_blocker(dev, parent)
+    if blocker:
+        return web.json_response({"error": blocker}, status=409)
     if bridge is None or not getattr(bridge, "_client", None):
         return web.json_response({"error": "MQTT bridge is not running"}, status=409)
-    if not parent.mqtt_connected:
-        return web.json_response(
-            {"error": f"{device_display_name(parent.device_type)} is not on MQTT — "
-                      f"an accessory can only be reached while its parent is"},
-            status=409)
 
     try:
         cmd, payload = ble_command_for(dev, entity.key, value)
@@ -476,17 +491,20 @@ async def api_ble_poll(request: web.Request) -> web.Response:
     dev = ble.get(to_int(request.match_info.get("id"), 0) or 0)
     if dev is None:
         return web.json_response({"error": "not found"}, status=404)
-    parent = reg.get(dev.link_with) if dev.link_with else None
-    if parent is None:
+    if dev.reports_via_parent:
+        # Before any transport check: no parent and no transport would make
+        # this one work. A `connect` for a K3 asks the parent to scan for a
+        # device it was never told to relay.
         return web.json_response(
-            {"error": "no registered parent to relay through"}, status=409)
+            {"error": f"a {device_display_name(dev.ble_type)} has nothing to read on its own: "
+                      f"it reports inside its parent's state, on the parent's schedule"},
+            status=409)
+    parent = reg.get(dev.link_with) if dev.link_with else None
+    blocker = relay_blocker(dev, parent)
+    if blocker:
+        return web.json_response({"error": blocker}, status=409)
     if bridge is None or not getattr(bridge, "_client", None):
         return web.json_response({"error": "MQTT bridge is not running"}, status=409)
-    if not parent.mqtt_connected:
-        return web.json_response(
-            {"error": f"{device_display_name(parent.device_type)} is not on MQTT — "
-                      f"an accessory can only be reached while its parent is"},
-            status=409)
 
     if not await bridge.request_ble_reading(parent, dev):
         return web.json_response({"error": "nothing was sent"}, status=502)

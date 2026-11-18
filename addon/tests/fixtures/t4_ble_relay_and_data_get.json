@@ -1,0 +1,377 @@
+{
+ "source": "T4 Pura Max firmware 1.652 on the local broker, relaying a CTW3 (type 24), proxy mode on; 2026-11-17. Ids, MACs, serials and secrets replaced, XDevice redacted; everything else verbatim.",
+ "relay": {
+  "start": {
+   "id": "10",
+   "version": "1.0",
+   "params": {
+    "XDevice": "REDACTED",
+    "event_id": "100000001_1794949771",
+    "timestamp": 1794949771,
+    "content": "{\"start_time\":1794949771,\"start_reason\":2,\"action\":1,\"device\":{\"mac\":\"a4c138aabbcc\",\"type\":24}}",
+    "state": "{\"state\":0}"
+   },
+   "method": "thing.event.ble_relay_start.post"
+  },
+  "over_link_up": {
+   "id": "11",
+   "version": "1.0",
+   "params": {
+    "XDevice": "REDACTED",
+    "event_id": "100000001_1794949774",
+    "timestamp": 1794949774,
+    "content": "{\"start_time\":1794949774,\"start_reason\":2,\"result\":0,\"action\":1,\"err\":null,\"device\":{\"mac\":\"a4c138aabbcc\",\"type\":24}}",
+    "state": "{\"state\":2}"
+   },
+   "method": "thing.event.ble_relay_over.post"
+  },
+  "response_252": {
+   "id": "12",
+   "version": "1.0",
+   "params": {
+    "XDevice": "REDACTED",
+    "event_id": "100000001_1794949774",
+    "timestamp": 1794949774,
+    "content": "{\"payload\":[{\"cmd\":252,\"data\":\"AAE%3D\"}],\"device\":{\"type\":24,\"mac\":\"a4c138aabbcc\"}}"
+   },
+   "method": "thing.event.ble_response.post"
+  },
+  "over_closed": {
+   "id": "15",
+   "version": "1.0",
+   "params": {
+    "XDevice": "REDACTED",
+    "event_id": "100000001_1794949904",
+    "timestamp": 1794949904,
+    "content": "{\"start_time\":1794949904,\"start_reason\":0,\"result\":1,\"action\":0,\"err\":null,\"device\":{\"mac\":\"a4c138aabbcc\",\"type\":24}}",
+    "state": "{\"state\":0}"
+   },
+   "method": "thing.event.ble_relay_over.post"
+  },
+  "over_failed": {
+   "id": "17",
+   "version": "1.0",
+   "params": {
+    "XDevice": "REDACTED",
+    "event_id": "100000001_1794950080",
+    "timestamp": 1794950080,
+    "content": "{\"start_time\":1794950080,\"start_reason\":2,\"result\":6,\"action\":1,\"err\":null,\"device\":{\"mac\":\"a4c138aabbcc\",\"type\":24}}",
+    "state": "{\"state\":0}"
+   },
+   "method": "thing.event.ble_relay_over.post"
+  }
+ },
+ "data_get": {
+  "dev_device_info": {
+   "request": {
+    "id": "3",
+    "version": "1.0",
+    "params": {
+     "XDevice": "REDACTED",
+     "timestamp": 1794946156,
+     "content": "{}",
+     "dataType": "dev_device_info"
+    },
+    "method": "thing.event.data_get.post"
+   },
+   "reply": {
+    "msgType": 0,
+    "payload": {
+     "dataType": "dev_device_info",
+     "device": {
+      "withK3": 0,
+      "settings": {
+       "fixedTimeRefresh": 0,
+       "lightMode": 1,
+       "disturbMode": 0,
+       "autoIntervalSpray": 0,
+       "language": "fr_FR",
+       "stillTime": 120,
+       "fixedTimeSpray": 0,
+       "lightest": 2560,
+       "removeSand": 1,
+       "sandSaving": 0,
+       "sandSetUseConfig": [
+        [
+         40,
+         60,
+         85
+        ],
+        [
+         40,
+         60,
+         85
+        ],
+        [
+         40,
+         60,
+         85
+        ],
+        [
+         40,
+         60,
+         85
+        ]
+       ],
+       "kitten": 0,
+       "deepClean": 0,
+       "lightRange": [
+        0,
+        1440
+       ],
+       "manualLock": 1,
+       "avoidRepeat": 1,
+       "stopTime": 600,
+       "sandType": 1,
+       "autoWork": 1,
+       "autoRefresh": 1,
+       "autoSpray": 1,
+       "sandFullWeight": [
+        3200,
+        5800,
+        3000,
+        3200,
+        3200
+       ],
+       "downpos": 1,
+       "deepSpray": 0,
+       "autoIntervalMin": 0,
+       "underweight": 0,
+       "disturbRange": [
+        1395,
+        435
+       ],
+       "deepRefresh": 1,
+       "sprayNotify": 1,
+       "unit": 0,
+       "fixedTimeClear": 0,
+       "bury": 0,
+       "relateK3Switch": 1,
+       "clickOkEnable": 1
+      },
+      "purificationTip": 0,
+      "timezone": 1.0,
+      "btMac": "001122334457",
+      "deodorantTip": 0,
+      "secret": "0123456789abcdef",
+      "locale": "Europe/Paris",
+      "mac": "001122334455",
+      "typeCode": 2,
+      "familyId": 300000000,
+      "multiConfig": true,
+      "k3Id": 100000003,
+      "petInTipLimit": 15,
+      "shareOpen": 1,
+      "id": 100000001,
+      "sn": "20260101T00001"
+     }
+    },
+    "type": "t4_data_get",
+    "timestamp": 1794949757
+   }
+  },
+  "dev_schedule_get": {
+   "request": {
+    "id": "4",
+    "version": "1.0",
+    "params": {
+     "XDevice": "REDACTED",
+     "timestamp": 1794949757,
+     "content": "{}",
+     "dataType": "dev_schedule_get"
+    },
+    "method": "thing.event.data_get.post"
+   },
+   "reply": {
+    "msgType": 0,
+    "payload": {
+     "schedule": [
+      {
+       "repeats": "1,2,3,4,5,6,7",
+       "id": 855966,
+       "time": 495,
+       "type": 0
+      },
+      {
+       "repeats": "1,2,3,4,5,6,7",
+       "id": 855967,
+       "time": 735,
+       "type": 0
+      },
+      {
+       "repeats": "1,2,3,4,5,6,7",
+       "id": 855968,
+       "time": 1035,
+       "type": 0
+      },
+      {
+       "repeats": "1,2,3,4,5,6,7",
+       "id": 1703165,
+       "time": 435,
+       "type": 1
+      },
+      {
+       "repeats": "1,2,3,4,5,6,7",
+       "id": 1703166,
+       "time": 675,
+       "type": 1
+      },
+      {
+       "repeats": "1,2,3,4,5,6,7",
+       "id": 1703167,
+       "time": 975,
+       "type": 1
+      }
+     ],
+     "dataType": "dev_schedule_get"
+    },
+    "type": "t4_data_get",
+    "timestamp": 1794949757
+   }
+  },
+  "dev_ble_device": {
+   "request": {
+    "id": "5",
+    "version": "1.0",
+    "params": {
+     "XDevice": "REDACTED",
+     "timestamp": 1794949758,
+     "content": "{}",
+     "dataType": "dev_ble_device"
+    },
+    "method": "thing.event.data_get.post"
+   },
+   "reply": {
+    "msgType": 0,
+    "payload": {
+     "nextTick": 3600,
+     "dataType": "dev_ble_device",
+     "list": [
+      {
+       "interval": 240,
+       "id": 100000002,
+       "secret": "ba9876543210",
+       "type": 24,
+       "mac": "a4c138aabbcc"
+      }
+     ]
+    },
+    "type": "t4_data_get",
+    "timestamp": 1794949757
+   }
+  },
+  "dev_multi_config": {
+   "request": {
+    "id": "6",
+    "version": "1.0",
+    "params": {
+     "XDevice": "REDACTED",
+     "timestamp": 1794949758,
+     "content": "{}",
+     "dataType": "dev_multi_config"
+    },
+    "method": "thing.event.data_get.post"
+   },
+   "reply": {
+    "msgType": 0,
+    "payload": {
+     "lightMultiRange": "{\"lightMultiRange\":[[0,1440]]}",
+     "dataType": "dev_multi_config",
+     "distrubMultiRange": "{\"distrubMultiRange\":[[1395,435]]}"
+    },
+    "type": "t4_data_get",
+    "timestamp": 1794949758
+   }
+  },
+  "dev_k3_device_info": {
+   "request": {
+    "id": "7",
+    "version": "1.0",
+    "params": {
+     "XDevice": "REDACTED",
+     "timestamp": 1794949758,
+     "content": "{}",
+     "dataType": "dev_k3_device_info"
+    },
+    "method": "thing.event.data_get.post"
+   },
+   "reply": {
+    "msgType": 0,
+    "payload": {
+     "k3Device": {
+      "k3Config": {
+       "config": {
+        "standard": [
+         5,
+         30
+        ],
+        "lightness": 100,
+        "lowVoltage": 5,
+        "refreshTotalTime": 11500,
+        "singleRefreshTime": 25,
+        "singleLightTime": 120
+       }
+      },
+      "k3Device": {
+       "settings": {
+        "fixedTimeRefresh": 0,
+        "liquidLackSwitch": 1
+       },
+       "liquidLack": 3,
+       "timezone": 1.0,
+       "updateAt": "2026-11-17T21:09:17.000Z",
+       "relateT4": 100000001,
+       "secret": "0123456789ab",
+       "battery": 90,
+       "lighting": 0,
+       "userId": "200000000",
+       "mac": "a4c138ddeeff",
+       "relation": {
+        "userId": "200000000"
+       },
+       "voltage": 6107,
+       "createdAt": "2026-09-12T10:00:20.000Z",
+       "liquid": 50,
+       "refreshing": 0,
+       "name": "Smart Spray",
+       "id": 100000003,
+       "sn": "20260101M00002",
+       "firmware": 39,
+       "hardware": 1
+      }
+     },
+     "dataType": "dev_k3_device_info"
+    },
+    "type": "t4_data_get",
+    "timestamp": 1794949758
+   }
+  },
+  "dev_serverinfo": {
+   "request": {
+    "id": "9",
+    "version": "1.0",
+    "params": {
+     "XDevice": "REDACTED",
+     "timestamp": 1794949759,
+     "content": "{}",
+     "dataType": "dev_serverinfo"
+    },
+    "method": "thing.event.data_get.post"
+   },
+   "reply": {
+    "msgType": 0,
+    "payload": {
+     "nextTick": 3600,
+     "dataType": "dev_serverinfo",
+     "ipServers": [],
+     "apiServers": [
+      "http://192.168.1.10/6/"
+     ],
+     "linked": 1
+    },
+    "type": "t4_data_get",
+    "timestamp": 1794949758
+   }
+  }
+ }
+}

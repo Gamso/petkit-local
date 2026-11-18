@@ -223,8 +223,9 @@ reading its FLV directly.
 
 Two files carry almost all of the reverse-engineered protocol, and both are deliberately large:
 
-- **`events/codes.py`** — every event code, in seven namespaces that must never be merged, each row
-  graded by the evidence behind it and naming the firmware function it came from. It is one file
+- **`events/codes.py`** — every event code and BLE opcode, in eight namespaces that must never be
+  merged, each row graded by the evidence behind it and naming the firmware function it came from.
+  It is one file
   because the namespaces collide, and the collisions are only visible when they sit together.
 - **`devices/payloads.py`** — the response bodies. What a device is told about itself, its server,
   its storage credentials and its schedule. A value invented here is served to the device as its
