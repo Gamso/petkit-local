@@ -1,7 +1,8 @@
 """Stand-ins for what a talk reaches: the device's sink, and ffmpeg.
 
-For `test_talk.py` (the shared path and the panel) and any other client of
-it. A module rather than `conftest.py` for the reason `_fakes.py` gives.
+Shared by `test_talk.py` (the shared path and the panel) and
+`test_app_api_talk.py` (the phone's socket). A module rather than
+`conftest.py` for the reason `_fakes.py` gives.
 
 The sink is a local TCP server recording each connection's bytes. ffmpeg is a
 few lines of Python run by this interpreter: one passes its input through, so

@@ -11,9 +11,10 @@ sink script (`common.TALK_SINK_SCRIPT`) is installed ONCE into the patch store
 at apply time, and the pre-init block (`common.PRE_INIT_BLOCKS["talk"]`) starts a
 small `nc` listener on TCP `TALK_TCP_PORT` that runs it per connection: the script
 feeds a named pipe to the firmware's own `pktool play_aac`, which hands the path
-to `media`; media stream-reads the pipe and plays it on the speaker. The add-on's
-`/api/devices/{id}/talk` WebSocket transcodes the browser microphone to 16 kHz
-mono ADTS-AAC and streams it in.
+to `media`; media stream-reads the pipe and plays it on the speaker. The add-on
+(`media/talk.py`, behind the panel's `/api/devices/{id}/talk` and the app API's
+`/app/v1/devices/{id}/talk`) transcodes a microphone to 16 kHz mono ADTS-AAC and
+streams it in.
 
 It is a pre-init block rather than a bind-mount because it starts a process
 rather than replacing a binary — the same shape as the SSH patcher. Starting it
@@ -41,7 +42,8 @@ PATCHER_INFO = {
     "id": "talk",
     "name": "Two-Way Talk (Intercom)",
     "description": (
-        "Adds a local audio sink so the panel can talk to the device speaker — "
+        "Adds a local audio sink so the panel and the phone app can talk to the "
+        "device speaker — "
         "real two-way audio without PetKit's cloud, which used Agora (replaced "
         "by Local Camera Streaming).\n\n"
         f"What it does: installs a small sink script once into writable app "

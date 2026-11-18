@@ -510,11 +510,11 @@ BIND_MOUNT_TEMPLATES = {
     # ssh: no bind-mount needed (dropbear is not replacing a stock binary)
 }
 
-#: Two-way talk (intercom) audio sink. The panel's `/api/devices/{id}/talk`
-#: WebSocket transcodes the browser mic to 16 kHz mono ADTS-AAC and streams it
-#: to this TCP port on the device; the sink script below feeds it to the
-#: firmware's own `pktool play_aac`, which owns the IMP speaker path. See
-#: patchers/talk.py.
+#: Two-way talk (intercom) audio sink. `media/talk.py` — behind the panel's
+#: `/api/devices/{id}/talk` and the app API's `/app/v1/devices/{id}/talk` —
+#: transcodes a microphone to 16 kHz mono ADTS-AAC and streams it to this TCP
+#: port on the device; the sink script below feeds it to the firmware's own
+#: `pktool play_aac`, which owns the IMP speaker path. See patchers/talk.py.
 TALK_TCP_PORT = 9010
 #: The sink script is installed ONCE into the patch store (persistent, like
 #: dropbear) — so `talk` declares it in `files` and removal deletes it. Nothing

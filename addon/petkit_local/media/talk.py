@@ -3,10 +3,13 @@
 The `talk` patcher (`patchers/talk.py`) installs an audio sink on the device: an
 `nc` listener on `TALK_TCP_PORT` that pipes each connection into the firmware's
 own `pktool play_aac`, which wants 16 kHz mono ADTS-AAC. This module is the
-other end of it, for whatever a talk starts from: today the panel,
-`/api/devices/{id}/talk` (`web/api/talk.py`), sending the browser's webm/opus,
-which ffmpeg probes (`PROBED_INPUT`). `PCM_INPUT` is raw PCM, s16le/16 kHz/mono,
-which a phone's `AudioRecord` produces with no encoder at all.
+other end of it, shared by the two places a talk starts from:
+
+* the panel, `/api/devices/{id}/talk` (`web/api/talk.py`) — the browser's
+  webm/opus, which ffmpeg probes (`PROBED_INPUT`);
+* the phone app, `/app/v1/devices/{id}/talk` (`app_api/handlers/talk.py`) —
+  raw PCM, s16le/16 kHz/mono (`PCM_INPUT`), which Android's `AudioRecord`
+  produces with no encoder at all.
 
 go2rtc's WebRTC backchannel is a third way to the same sink, and does not come
 through here: it is go2rtc's own `exec:` producer
@@ -84,7 +87,7 @@ _REFUSALS = {
                                              "address yet; wait for it to come online"),
 }
 
-#: Raw PCM, signed 16-bit little-endian, 16 kHz, mono.
+#: Raw PCM, signed 16-bit little-endian, 16 kHz, mono: the app API's format.
 #: Nothing to probe and nothing to buffer, so none of the flags below — and
 #: `-fflags nobuffer` must stay off it: with the raw PCM demuxer, ffmpeg 7.1
 #: (Debian's, in the 32-bit ARM image) then encodes NOTHING, exiting 0 with an
@@ -423,7 +426,7 @@ class TalkSession:
 class Talks:
     """Every talk in progress, one per device, and how a session is made.
 
-    One per process (`TALKS`), shared by everything that talks, because a
+    One per process (`TALKS`), shared by the panel and the app API, because a
     device has one speaker whoever is talking to it.
     """
 
@@ -481,6 +484,6 @@ class Talks:
         await asyncio.gather(*(s.close() for s in sessions), return_exceptions=True)
 
 
-#: The process's one `Talks`: every session excludes every other one on the
-#: same device through it.
+#: The process's one `Talks`: the panel's and the app API's sessions exclude
+#: each other through it.
 TALKS = Talks()

@@ -2,8 +2,10 @@
 
 The `talk` patcher installs a TCP audio sink on the device (see
 `patchers/talk.py`); this WebSocket is the panel's way to it. The transcoder
-and the sink connection are `media/talk.py`'s, which also holds one talk per
-device. What stays here is the panel's own small message protocol.
+and the sink connection are `media/talk.py`'s, shared with the phone app's
+`/app/v1/devices/{id}/talk` — which is also why a talk from the panel and one
+from a phone exclude each other. What stays here is the panel's own small
+message protocol.
 """
 from __future__ import annotations
 
@@ -39,7 +41,7 @@ async def api_talk(request: web.Request) -> web.WebSocketResponse:
 
     Anything that stops a talk is an `{"type": "error", "msg", "code"}` frame
     and the end of the socket: no device, no patcher or no address, someone
-    else talking through the device (another tab), the sink not
+    else talking through the device (the panel or a phone), the sink not
     answering, ffmpeg missing or exiting (with its own last line). The audio
     is never dropped in silence any more.
 
@@ -139,8 +141,8 @@ async def api_talk(request: web.Request) -> web.WebSocketResponse:
 async def _fail(ws: web.WebSocketResponse, error: TalkError) -> None:
     """Tell the browser why, then close. Never raises: the browser may be gone.
 
-    `msg` is what `static/js/talk.js` shows; `code` is the machine-readable
-    reason (`media/talk.py`).
+    `msg` is what `static/js/talk.js` shows; `code` is the same machine-readable
+    reason the app API gives.
     """
     log.info("talk: %s: %s", error.code, error.message)
     with contextlib.suppress(Exception):

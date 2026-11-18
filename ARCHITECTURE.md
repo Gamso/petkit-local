@@ -56,6 +56,7 @@ petkit_local/
 ├── media/         pipeline.py decrypt -> remux -> path -> row · stitch.py joins ~4s chunks
 │                  serving.py what a media path resolves to, thumbnails, role -> slot
 │                  crypto · transcode · layout · retention · go2rtc
+│                  talk.py two-way talk: ffmpeg -> the talk patcher's sink, one per device
 ├── web/           panel.py the application + the whole route table · api/ the JSON handlers
 │                  appkeys.py the app[...] contract · hub.py event ring/WS · static/ · templates/
 ├── app_api/       the phone app's API, on its own port (8097), /app/v1 only
@@ -104,6 +105,8 @@ writes:  handlers/controls.py, feeding.py -> ha/commands.py, ha/schedules.py
 /notifications/ws:  EventHub -> notify/notifier.py gates (kind, dedupe, rate limit)
                     -> ntfy topic, notify/push.py endpoints, notify/channel.py: log + sockets
 /devices/{id}/live:  handlers/video.py -> video.VideoSessions (caps) -> go2rtc on loopback
+/devices/{id}/talk:  handlers/talk.py -> media/talk.py (one per device, shared with the panel)
+                     -> ffmpeg (PCM -> ADTS-AAC) -> the device's talk sink, TCP 9010
 ```
 
 A separate application on a separate port, not a sub-app of the panel: a reverse proxy pointed at
@@ -118,11 +121,17 @@ serialized device against what was last sent, at most once per second per device
 sweep for the changes nothing narrates (the offline watchdog). One `UpdateFeed` serves every
 socket; it runs only while one is open.
 
-Live video (`app_api/video.py`) is the one place the app API talks to another process: it relays
-go2rtc's fMP4 WebSocket and HLS from loopback, for the stream of the device in the path only —
-the name is resolved server-side from `Go2rtc.desired_streams`, because go2rtc dials any `src` it
-does not know as a source URL. Viewers are capped per camera and in total, and a relay ends with
-its session.
+Live video (`app_api/video.py`) relays go2rtc's fMP4 WebSocket and HLS from loopback, for the
+stream of the device in the path only — the name is resolved server-side from
+`Go2rtc.desired_streams`, because go2rtc dials any `src` it does not know as a source URL. Viewers
+are capped per camera and in total, and a relay ends with its session.
+
+Talk (`handlers/talk.py`) is the other way round and the one place the app API reaches a device:
+the phone's raw PCM goes through an ffmpeg that only transcodes, into a TCP connection to the sink
+the `talk` patcher installed, which `media/talk.py` opens itself so a sink that is not there is
+known before anyone speaks. That module is the panel's talk path too, and holds one talk per device
+across both, because a device has one speaker. Only a recorded IPv4 address is dialled, and the
+port is fixed.
 
 ## The two transports
 
