@@ -704,7 +704,8 @@ class _FakeClient:
 
 def _bridge_with(parent_type, ble_type="ctw3", interval=0):
     reg = DeviceRegistry()
-    reg.get_or_create(petkit_id=10, device_type=parent_type, serial_number="SN10")
+    parent = reg.get_or_create(petkit_id=10, device_type=parent_type, serial_number="SN10")
+    parent.mqtt_connected = True      # the relay exists only over MQTT
     ble = BLERegistry()
     ble.register(ble_type=ble_type, petkit_id=700, mac="AABBCCDDEEFF",
                  secret="s", interval=interval, link_with=10)
@@ -1048,8 +1049,8 @@ async def test_the_sequence_number_advances_per_accessory():
     dev = ble.get(700)
     for _ in range(3):
         await bridge.publish_ble_command(reg.get(10), dev, 220, bytes([0, 1, 1, 1]))
-    # Every write is preceded by its own `connect`, so filter to the frames
-    # that actually carry a payload.
+    # The first write opens the session the others go into, so filter to the
+    # frames that actually carry a payload.
     seqs = [_decode_frame(json.loads(b)["params"]["payload"]["data"])[5]
             for t, b in bridge._client.sent if t.endswith("/thing/service/ble")]
     assert seqs == [0, 1, 2]
@@ -1269,7 +1270,7 @@ RELAY = T4_CAPTURE["relay"]
 
 def _t4_with_ctw3():
     reg = DeviceRegistry()
-    reg.get_or_create(petkit_id=10, device_type="t4", serial_number="SN10")
+    reg.get_or_create(petkit_id=10, device_type="t4", serial_number="SN10").mqtt_connected = True
     ble = BLERegistry()
     # The capture's MAC, so the captured frames match it unchanged.
     ble.register(ble_type="ctw3", petkit_id=700, mac="A4C138AABBCC",
@@ -1735,3 +1736,117 @@ def test_the_empty_ble_list_answer_stays_under_the_firmware_length_gate():
     from petkit_local.devices.payloads import to_data_get_reply
     wrapped = to_data_get_reply(reg.get(10), "dev_ble_device", {"nextTick": 3600}, now=0)
     assert len(_json.dumps(wrapped, separators=(",", ":")).encode()) >= 40
+
+
+# --- one relay session per parent ---------------------------------------------
+#
+# A T4 (ESP32, 1.652) re-signed up as after a reboot ten seconds after the poll
+# pushed a second `connect` for its CTW3 while the first session had never been
+# reported closed (#106). A suspicion from timing, not a proven cause -- but a
+# second session on a parent that never ended the first is nothing this needs
+# to send.
+
+def _connects(bridge):
+    return [json.loads(b)["params"]["connect_action"]
+            for t, b in bridge._client.sent if t.endswith("/thing/service/connect")]
+
+
+async def _poll_due(bridge, reg):
+    """Poll as if every accessory's interval had run out."""
+    bridge._ble_relay._ble_poll_ts.clear()
+    await bridge._ble_relay._poll_ble_accessories(reg.get(10))
+
+
+async def test_no_second_connect_while_the_parent_holds_a_session():
+    bridge, reg, _ = _t4_with_ctw3()
+    await _poll_due(bridge, reg)
+    assert _connects(bridge) == [1]
+
+    await _poll_due(bridge, reg)
+    assert _connects(bridge) == [1], "a second session was opened over the first"
+    # Held back, not throttled: the next tick tries again.
+    assert 700 not in bridge._ble_relay._ble_poll_ts
+
+    await bridge._handle_event(reg.get(10), "ble_relay_over", RELAY["over_closed"])
+    await _poll_due(bridge, reg)
+    assert _connects(bridge) == [1, 1]
+
+
+async def test_our_own_hang_up_does_not_end_the_parents_session():
+    bridge, reg, ble = _t4_with_ctw3()
+    await _poll_due(bridge, reg)
+    await bridge._ble_relay._ble_connect(reg.get(10), ble.get(700), action=0)
+    await _poll_due(bridge, reg)
+    assert _connects(bridge) == [1, 0]
+
+
+async def test_a_session_never_reported_closed_is_released_after_the_timeout():
+    import time
+
+    from petkit_local.mqtt.ble_relay import BLE_SESSION_HOLD_SECONDS, BLE_SESSION_TIMEOUT_SECONDS
+
+    # Clearly past the 133 s a T4 held a session it was asked to hold for 30.
+    assert BLE_SESSION_TIMEOUT_SECONDS > 133 > BLE_SESSION_HOLD_SECONDS
+    bridge, reg, _ = _t4_with_ctw3()
+    await _poll_due(bridge, reg)
+    bridge._ble_relay._sessions[10] = (700, time.time() - BLE_SESSION_TIMEOUT_SECONDS - 1)
+    await _poll_due(bridge, reg)
+    assert _connects(bridge) == [1, 1]
+
+
+async def test_a_parent_that_reconnected_holds_no_session():
+    import time
+
+    bridge, reg, _ = _t4_with_ctw3()
+    await _poll_due(bridge, reg)
+    reg.get(10).mqtt_connected_at = time.time() + 1
+    await _poll_due(bridge, reg)
+    assert _connects(bridge) == [1, 1]
+
+
+async def test_one_session_per_parent_whichever_accessory_it_is_for():
+    bridge, reg, ble = _t4_with_ctw3()
+    ble.register(ble_type="ctw3", petkit_id=701, mac="A4C138112233",
+                 secret="s", interval=240, link_with=10)
+    await _poll_due(bridge, reg)
+    assert _connects(bridge) == [1]
+
+
+async def test_a_session_the_parent_opened_itself_holds_off_the_poll():
+    """Proxy mode relays the real cloud's `connect` down; the parent reports
+    the session it opened for it with `ble_relay_start`."""
+    bridge, reg, _ = _t4_with_ctw3()
+    await bridge._handle_event(reg.get(10), "ble_relay_start", RELAY["start"])
+    await _poll_due(bridge, reg)
+    assert _connects(bridge) == []
+
+
+async def test_a_write_goes_into_the_session_already_open_for_its_accessory():
+    bridge, reg, ble = _t4_with_ctw3()
+    await _poll_due(bridge, reg)
+    assert await bridge.publish_ble_command(reg.get(10), ble.get(700), 222, b"")
+    assert _services(bridge) == ["connect", "ble"]
+    # A reading asked for now is the one already on its way.
+    assert await bridge.request_ble_reading(reg.get(10), ble.get(700))
+    assert _services(bridge) == ["connect", "ble"]
+
+
+async def test_a_session_for_another_accessory_refuses_a_write_and_a_read():
+    bridge, reg, ble = _t4_with_ctw3()
+    ble.register(ble_type="ctw3", petkit_id=701, mac="A4C138112233",
+                 secret="s", interval=240, link_with=10)
+    assert await bridge.request_ble_reading(reg.get(10), ble.get(700))
+    assert not await bridge.publish_ble_command(reg.get(10), ble.get(701), 222, b"")
+    assert not await bridge.request_ble_reading(reg.get(10), ble.get(701))
+    assert _services(bridge) == ["connect"]
+
+
+async def test_nothing_is_sent_for_an_accessory_whose_parent_is_off_mqtt():
+    """The parent is subscribed to nothing, so every publish would vanish."""
+    bridge, reg, ble = _t4_with_ctw3()
+    reg.get(10).mqtt_connected = False
+    await _poll_due(bridge, reg)
+    assert not await bridge.request_ble_reading(reg.get(10), ble.get(700))
+    assert not await bridge.publish_ble_command(reg.get(10), ble.get(700), 222, b"")
+    assert bridge._client.sent == []
+    assert 700 not in bridge._ble_relay._ble_poll_ts
