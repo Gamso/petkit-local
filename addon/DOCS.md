@@ -592,6 +592,28 @@ file):
 - On close code `1013` (the phone did not keep up) switch to HLS; on `4401`
   sign in again; on `1011` or an `error` message retry after a few seconds.
 
+### Talking through a camera
+
+The app can talk through a camera's speaker the way the panel's **Talk** button
+does, through the same port and the same token: apply **Two-Way Talk** on the
+panel's *Patchers* tab first. The phone's microphone goes to petkit-local, which
+transcodes it with `ffmpeg` and sends it to the device on your LAN. The
+device's own sink (TCP 9010) is never exposed by this: the app reaches it only
+through its signed-in session.
+
+One talk per device at a time, from the app or the panel: a second is refused
+and the first goes on. Half-duplex — mute the live view's sound while talking,
+or the camera's microphone hears its speaker.
+
+For app developers: `/app/v1/devices/{id}/talk` is a WebSocket (bearer header
+on the upgrade). Wait for `{"type":"ready"}`, then send the microphone as
+binary frames of raw PCM — signed 16-bit little-endian, 16 kHz, mono, exactly
+what `AudioRecord` records with `ENCODING_PCM_16BIT` and `CHANNEL_IN_MONO` —
+and end with `{"type":"stop"}`. Each device's `talk` field says whether to
+offer the button at all (`available`, `needs_patcher`, `device_unreachable`,
+`unsupported`), and anything that goes wrong is an `error` message with a
+`code`; both are listed in the OpenAPI file.
+
 ### Notifications
 
 The phone app receives notifications **over its own connection to petkit-local**,

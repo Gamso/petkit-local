@@ -22,7 +22,10 @@ Extension points for the later phases:
   (`notify/channel.py`);
 * phase 5 (live video) — `GET /app/v1/devices/{id}/live` (WebSocket, fMP4) and
   `.../live/hls/{file}`, proxying that device's go2rtc stream only
-  (`app_api/video.py`).
+  (`app_api/video.py`);
+* two-way talk — `GET /app/v1/devices/{id}/talk` (WebSocket, raw PCM in),
+  to the camera's speaker through the sink of the `talk` patcher, the same
+  path as the panel's (`media/talk.py`, `handlers/talk.py`).
 """
 from __future__ import annotations
 
@@ -33,10 +36,11 @@ from aiohttp import web
 
 from petkit_local.app_api.appkeys import (
     AUTH, BLE_REGISTRY, COMMAND_SINK, DATA_DIR, EVENT_STORE, GO2RTC, HA_PUBLISHER, HUB,
-    MEDIA_ROOT, NOTIFY_CHANNEL, PET_REGISTRY, REGISTRY, THROTTLE, UPDATE_FEED, VIDEO_SESSIONS,
+    MEDIA_ROOT, NOTIFY_CHANNEL, PET_REGISTRY, REGISTRY, TALKS, THROTTLE, UPDATE_FEED,
+    VIDEO_SESSIONS,
 )
 from petkit_local.app_api.handlers import (
-    auth, controls, devices, feeding, media, meta, notifications, pets, push, timeline,
+    auth, controls, devices, feeding, media, meta, notifications, pets, push, talk, timeline,
     updates, video,
 )
 from petkit_local.app_api.middleware import app_api_middleware
@@ -44,6 +48,7 @@ from petkit_local.app_api.notify.channel import NotifyChannel
 from petkit_local.app_api.throttle import LoginThrottle
 from petkit_local.app_api.updates import UpdateFeed
 from petkit_local.app_api.video import VideoSessions
+from petkit_local.media.talk import TALKS as DEFAULT_TALKS
 
 if TYPE_CHECKING:
     from petkit_local.ai.pets import PetRegistry
@@ -53,6 +58,7 @@ if TYPE_CHECKING:
     from petkit_local.events.store import EventStore
     from petkit_local.ha.publisher import HAPublisher
     from petkit_local.media.go2rtc import Go2rtc
+    from petkit_local.media.talk import Talks
     from petkit_local.mqtt.bridge import MQTTBridge
 
 PREFIX = "/app/v1"
@@ -82,6 +88,7 @@ ROUTES: tuple[tuple[str, str, Handler], ...] = (
     ("DELETE", "/devices/{id}/deferred-feeds/{feed_id}", feeding.delete_deferred_feed),
     ("GET", "/devices/{id}/live", video.video_ws),
     ("GET", "/devices/{id}/live/hls/{file}", video.video_hls),
+    ("GET", "/devices/{id}/talk", talk.talk_ws),
     ("GET", "/timeline", timeline.timeline),
     ("GET", "/timeline/{event_id}", timeline.timeline_event),
     ("GET", "/media/thumb/{path:.*}", media.media_thumbnail),
@@ -109,7 +116,8 @@ def create_app_api(app_auth: AppAuth, registry: DeviceRegistry, *,
                    hub: Any = None,
                    go2rtc: Go2rtc | None = None,
                    video_sessions: VideoSessions | None = None,
-                   notify_channel: NotifyChannel | None = None) -> web.Application:
+                   notify_channel: NotifyChannel | None = None,
+                   talks: Talks | None = None) -> web.Application:
     """Build the app API application.
 
     Everything after `registry` is optional so a test can build one without
@@ -119,6 +127,9 @@ def create_app_api(app_auth: AppAuth, registry: DeviceRegistry, *,
     periodic sweep alone. Without a `ble_registry` no Bluetooth accessory is
     listed. Without a `notify_channel` (the notifier's, which
     is what feeds it) the notification socket opens and stays silent.
+    `talks` defaults to the process's one `media/talk.py::TALKS`, which the
+    panel uses too, so a phone and the panel never talk through one device
+    at once.
     """
     app = web.Application(client_max_size=MAX_BODY, middlewares=[app_api_middleware])
     app[AUTH] = app_auth
@@ -143,6 +154,9 @@ def create_app_api(app_auth: AppAuth, registry: DeviceRegistry, *,
     app[NOTIFY_CHANNEL] = (notify_channel if notify_channel is not None
                            else NotifyChannel(app_auth))
     app.on_shutdown.append(_close_notify_sockets)
+    app[TALKS] = talks if talks is not None else DEFAULT_TALKS
+    # Ends every talk as shutdown begins: ffmpeg killed, the device's sink let go.
+    app.on_shutdown.append(app[TALKS].close_all)
     for method, path, handler in ROUTES:
         # `add_get` would also register HEAD; the OpenAPI file lists GET only.
         app.router.add_route(method, PREFIX + path, handler)

@@ -33,6 +33,7 @@ from petkit_local.events.sessions import content_of_row, served_amounts, session
 from petkit_local.ha.commands import DESTRUCTIVE_ACTIONS, device_actions
 from petkit_local.ha.discovery import EntityDef
 from petkit_local.ha.schedules import is_dual_hopper
+from petkit_local.media import talk
 from petkit_local.media.serving import has_media, session_media_slots
 from petkit_local.utils.coerce import to_float, to_int
 from petkit_local.utils.const import (
@@ -121,6 +122,12 @@ def device_summary(d: Device, accessories: list[BLEDevice] | tuple = ()) -> dict
     `accessories` are the Bluetooth accessories it relays, in the order the
     registry holds them — which is also the order `BLERegistry.get_linked_k3`
     picks the one K3 the firmware has a slot for.
+
+    `talk` is whether `/devices/{id}/talk` can start now
+    (`media/talk.py::availability`): computed from what is recorded, never by
+    reaching the device, so it is cheap enough for every summary — and in the
+    summary rather than only the detail so that `/ws` announces the change
+    when the patcher is applied or the address arrives.
     """
     last = max(d.last_seen or 0, d.last_mqtt or 0, d.last_heartbeat or 0,
                d.last_state_report or 0)
@@ -136,6 +143,7 @@ def device_summary(d: Device, accessories: list[BLEDevice] | tuple = ()) -> dict
         "last_seen": _ts(last),
         "firmware": str(d.firmware) if d.firmware else None,
         "is_camera": bool(d.is_camera),
+        "talk": talk.availability(d),
         "connection": "wifi",
         "parent_id": None,
         "accessories": [accessory_ref(a) for a in accessories],
@@ -163,6 +171,7 @@ def accessory_summary(a: BLEDevice, parent: Device | None) -> dict[str, Any]:
         "last_seen": _ts(a.last_seen),
         "firmware": None,
         "is_camera": False,
+        "talk": talk.UNSUPPORTED,
         "connection": "ble",
         "parent_id": parent.petkit_id if parent else None,
         "accessories": [],

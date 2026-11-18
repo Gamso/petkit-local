@@ -37,6 +37,9 @@ key                     what it holds                                set by
                         and their catch-up log; the notifier's own
                         when `main/` hands it in
                         (`app_api/notify/channel.py`)
+`TALKS`                 `Talks` — the talks in progress, one per     create_app_api
+                        device, shared with the panel
+                        (`media/talk.py`)
 ======================  ===========================================  ==========
 
 `SESSION` is set on each request by the auth middleware once a bearer token
@@ -60,6 +63,7 @@ if TYPE_CHECKING:
     from petkit_local.events.store import EventStore
     from petkit_local.ha.publisher import HAPublisher
     from petkit_local.media.go2rtc import Go2rtc
+    from petkit_local.media.talk import Talks
     from petkit_local.mqtt.bridge import MQTTBridge
 
 AUTH: web.AppKey[AppAuth] = web.AppKey("app_auth")
@@ -77,6 +81,7 @@ UPDATE_FEED: web.AppKey[UpdateFeed] = web.AppKey("app_update_feed")
 GO2RTC: web.AppKey[Go2rtc | None] = web.AppKey("app_go2rtc")
 VIDEO_SESSIONS: web.AppKey[VideoSessions] = web.AppKey("app_video_sessions")
 NOTIFY_CHANNEL: web.AppKey[NotifyChannel] = web.AppKey("app_notify_channel")
+TALKS: web.AppKey[Talks] = web.AppKey("app_talks")
 
 #: The session the bearer token belongs to.
 SESSION: web.RequestKey[AppSession] = web.RequestKey("app_session")
