@@ -307,6 +307,17 @@ trust it. Use BLE provisioning, which sidesteps HTTPS entirely.
 These models also compile the cloud's CA into their `ctrl` binary, so they will not trust any other
 MQTT broker until it is patched. The **Patchers** tab does that for you.
 
+**Scope every DNS rewrite to the devices, never to the whole network.** PetKit's phone app asks
+for some of the same names as the devices — `api.eu-pet.com` and its regional siblings — so a
+rewrite that applies to your whole LAN also sends the app to this server instead of PetKit's cloud.
+The app then shows your devices as "disconnected from Wi-Fi" while you are at home, and normally
+again on mobile data, which looks exactly like a server fault and is not one. Apply the rewrites
+only to the devices: per-client rules (AdGuard Home), a group (Pi-hole), a client-specific
+forwarder or conditional zone (Technitium, Unbound…), a DNS server handed out by DHCP to the
+devices alone, or a separate IoT SSID/VLAN. The broker names this add-on hands out
+(`petkit-local-*.iot-as-mqtt.*.aliyuncs.com`) are only ever dialled by patched devices, so those
+two records are harmless network-wide.
+
 ## 🔧 Under the hood
 
 Some of this exists because the protocol had to be worked out first, and those tools are still in
