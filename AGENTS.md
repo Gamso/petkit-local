@@ -179,9 +179,28 @@ Two rules about placement that the map does not make obvious:
   topic with no subscriber raises nothing, so a stale True does not fail — it swallows commands. It
   goes up only on an authenticated CONNECT and comes down three ways:
   `on_broker_client_disconnected` (immediate), the heartbeat's `?iotStatus=0` (backstop for a
-  session that ends without the broker noticing), and the offline watchdog (last resort). The
-  device's client id carries `timestamp=`, so a returning device is a NEW client, never a take-over
-  — which is why the disconnect hook compares `Session` objects instead of trusting the client id.
+  session that ends without the broker noticing), and the offline watchdog (last resort).
+- **A reconnect can be an MQTT take-over, and the newest connection wins.** A T5's client id
+  carries the real `timestamp=`, so a returning T5 is a NEW client. A patched ESP32's does not: its
+  SDK (`_v=sdk-c-3.2.0`) sends a fixed `timestamp=2524608000000`, so a box that reconnects before
+  the broker noticed it leave reuses the id of a connection that is still open (#106). Stock amqtt
+  ended BOTH: on a resumed (`clean_session=0`) session it hands the new connection the old
+  `Session` OBJECT, then the old connection's teardown marks that shared session `disconnected`
+  (broadcasts skip it), fires `CLIENT_DISCONNECTED` with it (so comparing `Session` objects cannot
+  tell it from a real loss), and the session monitor reaps it a second later with the new handler
+  inside. `mqtt/broker.py::DeviceBroker` fixes it at the source: once the new CONNECT has
+  AUTHENTICATED, the connection it replaces is closed and its teardown stops only its own handler —
+  no state change, no will, no `CLIENT_DISCONNECTED`. A clean CONNECT gets a fresh `Session`, so
+  there the disconnect hook's object comparison still matters, and the replaced connection, which
+  amqtt would leave open and deaf, is closed too. A refused CONNECT changes nothing: amqtt has
+  already closed the open connection, and the device correctly goes off MQTT.
+  **Re-check it on EVERY amqtt version change** (a Dependabot bump included): `DeviceBroker`
+  overrides three PRIVATE methods written against amqtt 0.12.2 — `_delete_session`,
+  `_authenticate` and `_handle_disconnect` — and reads `_sessions`, `_stop_handler` and the
+  take-over loop in `_handle_client_session`. Diff those in the new release, and run
+  `tests/test_mqtt_takeover.py`, which drives the real broker. The requirement is left at `<1`
+  on purpose, so this check is the guard. Once amqtt fixes the take-over upstream, delete
+  `DeviceBroker` rather than keep it in step.
 - **A T5 sends no SUBSCRIBE — the broker subscribes it, or it receives nothing.** Confirmed on
   hardware: a session that authenticated, PINGREQ'd and posted telemetry for minutes held an empty
   subscription list, so every `thing/service/*` publish — ours and every one proxy mode relayed

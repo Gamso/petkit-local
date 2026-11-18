@@ -20,13 +20,15 @@ POSTed the offset by hand.
 
 This module closes that gap with the smallest thing that can: every few
 minutes, for each device whose offset comes from its locale, compare the
-offset the zone has NOW with the last one the device was told (or, if we never
-told it anything, the last one it reported), and push only when they differ.
+offset the zone has NOW with the one the device most plausibly holds — the
+newer of what it was last told and what it last reported at signup — and push
+only when they differ. It is not done on (re)connect: a device that already
+holds the zone's offset is never sent it.
 The push is `push_timezone`, which is also what `api_timezone` uses, so there
 is still exactly one place that knows the value must be a string and that a
 device on HTTP gets it through the heartbeat queue.
 
-Three things it is careful not to do:
+Four things it is careful not to do:
 
 * **Overrule an operator.** A manual override (`config["timezone"]`) means
   "this box is somewhere else than its locale says"; it is never touched.
@@ -36,6 +38,14 @@ Three things it is careful not to do:
   `config[TIMEZONE_PUSHED_KEY]` (persisted with the rest of `config`, so a
   restart does not re-push either), and comparisons use a tolerance well
   under the quarter-hour granularity real offsets come in.
+* **Push the same offset into a restart loop.** A device that signs up again
+  on another value after a push did not keep it, and pushing it again after
+  every signup is exactly how a device that restarts after a push would be
+  driven round and round (#106 has a T4 re-signing up three minutes after
+  one — timing, not proof). So that offset is set aside
+  (`config[TIMEZONE_NOT_KEPT_KEY]`) and not pushed again until the zone has
+  moved off it: at most one push each time the zone changes offset. The
+  panel's override pushes regardless; it is somebody asking.
 * **Reach anything but the device.** No PetKit endpoint is involved; the push
   goes to our own broker or our own heartbeat queue, like every other command.
 """
@@ -47,7 +57,7 @@ import time
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
-from petkit_local.devices.base import TIMEZONE_PUSHED_KEY
+from petkit_local.devices.base import TIMEZONE_NOT_KEPT_KEY, TIMEZONE_PUSHED_KEY
 from petkit_local.ha.commands import PROPERTY_SET_SUFFIX, make_mqtt_property_set
 from petkit_local.utils.coerce import to_float
 from petkit_local.utils.timeutil import offset_hours_for_locale
@@ -75,6 +85,28 @@ def _same(a: float, b: float) -> bool:
     return abs(a - b) < SAME_OFFSET_TOLERANCE
 
 
+def note_reported_offset(device: Device, reported: float) -> bool:
+    """Weigh a signup's `timezone` against what we last pushed; True if changed.
+
+    The signup is newer than the push, so the push is forgotten and the
+    statement becomes what the device holds (`_last_known_offset`). If the two
+    disagree, the device came back without our value, and that value is set
+    aside so the loop does not answer every restart with it again. Called by
+    `http/handlers/signup.py`, which has already range-checked `reported`.
+    """
+    pushed = to_float(device.config.pop(TIMEZONE_PUSHED_KEY, None), None)
+    if pushed is None:
+        return False
+    if _same(pushed, reported):
+        device.config.pop(TIMEZONE_NOT_KEPT_KEY, None)
+    else:
+        device.config[TIMEZONE_NOT_KEPT_KEY] = pushed
+        log.info("Device %d signed up on UTC%+g, not the UTC%+g it was pushed; that "
+                 "offset is not pushed again until its zone changes",
+                 device.petkit_id, reported, pushed)
+    return True
+
+
 def _last_known_offset(device: Device) -> float | None:
     """The offset the device most plausibly holds right now, or None.
 
@@ -96,8 +128,8 @@ def _last_known_offset(device: Device) -> float | None:
     return None
 
 
-def timezone_push_due(device: Device, when: float | None = None) -> float | None:
-    """The offset to push to `device` now, or None if nothing should be sent.
+def _zone_offset(device: Device, when: float | None) -> float | None:
+    """The offset the device's zone has at `when`, if the loop follows it.
 
     Only a device whose offset comes from its locale qualifies: with a manual
     override the operator owns the value (and `api_timezone` pushed it), and
@@ -107,20 +139,52 @@ def timezone_push_due(device: Device, when: float | None = None) -> float | None
     Never raises: `locale` and every stored number arrive from the device and
     go through `offset_hours_for_locale` / `to_float`, which answer None for
     anything unusable.
-
-    Args:
-        when: Epoch to evaluate the zone at. For tests; defaults to now.
     """
     try:
         if to_float(device.config.get("timezone"), None) is not None:
             return None
-        target = offset_hours_for_locale(device.config.get("locale"), when)
+        return offset_hours_for_locale(device.config.get("locale"), when)
     except Exception:  # noqa: BLE001 - device input never raises
         return None
+
+
+def release_not_kept(device: Device, when: float | None = None) -> bool:
+    """Forget an offset set aside as not kept once the zone has moved off it.
+
+    Its next turn — the same half of next year — is a new change, worth one
+    push of its own. Released here rather than by the push that follows the
+    move, because there may be none: the device can already hold the new
+    offset. Returns True if anything changed (the caller persists).
+    """
+    not_kept = to_float(device.config.get(TIMEZONE_NOT_KEPT_KEY), None)
+    if not_kept is None:
+        return False
+    target = _zone_offset(device, when)
+    if target is None or _same(not_kept, target):
+        return False
+    device.config.pop(TIMEZONE_NOT_KEPT_KEY, None)
+    return True
+
+
+def timezone_push_due(device: Device, when: float | None = None) -> float | None:
+    """The offset to push to `device` now, or None if nothing should be sent.
+
+    Nothing when the device already holds the zone's offset
+    (`_last_known_offset`), and nothing when that offset is the one it came
+    back from a restart without (`note_reported_offset`): see the module
+    docstring on restart loops.
+
+    Args:
+        when: Epoch to evaluate the zone at. For tests; defaults to now.
+    """
+    target = _zone_offset(device, when)
     if target is None:
         return None
     known = _last_known_offset(device)
     if known is not None and _same(known, target):
+        return None
+    not_kept = to_float(device.config.get(TIMEZONE_NOT_KEPT_KEY), None)
+    if not_kept is not None and _same(not_kept, target):
         return None
     return target
 
@@ -141,8 +205,9 @@ async def push_timezone(device: Device, bridge: Any, hub: EventHub | None,
       MQTT only was once a silent no-op for every feeder that never reaches the
       broker.
 
-    Records what was sent in `config[TIMEZONE_PUSHED_KEY]`; persisting it is
-    the caller's job (`reg.save()` / `mark_dirty()`).
+    Records what was sent in `config[TIMEZONE_PUSHED_KEY]`, and drops any
+    offset set aside as not kept: this push is newer. Persisting is the
+    caller's job (`reg.save()` / `mark_dirty()`).
 
     Returns:
         `"mqtt"` or `"heartbeat-queue"` — what actually happened.
@@ -164,6 +229,7 @@ async def push_timezone(device: Device, bridge: Any, hub: EventHub | None,
         device.command_queue.append(envelope)
         delivered = "heartbeat-queue"
     device.config[TIMEZONE_PUSHED_KEY] = value
+    device.config.pop(TIMEZONE_NOT_KEPT_KEY, None)
     if hub is not None:
         hub.record_command(device.petkit_id, delivered,
                            f"{PROPERTY_SET_SUFFIX} timezone={text}")
@@ -179,7 +245,9 @@ async def sync_timezones(registry: DeviceRegistry, bridge: Any,
     every device until the next restart.
     """
     pushed = 0
+    released = False
     for device in registry.all():
+        released = release_not_kept(device, when) or released
         offset = timezone_push_due(device, when)
         if offset is None:
             continue
@@ -191,7 +259,7 @@ async def sync_timezones(registry: DeviceRegistry, bridge: Any,
         pushed += 1
         log.info("Device %d: zone %s is now UTC%+g, pushed via %s",
                  device.petkit_id, device.config.get("locale"), offset, delivered)
-    if pushed:
+    if pushed or released:
         registry.mark_dirty()
     return pushed
 

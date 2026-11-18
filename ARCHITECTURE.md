@@ -195,6 +195,11 @@ device --MQTT--> mqtt/broker.py (amqtt)
 One `#` subscription covers every device, so anything that escapes per-message handling takes the
 bridge down for all of them at once.
 
+`mqtt/broker.py` runs amqtt as `DeviceBroker`, whose one change is the take-over: a device that
+reconnects under the client id of a connection still open (every patched ESP32 — its client id is
+fixed) keeps the NEW connection, and the old one goes quietly instead of taking the shared session
+and the device's `mqtt_connected` down with it.
+
 ## From Home Assistant
 
 ```

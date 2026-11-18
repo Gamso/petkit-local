@@ -104,6 +104,7 @@ async def test_ble_poll_sent_to_parent_connect_topic():
     reg, dev, ble, pub, bridge = _setup()
     ble.register(ble_type="w5", petkit_id=700, mac="CC:DD", link_with=10, interval=240)
     bridge._client = FakeMqttClient()
+    dev.mqtt_connected = True            # a property post arrives over MQTT
     await bridge._handle_event(dev, "property", {"params": {"sandPercent": 30}})
     topics = [t for t, _, _ in bridge._client.published]
     assert any(t.endswith("/thing/service/connect") for t in topics)

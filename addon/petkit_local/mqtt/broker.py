@@ -18,6 +18,7 @@ import logging
 import os
 import socket
 import ssl
+import weakref
 from typing import TYPE_CHECKING, Any
 
 from amqtt.broker import Broker, BrokerConfig
@@ -241,6 +242,91 @@ def configure_device_tls(ctx: ssl.SSLContext, data_dir: str) -> ssl.SSLContext:
     return ctx
 
 
+class DeviceBroker(Broker):
+    """amqtt's broker, with a take-over that leaves the NEW connection standing.
+
+    A take-over is a CONNECT for a client id whose connection is still open.
+    A patched ESP32 makes one on every reconnect: its SDK (`_v=sdk-c-3.2.0`)
+    sends a FIXED `timestamp=2524608000000` in the client id, so a box that
+    comes back before the broker noticed it leave is the same client. (A T5
+    puts the real time there, so its reconnect is a new client and none of
+    this applies to it.) amqtt handles the two CONNECT flavours differently,
+    and gets both wrong for us:
+
+    * `clean_session=0` reuses the live `Session` object for the new
+      connection and then closes the old one. The old connection's teardown
+      (`Broker._handle_disconnect`) runs on that SHARED session: it marks it
+      `disconnected` under the new connection — so broadcasts skip it and every
+      command to the device is dropped — and fires `CLIENT_DISCONNECTED` with
+      the very session the new connection is using, so `mqtt/auth.py` cannot
+      tell it from a real loss and takes the device off MQTT. If the session's
+      `clean_session` was set by an earlier, clean CONNECT (amqtt never updates
+      it on resume), the session monitor then reaps the "disconnected" session
+      a second later — and stops the NEW connection's handler with it. That is
+      issue #106's log line for line.
+    * `clean_session=1` gives the new connection a fresh session but never
+      closes the old connection: it lingers, deaf, until its keep-alive runs
+      out, holding a connection slot and holding up `shutdown`.
+
+    So: once the new CONNECT has authenticated, the connection it replaces is
+    marked superseded, closed (amqtt already does that for a resumed session),
+    and its teardown stops only its own handler — the session state, the will
+    message and `CLIENT_DISCONNECTED` all belong to the connection that is
+    still open. A CONNECT that FAILS authentication marks nothing, so amqtt's
+    own handling, and the device's MQTT state with it, are exactly as before.
+
+    Overrides three private methods of amqtt (pinned `<1`); the real-broker
+    tests in `tests/test_mqtt_takeover.py` fail if their contract moves.
+    """
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        #: client id -> (handler of the open connection a CONNECT in flight
+        #: would replace, whether WE must close it). Lives from the CONNECT's
+        #: session lookup to its authentication, never longer.
+        self._replacing: dict[str, tuple[Any, bool]] = {}
+        #: Handlers whose connection was replaced; their teardown is theirs alone.
+        self._superseded: weakref.WeakSet = weakref.WeakSet()
+
+    async def _delete_session(self, client_id: str) -> None:
+        """A clean CONNECT drops the stored session: note its open connection."""
+        session, handler = self._sessions.get(client_id, (None, None))
+        await super()._delete_session(client_id)
+        if handler is not None and session is not None and session.transitions.is_connected():
+            self._replacing[client_id] = (handler, True)
+
+    async def _authenticate(self, session: Any, listener: Any) -> bool:
+        """Authenticate, then retire the connection this CONNECT replaces."""
+        client_id = session.client_id or ""
+        held_session, held_handler = self._sessions.get(client_id, (None, None))
+        if (held_session is session and held_handler is not None
+                and session.transitions.is_connected()):
+            # A resumed session that is still connected: amqtt is about to
+            # take it over, and closes the old connection itself.
+            self._replacing[client_id] = (held_handler, False)
+        authenticated = await super()._authenticate(session, listener)
+        replaced = self._replacing.pop(client_id, None)
+        if replaced is not None and authenticated:
+            old_handler, must_close = replaced
+            self._superseded.add(old_handler)
+            log.info("MQTT take-over: a new connection from %s:%s replaces the open one "
+                     "of %s, which is closed", session.remote_address,
+                     session.remote_port, client_id)
+            if must_close:
+                await old_handler.handle_connection_closed()
+        return authenticated
+
+    async def _handle_disconnect(self, client_session: Any, handler: Any,
+                                 disconnect_waiter: Any) -> None:
+        """Tear down a connection; a superseded one takes nothing else with it."""
+        if handler in self._superseded:
+            self._superseded.discard(handler)
+            await self._stop_handler(handler)
+            log.debug("Superseded MQTT connection of %s closed", client_session.client_id)
+            return
+        await super()._handle_disconnect(client_session, handler, disconnect_waiter)
+
+
 async def start_broker(
     port: int = 1883,
     registry: DeviceRegistry | None = None,
@@ -311,7 +397,7 @@ async def start_broker(
         plugins={"petkit_local.mqtt.auth.AliyunAuthPlugin": {}},
     )
 
-    broker = Broker(config)
+    broker = DeviceBroker(config)
 
     # amqtt builds the listener's context itself; this is the one place to
     # reach it. `configure_device_tls` admits the ciphers a device's mbedTLS

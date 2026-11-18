@@ -57,6 +57,14 @@ BLE_SESSION_HOLD_SECONDS = 30
 #: far shorter than any poll interval, so it never swallows the next session.
 LINK_UP_DEDUP_SECONDS = 10.0
 
+#: How long a relay session is taken to hold its parent when nothing says it
+#: ended. The parent ends one with `ble_relay_over action 0`, and a T4 asked to
+#: hold for `BLE_SESSION_HOLD_SECONDS` held one 133 s (`relay.start` to
+#: `relay.over_closed` in `tests/fixtures/t4_ble_relay_and_data_get.json`),
+#: others 100-130 s. 180 is clearly past that and still under the 240 s
+#: default poll interval, so a lost `action 0` costs one deferred tick.
+BLE_SESSION_TIMEOUT_SECONDS = 180.0
+
 
 def _relay_content(params: object) -> dict:
     """The decoded `content` of a relay event, or {} for anything unreadable.
@@ -151,6 +159,34 @@ class BLERelay:
         #: answered yet. The session is closed only once this is empty, so a
         #: status reply does not hang up on the settings reply behind it.
         self._pending_reads: dict[int, set[int]] = {}
+        #: Per parent, the relay session it holds: `(accessory id, since)`.
+        #: One per parent, whichever accessory it is for: see `_open_session`.
+        self._sessions: dict[int, tuple[int, float]] = {}
+
+    def _open_session(self, device: Device) -> tuple[int, float] | None:
+        """The relay session `device` still holds, as `(accessory id, since)`.
+
+        A `connect` sent while one is open was the last thing a T4 (ESP32,
+        1.652) was sent before it re-signed up as after a reboot (#106): the
+        240 s poll opened a second session on a fountain whose first had never
+        been reported closed. That is a suspicion from timing, not a proven
+        cause, and whether the firmware takes two sessions at once, for one
+        accessory or two, is unknown — so this assumes it takes one.
+
+        A session ends with the parent's `ble_relay_over action 0`, after
+        `BLE_SESSION_TIMEOUT_SECONDS` without one, or when the parent has made
+        a new MQTT connection since it opened — a reconnect is a restart of the
+        whole stack, radio included.
+        """
+        held = self._sessions.get(device.petkit_id)
+        if held is None:
+            return None
+        _ble_id, since = held
+        if (time.time() - since >= BLE_SESSION_TIMEOUT_SECONDS
+                or (device.mqtt_connected_at or 0.0) > since):
+            del self._sessions[device.petkit_id]
+            return None
+        return held
 
     def _next_seq(self, ble: BLEDevice) -> int:
         """This accessory's next frame sequence number, wrapping at a byte."""
@@ -189,12 +225,23 @@ class BLERelay:
         every write, and left for `_handle_ble_response` to close once a reading
         comes back.
 
+        A session the parent already holds for THIS accessory is written into
+        as it is: a second `connect` is what `_open_session` exists to prevent.
+        One it holds for ANOTHER accessory refuses the write until it ends.
+
         Returns False when nothing could be sent, so a caller does not report
         success for a command that never left.
         """
-        if not self._bridge.connected:
+        if not self._bridge.connected or not device.mqtt_connected:
             return False
-        await self._ble_connect(device, ble, action=1)
+        held = self._open_session(device)
+        if held is None:
+            if not await self._ble_connect(device, ble, action=1):
+                return False
+        elif held[0] != ble.petkit_id:
+            log.info("BLE cmd %d -> %s held back: parent %d is still relaying accessory %d",
+                     cmd, ble.ble_type, device.petkit_id, held[0])
+            return False
         data = ble_command_frame(cmd, self._next_seq(ble), payload)
         if data is None:
             log.warning("No BLE opcode known for cmd %s (%s id=%d)",
@@ -277,6 +324,26 @@ class BLERelay:
                      ble_dev.ble_type.upper(), ble_dev.petkit_id, device.petkit_id, result)
         elif action == 0:
             self._pending_reads.pop(ble_dev.petkit_id, None)
+            held = self._sessions.get(device.petkit_id)
+            if held is not None and held[0] == ble_dev.petkit_id:
+                del self._sessions[device.petkit_id]
+
+    async def _handle_relay_start(self, device: Device, params: dict) -> None:
+        """Note a relay session the parent reports opening (`action 1`).
+
+        Ours are noted when the `connect` goes out; this also catches one we
+        did not ask for (proxy mode relays the real cloud's `connect` down),
+        and restarts the clock at the parent's own start.
+        """
+        if not self._ble_registry:
+            return
+        content = _relay_content(params)
+        if to_int(content.get("action"), None) != 1:
+            return
+        mac = dig(content, "device", "mac", default="")
+        ble_dev = self._ble_registry.get_by_mac(mac) if isinstance(mac, str) and mac else None
+        if ble_dev is not None:
+            self._sessions[device.petkit_id] = (ble_dev.petkit_id, time.time())
 
     async def request_ble_reading(self, device: Device, ble: BLEDevice) -> bool:
         """Ask the parent for a reading from this accessory, right now.
@@ -291,13 +358,21 @@ class BLERelay:
         this parent's relay list is asked for. A K3 is in no relay list — a
         `connect` for one names `type: 0`, a scan for a device the parent was
         never told about — and it reports inside its parent's state anyway.
+
+        And to `_open_session`: a session already open for this accessory is
+        the reading on its way, so nothing is sent and the answer is yes; one
+        open for another accessory is a no until it ends.
         """
-        if not self._bridge.connected or not self._ble_registry:
+        if not self._bridge.connected or not self._ble_registry or not device.mqtt_connected:
             return False
         relayed = {b.petkit_id for b in self._ble_registry.non_k3_for_parent(device.petkit_id)}
         if ble.petkit_id not in relayed:
             return False
-        await self._ble_connect(device, ble, action=1)
+        held = self._open_session(device)
+        if held is not None:
+            return held[0] == ble.petkit_id
+        if not await self._ble_connect(device, ble, action=1):
+            return False
         self._ble_poll_ts[ble.petkit_id] = time.time()
         return True
 
@@ -333,16 +408,26 @@ class BLERelay:
             except Exception:  # noqa: BLE001 - one bad poll must not end the loop
                 log.exception("BLE poll loop")
 
-    async def _ble_connect(self, device: Device, ble: BLEDevice, action: int) -> None:
+    async def _ble_connect(self, device: Device, ble: BLEDevice, action: int) -> bool:
         """Open (`action=1`) or close (`action=0`) the parent's BLE session.
 
         `thing.service.connect` is the only way an accessory reports at all:
         the parent does not poll on its own initiative, so nothing arrives
         until this is pushed. Closing matters too — an accessory whose session
         is never ended keeps the parent's radio busy between readings.
+
+        Nothing is sent to a parent that is not on MQTT: it is subscribed to
+        nothing, so the publish would vanish. Nor is a session opened while the
+        parent still holds one (`_open_session`); closing ours does not end it
+        here either — the parent's own `ble_relay_over action 0` does.
+
+        Returns:
+            True if the frame went out.
         """
-        if not self._bridge.connected:
-            return
+        if not self._bridge.connected or not device.mqtt_connected:
+            return False
+        if action and self._open_session(device) is not None:
+            return False
         now = int(time.time())
         envelope = {
             "method": "thing.service.connect",
@@ -363,10 +448,14 @@ class BLERelay:
             },
             "version": "1.0.0",
         }
-        await self._bridge.publish_service(device, "connect", envelope)
+        if not await self._bridge.publish_service(device, "connect", envelope):
+            return False
+        if action:
+            self._sessions[device.petkit_id] = (ble.petkit_id, time.time())
         log.info("BLE %s -> %s (mac=%s) via parent %d",
                  "connect" if action else "disconnect",
                  ble.ble_type, ble.mac, device.petkit_id)
+        return True
 
     async def publish_relay_update(self, device: Device) -> bool:
         """Tell a parent its accessory list has changed, so it refetches now.
@@ -405,8 +494,12 @@ class BLERelay:
         never relays W5 data. Throttled per accessory `interval`.
 
         Mirrors localkit ServiceConnect (thing/service/connect, connect_action=1).
+
+        An accessory whose `connect` was held back (`_ble_connect`) keeps its
+        old timestamp, so the next tick tries again rather than a whole
+        interval later.
         """
-        if not self._bridge.connected or not self._ble_registry:
+        if not self._bridge.connected or not self._ble_registry or not device.mqtt_connected:
             return
         # `non_k3_for_parent`, not `get_linked`: a K3 is never in the relay list
         # at all (it travels inside the parent's own device_info), so asking a
@@ -419,8 +512,8 @@ class BLERelay:
             interval = getattr(ble, "interval", 240) or 240
             if now - self._ble_poll_ts.get(ble.petkit_id, 0) < interval:
                 continue
-            self._ble_poll_ts[ble.petkit_id] = now
-            await self._ble_connect(device, ble, action=1)
+            if await self._ble_connect(device, ble, action=1):
+                self._ble_poll_ts[ble.petkit_id] = now
 
     def _update_linked_k3(self, device: Device, params: dict) -> BLEDevice | None:
         """Merge K3 consumable fields piggybacked on the parent's property post.

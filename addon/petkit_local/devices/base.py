@@ -36,6 +36,13 @@ from petkit_local.utils.timeutil import local_offset_hours, offset_hours_for_loc
 #: Persisted with the rest of `config`, so a restart does not re-push.
 TIMEZONE_PUSHED_KEY = "timezone_pushed"
 
+#: `config` key holding a pushed offset that a LATER signup showed the device
+#: not holding — it came back from a restart on another value. That offset is
+#: not pushed again until the zone has moved off it (`ha/timezone_sync.py`), so
+#: a device that restarts after a push cannot be pushed into a loop. Persisted
+#: like the push itself.
+TIMEZONE_NOT_KEPT_KEY = "timezone_not_kept"
+
 
 class Refused(ValueError):
     """The write was understood and rejected, and nothing was changed.

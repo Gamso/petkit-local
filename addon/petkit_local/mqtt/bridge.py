@@ -556,6 +556,10 @@ class MQTTBridge:
         elif event_type == "ble_response":
             await self._ble_relay._handle_ble_response(device, params)
 
+        elif event_type == "ble_relay_start":
+            # A session the parent holds; none is opened over it.
+            await self._ble_relay._handle_relay_start(device, params)
+
         elif event_type == "ble_relay_over":
             # The link coming up is when an accessory is asked to report.
             await self._ble_relay._handle_relay_over(device, params)
