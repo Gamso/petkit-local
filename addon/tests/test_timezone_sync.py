@@ -11,10 +11,10 @@ from datetime import datetime, timezone
 
 from aiohttp.test_utils import TestClient, TestServer
 
-from petkit_local.devices.base import TIMEZONE_PUSHED_KEY
+from petkit_local.devices.base import TIMEZONE_NOT_KEPT_KEY, TIMEZONE_PUSHED_KEY
 from petkit_local.devices.registry import DeviceRegistry
 from petkit_local.ha.timezone_sync import (
-    sync_timezones, timezone_push_due, timezone_sync_loop,
+    push_timezone, sync_timezones, timezone_push_due, timezone_sync_loop,
 )
 from petkit_local.http.server import create_app
 from petkit_local.web.hub import EventHub
@@ -25,6 +25,8 @@ AFTER_DST_END = datetime(2026, 10, 25, 1, 30, tzinfo=timezone.utc).timestamp()  
 A_WEEK_LATER = AFTER_DST_END + 7 * 86400
 # ...and enters it again at 2027-03-28 01:00 UTC.
 AFTER_DST_START = datetime(2027, 3, 28, 1, 30, tzinfo=timezone.utc).timestamp()   # +2
+# ...and leaves it again at 2027-10-31 01:00 UTC.
+NEXT_DST_END = datetime(2027, 10, 31, 1, 30, tzinfo=timezone.utc).timestamp()     # +1
 
 
 class FakeBridge:
@@ -180,34 +182,79 @@ async def test_a_failed_publish_falls_back_to_the_queue_and_is_not_retried_hot()
     assert len(d.command_queue) == 1
 
 
-async def test_a_new_signup_makes_the_device_be_told_again():
-    """Nobody has shown that a runtime `property.set{timezone}` survives a
-    reboot, and a rebooted device signs up again stating what it holds. That
-    statement is newer than our last push, so it is what the zone is compared
-    with — and a device that came back on the provisioned +2 is corrected."""
-    reg, d = _registry(reported=2.0, device_type="d4")
-    d.serial_number = "20241223G11497"
-    bridge = FakeBridge()
-    await sync_timezones(reg, bridge, EventHub(), AFTER_DST_END)
-    assert _sent_values(bridge) == ["1"]
-
+async def _signup(reg, timezone_text: str) -> None:
+    """One real `dev_signup` from the registry's D4, stating `timezone_text`."""
     app = create_app(reg, {"api_url": "http://server/6/", "mqtt_port": 1883,
                            "proxy_mode": False, "proxy_upstream": "",
                            "proxy_block_run_cmd": True})
     client = TestClient(TestServer(app))
     await client.start_server()
     try:
-        body = ("hardware=1&firmware=1.267&mac=c05d89d25204&timezone=2.0"
-                "&locale=Europe/Rome&id=1&sn=20241223G11497")
+        body = ("hardware=1&firmware=1.267&mac=c05d89d25204"
+                f"&timezone={timezone_text}&locale=Europe/Rome&id=1&sn=SN0000000001")
         r = await client.post("/6/d4/dev_signup", data=body,
                               headers={"Content-Type": "application/x-www-form-urlencoded"})
         assert r.status == 200
     finally:
         await client.close()
-    assert TIMEZONE_PUSHED_KEY not in d.config
 
-    await sync_timezones(reg, bridge, EventHub(), AFTER_DST_END + 300)
+
+def _d4_on_plus_two():
+    reg, d = _registry(reported=2.0, device_type="d4")
+    d.serial_number = "SN0000000001"
+    return reg, d
+
+
+async def test_a_device_that_restarts_without_the_push_is_not_pushed_into_a_loop():
+    """A rebooted device signs up again stating what it holds. If that is not
+    what we just pushed, it did not keep the push — and answering every signup
+    with the same push is exactly how a device that restarts after one would be
+    driven round and round (a T4 in #106 re-signed up three minutes after a
+    push; timing, not proof). The offset is set aside until the zone moves."""
+    reg, d = _d4_on_plus_two()
+    bridge = FakeBridge()
+    await sync_timezones(reg, bridge, EventHub(), AFTER_DST_END)
+    assert _sent_values(bridge) == ["1"]
+
+    for i in range(3):                      # three restarts, each back on +2
+        await _signup(reg, "2.0")
+        assert TIMEZONE_PUSHED_KEY not in d.config
+        assert d.config[TIMEZONE_NOT_KEPT_KEY] == 1.0
+        assert timezone_push_due(d, AFTER_DST_END + (i + 1) * 600) is None
+        await sync_timezones(reg, bridge, EventHub(), AFTER_DST_END + (i + 1) * 600)
+    assert _sent_values(bridge) == ["1"]
+
+    # Spring: the device already says +2, so nothing — and the set-aside
+    # offset is released, because the zone has moved off it...
+    assert await sync_timezones(reg, bridge, EventHub(), AFTER_DST_START) == 0
+    assert TIMEZONE_NOT_KEPT_KEY not in d.config
+    # ...so next autumn is a new change, with one push of its own.
+    await sync_timezones(reg, bridge, EventHub(), NEXT_DST_END)
+    await sync_timezones(reg, bridge, EventHub(), NEXT_DST_END + 300)
     assert _sent_values(bridge) == ["1", "1"]
+
+
+async def test_a_signup_that_confirms_the_push_sets_nothing_aside():
+    """Same restart, but the device kept the value: its own lossy readback of
+    it is still the same offset."""
+    reg, d = _d4_on_plus_two()
+    bridge = FakeBridge()
+    await sync_timezones(reg, bridge, EventHub(), AFTER_DST_END)
+    await _signup(reg, "1.0")
+    assert TIMEZONE_NOT_KEPT_KEY not in d.config
+    await sync_timezones(reg, bridge, EventHub(), AFTER_DST_END + 300)
+    assert _sent_values(bridge) == ["1"]
+
+
+async def test_an_offset_pushed_on_request_is_sent_even_if_it_was_not_kept():
+    """The panel's override button is somebody asking; it always sends, and
+    what it sends is the newest word."""
+    reg, d = _d4_on_plus_two()
+    d.config[TIMEZONE_NOT_KEPT_KEY] = 1.0
+    bridge = FakeBridge()
+    assert await push_timezone(d, bridge, EventHub(), 1.0) == "mqtt"
+    assert _sent_values(bridge) == ["1"]
+    assert TIMEZONE_NOT_KEPT_KEY not in d.config
 
 
 async def test_the_panel_override_records_what_it_pushed():

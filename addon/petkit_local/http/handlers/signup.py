@@ -18,7 +18,7 @@ from typing import Any
 from aiohttp import web
 
 from petkit_local.devices import payloads
-from petkit_local.devices.base import TIMEZONE_PUSHED_KEY
+from petkit_local.ha.timezone_sync import note_reported_offset
 from petkit_local.http.appkeys import DEVICE_TYPE, ON_SIGNUP, REGISTRY
 from petkit_local.http.handlers._common import device_field, device_id, device_serial
 from petkit_local.utils.coerce import to_float
@@ -58,11 +58,9 @@ def _remember_where_it_thinks_it_is(request: web.Request, device: Any,
             device.config["reported_timezone"] = tz
             registry.mark_dirty()
         # A signup is the device saying what it holds NOW, which is newer than
-        # whatever we last pushed to it — and it may well differ, since nobody
-        # has shown that a runtime `property.set{timezone}` survives a reboot.
-        # Forgetting the push makes `ha/timezone_sync.py` compare the zone
-        # against this statement instead, and push again if it is wrong.
-        if device.config.pop(TIMEZONE_PUSHED_KEY, None) is not None:
+        # whatever we last pushed to it — and it may differ, since nobody has
+        # shown that a runtime `property.set{timezone}` survives a reboot.
+        if note_reported_offset(device, tz):
             registry.mark_dirty()
 
     locale = (device_field(request, "locale") or "").strip()
