@@ -10,6 +10,7 @@ choice always wins. What is held here:
 * a proxied reply teaches `typeCode` without changing what is relayed, and
   nothing is learned with proxy mode off;
 * a D4SH's own `hardware: 2` teaches it, a T4's `hardware: 1` does not;
+* the panel's Model select persists to `devices.json` and outranks both;
 * Home Assistant's device model, the panel and the app API all use the name;
 * a gen-2 YumShare supports recognition before it has asked for anything.
 """
@@ -38,6 +39,7 @@ from petkit_local.utils.const import (
 )
 from petkit_local.web.api.config_import import import_device
 from petkit_local.web.hub import EventHub
+from petkit_local.web.panel import create_panel_app
 from tests._fakes import FakeMqttClient
 
 # --- the table ---------------------------------------------------------------
@@ -313,6 +315,68 @@ def test_an_imported_device_info_teaches_the_generation():
         "type": "t4", "dev_device_info": {"result": {"id": 300000001, "typeCode": 2}}})
     assert device.generation_and_source == (2, "typeCode")
     assert "model (Pura Max 2)" in summary["imported"]
+
+
+# --- the panel -----------------------------------------------------------------
+
+
+def _panel(reg):
+    cfg = {"api_url": "http://x/6/", "capture": False, "capture_dir": "/nope"}
+    return create_panel_app(reg, BLERegistry(), EventHub(), cfg, None)
+
+
+async def test_the_panel_model_select_persists_and_goes_back_to_automatic(tmp_path: Path):
+    path = tmp_path / "devices.json"
+    reg = DeviceRegistry(path)
+    d = reg.get_or_create(petkit_id=1, device_type="d4sh", serial_number="SN1")
+    d.record_generation("hardware", 2)
+    client = TestClient(TestServer(_panel(reg)))
+    await client.start_server()
+    try:
+        detail = await (await client.get("/api/devices/1")).json()
+        assert detail["name"] == "YumShare Dual-Hopper 2" and detail["generation"] == 2
+        info = detail["modelInfo"]
+        assert (info["source"], info["override"], info["learned"]) == ("hardware", None, {"hardware": 2})
+        assert [c["name"] for c in info["choices"]] == ["YumShare Dual-Hopper",
+                                                        "YumShare Dual-Hopper 2"]
+
+        r = await client.post("/api/devices/1/model", json={"generation": 1})
+        body = await r.json()
+        assert r.status == 200 and body["name"] == "YumShare Dual-Hopper"
+        assert body["source"] == "owner"
+        assert DeviceRegistry(path).get(1).config[GENERATION_KEY] == 1
+
+        r = await client.post("/api/devices/1/model", json={"generation": None})
+        body = await r.json()
+        assert body["source"] == "hardware" and body["name"] == "YumShare Dual-Hopper 2"
+        assert GENERATION_KEY not in DeviceRegistry(path).get(1).config
+    finally:
+        await client.close()
+
+
+async def test_the_panel_refuses_a_model_the_codename_does_not_have():
+    reg = DeviceRegistry()
+    reg.get_or_create(petkit_id=1, device_type="d4sh", serial_number="SN1")
+    reg.get_or_create(petkit_id=2, device_type="t5", serial_number="SN2")
+    client = TestClient(TestServer(_panel(reg)))
+    await client.start_server()
+    try:
+        for body in ({"generation": 3}, {"generation": True}, {}):
+            r = await client.post("/api/devices/1/model", json=body)
+            assert r.status == 400, body
+        assert GENERATION_KEY not in reg.get(1).config
+        # A codename sold in one generation has no Model select at all.
+        assert (await (await client.get("/api/devices/2")).json())["modelInfo"] is None
+        assert (await client.post("/api/devices/2/model", json={"generation": 1})).status == 400
+    finally:
+        await client.close()
+
+
+def test_the_panel_script_posts_the_model():
+    js = (Path(__file__).parent.parent / "petkit_local/web/static/js/devices.js").read_text(
+        encoding="utf-8")
+    assert "data-change=\"set-model\"" in js
+    assert "'/model'" in js
 
 
 # --- Home Assistant ------------------------------------------------------------

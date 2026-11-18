@@ -588,6 +588,52 @@ async function setTimezone(id, offset) {
   loadDevices();
 }
 
+// "Automatic" is the empty value: it drops the owner's choice and hands the
+// name back to whatever was learned, or to the codename's own name.
+onChange('set-model', el =>
+  setModel(Number(el.dataset.id), el.value === '' ? null : Number(el.value)),
+);
+async function setModel(id, generation) {
+  const r = await api('devices/' + id + '/model', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ generation }),
+  });
+  toast(r.ok ? 'Model: ' + r.name : 'Error: ' + (r.error || 'failed'));
+  loadDevices();
+}
+
+// What the select's "Automatic" would resolve to, and where that comes from.
+const MODEL_SOURCES = {
+  typeCode: "PetKit's typeCode (proxy mode)",
+  hardware: "the device's own report",
+};
+function modelCard(d) {
+  const m = d.modelInfo;
+  const learned = Object.entries(m.learned || {})
+    .map(([src, gen]) => {
+      const row = m.choices.find(c => c.generation === gen);
+      return `${esc(row ? row.name : gen)} from ${esc(MODEL_SOURCES[src] || src)}`;
+    })
+    .join(' · ');
+  const opts = [`<option value="" ${m.override == null ? 'selected' : ''}>Automatic</option>`]
+    .concat(
+      m.choices.map(
+        c =>
+          `<option value="${esc(c.generation)}" ${m.override === c.generation ? 'selected' : ''} title="${esc(c.grade + ': ' + c.note)}">${esc(c.name)}</option>`,
+      ),
+    )
+    .join('');
+  return `<div class="card"><h3>Model${help(
+    "PetKit sells several generations under one codename — a Pura Max 2 is still a t4 — and the device never says which. It is learned from PetKit's own reply in proxy mode, or from the device's report where that is known to carry it. Set it here when neither has, or to correct it; your choice always wins. It names the device here, in Home Assistant and in the phone app, and tells a YumShare 2 that it can recognise pets.",
+  )}</h3>
+    <p class="sub">Shown as <b>${esc(m.name)}</b>${
+      m.source === 'owner' ? ', as set here' : m.source ? '' : ' — generation unknown'
+    }${learned ? ` · learned: ${learned}` : ''}</p>
+    <div class="ctrls"><label class="ctrl"><span>Model</span>
+      <span class="cn"><select data-change="set-model" data-id="${esc(d.id)}">${opts}</select></span></label></div></div>`;
+}
+
 onChange('set-log-upload', el => setLogUpload(Number(el.dataset.id), el.checked));
 async function setLogUpload(id, on) {
   const r = await api('devices/' + id + '/logs', {
@@ -756,6 +802,8 @@ function renderPanelBody(d) {
       <button class="mini" data-action="set-timezone" data-id="${esc(d.id)}">Set</button></span></label></div></div>`
       : ''
   }
+
+  ${d.modelInfo ? modelCard(d) : ''}
 
   ${
     d.logInfo
