@@ -522,6 +522,7 @@ class MQTTBridge:
                 # from the HTTP state_report).
                 device.state.update(normalize_property_params(device.device_type, params))
                 addresses.note(device, addresses.CLAIMED, reported_ip(params))
+                device.note_hardware(params)
                 apply_consumable_state(device)
                 self._sync_settings_from_device(device, params)
                 self._registry.mark_dirty()

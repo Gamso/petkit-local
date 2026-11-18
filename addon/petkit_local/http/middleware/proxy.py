@@ -13,7 +13,7 @@ import logging
 
 from aiohttp import web
 
-from petkit_local.ha.learn import learn_settings
+from petkit_local.ha.learn import learn_generation, learn_settings
 from petkit_local.http.appkeys import (
     CONFIG, EVENT_HUB, EVENT_STORE, HA_PUBLISHER, PROXY_UPSTREAM_CREDS, REGISTRY,
 )
@@ -477,6 +477,11 @@ async def _learn_from_device_info(request: web.Request, device, exchange) -> Non
     Assistant reaches the device but not PetKit's account, and the cloud's
     older value must not revert it.
 
+    The same reply's `typeCode` names the device's generation, learned as
+    well (`ha/learn.py::learn_generation`); a change there renames the HA
+    device, which the state publish below takes care of
+    (`HAPublisher.publish_state`).
+
     Observation only: the response is built from `exchange` either way, and a
     failure here costs a log line, never the answer. It runs before the reply
     is returned, so the HA publish is bounded (`_LEARN_PUBLISH_TIMEOUT`).
@@ -488,7 +493,8 @@ async def _learn_from_device_info(request: web.Request, device, exchange) -> Non
         learned = learn_settings(device, settings,
                                  source="the cloud's dev_device_info (proxy)",
                                  only_missing=True)
-        if not learned:
+        renamed = learn_generation(device, result)
+        if not learned and not renamed:
             return
         registry = request.app.get(REGISTRY)
         if registry is not None:

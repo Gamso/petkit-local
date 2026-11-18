@@ -163,6 +163,9 @@ Two rules about placement that the map does not make obvious:
   `dev_device_info` only fills fields never stored, because the account still holds the old value
   of anything set from HA while proxied. Applies to every model; only the W7H depends on it.
   Nothing is learned with proxy mode off.
+  The same reply's `typeCode` is the device's GENERATION (2 = Pura Max 2, Dual-Hopper 2;
+  `utils/const.py::MODEL_GENERATIONS`, graded) and is learned too (`learn_generation`); it only
+  names the device and is never served back. The owner's Model choice in the panel always wins.
   A cloud `user/get` push and a proxied `dev_multi_config` are NOT learned from yet: neither shape
   has been captured for this purpose.
 - **A heartbeat delivering a command is never forwarded in proxy mode.** `pop_commands` is

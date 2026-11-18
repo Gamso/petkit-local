@@ -15,6 +15,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from petkit_local.utils.const import (
+    AI_GENERATIONS,
     DEVICE_TYPES_AI,
     DEVICE_TYPES_BLE_ONLY,
     DEVICE_TYPES_CAMERA,
@@ -23,6 +24,9 @@ from petkit_local.utils.const import (
     DEVICE_TYPES_NEXT_GEN,
     DEVICE_TYPES_PURIFIER,
     DEVICE_TYPES_WATER_FOUNTAIN,
+    device_display_name,
+    generation_from_hardware,
+    valid_generation,
 )
 from petkit_local.utils.coerce import to_bool, to_float
 from petkit_local.utils.crypto import generate_device_secret, generate_product_key
@@ -42,6 +46,22 @@ TIMEZONE_PUSHED_KEY = "timezone_pushed"
 #: a device that restarts after a push cannot be pushed into a loop. Persisted
 #: like the push itself.
 TIMEZONE_NOT_KEPT_KEY = "timezone_not_kept"
+
+#: `config` key holding the generation the OWNER chose in the panel (an int,
+#: e.g. 2 for a Pura Max 2). Absent means "Automatic". It always wins over a
+#: learned value: it exists to correct a wrong one, and for installs that never
+#: learn one at all (no proxy mode, a model whose `hardware` means nothing).
+GENERATION_KEY = "generation"
+#: `config` key holding each LEARNED generation by where it came from,
+#: `{"typeCode": 2, "hardware": 2}` -- kept apart so two sources that disagree
+#: cannot overwrite each other on every report, and so the panel can say which
+#: one is in force.
+GENERATION_LEARNED_KEY = "generation_learned"
+#: Learned sources, most authoritative first. `typeCode` is PetKit's own
+#: record of what was sold (`ha/learn.py::learn_generation`, proxy mode only);
+#: `hardware` is the device's own report, where `utils/const.py` grades it as
+#: meaning the generation.
+GENERATION_SOURCES = ("typeCode", "hardware")
 
 
 class Refused(ValueError):
@@ -316,6 +336,74 @@ class Device:
         return self.device_type in DEVICE_TYPES_BLE_ONLY
 
     @property
+    def generation(self) -> int | None:
+        """Which generation of its codename this is -- 2 for a Pura Max 2.
+
+        The owner's choice (`GENERATION_KEY`) first, then what was learned, in
+        `GENERATION_SOURCES` order; None when nothing says. Every stored value
+        is re-checked against `utils/const.py::MODEL_GENERATIONS`, so a value
+        hand-edited into `devices.json` or left by an older table is ignored
+        rather than trusted.
+        """
+        return self.generation_and_source[0]
+
+    @property
+    def generation_and_source(self) -> tuple[int | None, str]:
+        """`(generation, source)`: `owner`, a `GENERATION_SOURCES` entry, or `""`."""
+        owner = valid_generation(self.device_type, self.config.get(GENERATION_KEY))
+        if owner is not None:
+            return owner, "owner"
+        learned = self.config.get(GENERATION_LEARNED_KEY)
+        if isinstance(learned, dict):
+            for source in GENERATION_SOURCES:
+                value = valid_generation(self.device_type, learned.get(source))
+                if value is not None:
+                    return value, source
+        return None, ""
+
+    @property
+    def model_name(self) -> str:
+        """The product name, generation included: "Pura Max 2", "YumShare Solo".
+
+        `utils/const.py::device_display_name` with this device's generation, so
+        an unknown one reads as the codename's own name, as before.
+        """
+        return device_display_name(self.device_type, self.generation)
+
+    def record_generation(self, source: str, value: object) -> bool:
+        """Store a LEARNED generation from `source`; True if it changed.
+
+        Only a generation this codename has is kept (`valid_generation`):
+        anything else from the cloud or the device is dropped, never raised on.
+        The owner's choice is a different key and is never touched here.
+        """
+        generation = valid_generation(self.device_type, value)
+        if generation is None or source not in GENERATION_SOURCES:
+            return False
+        learned = self.config.get(GENERATION_LEARNED_KEY)
+        if not isinstance(learned, dict):
+            learned = {}
+        if learned.get(source) == generation:
+            return False
+        before = self.model_name
+        self.config[GENERATION_LEARNED_KEY] = {**learned, source: generation}
+        log.info("Device %d: learned generation %d from %s (%s -> %s)",
+                 self.petkit_id, generation, source, before, self.model_name)
+        return True
+
+    def note_hardware(self, report: object) -> bool:
+        """Learn the generation from a state report's own `hardware`, where it means one.
+
+        Only a codename `utils/const.py::HARDWARE_GENERATIONS` grades as usable
+        (the D4SH); on a T4 `hardware` is not the generation. Returns whether a
+        stored value changed, so a caller already persisting knows to.
+        """
+        if not isinstance(report, dict):
+            return False
+        generation = generation_from_hardware(self.device_type, report.get("hardware"))
+        return generation is not None and self.record_generation("hardware", generation)
+
+    @property
     def supports_ai(self) -> bool:
         """Whether the device's own NPU runs facial recognition (`dev_discern_pic`).
 
@@ -334,8 +422,13 @@ class Device:
         `ai_observed` is set by `http/handlers/discern.py` and only ever turns
         ON: a device being offline, asleep, or simply not having polled yet is
         not evidence that it lacks the hardware.
+
+        A known generation answers it up front for those feeders: a YumShare
+        Solo 2 or Dual-Hopper 2 (`utils/const.py::AI_GENERATIONS`) does
+        recognition before it has asked for anything.
         """
         return (self.device_type in DEVICE_TYPES_AI
+                or self.generation in AI_GENERATIONS.get(self.device_type, ())
                 or to_bool(self.config.get("ai_observed"), False))
 
     # Media capabilities are the STS `capability[]` entries (see to_oss_sts) —

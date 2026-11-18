@@ -32,6 +32,7 @@ from aiohttp import web
 
 from petkit_local.devices.ble import cloud_bindings
 from petkit_local.devices.registry import DeviceRegistry
+from petkit_local.ha.learn import learn_generation
 from petkit_local.ha.schedules import clean_feed_schedule
 from petkit_local.utils.coerce import to_float, to_int
 from petkit_local.utils.const import (
@@ -152,6 +153,11 @@ def import_device(registry: DeviceRegistry, ble: Any, entry: Any) -> tuple[Any, 
             summary["imported"].append("settings")
         else:
             skip("dev_device_info", "no settings block")
+        # Its `typeCode` is the generation -- the reply that says a T4 is a
+        # Pura Max 2. Learned exactly as proxy mode learns it, so a choice the
+        # owner made in the panel still wins.
+        if learn_generation(device, info):
+            summary["imported"].append(f"model ({device.model_name})")
 
     if "dev_feed_get" in replies:
         result = replies["dev_feed_get"]
