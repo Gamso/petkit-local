@@ -105,7 +105,7 @@ other model below is inference until the same is true of it.
 | Purobot Ultra | T6 | ✅ | ✅ |
 | Pura Max | T4 | — | — |
 | EverSweet Ultra AI | W7H | ✅ | ✅ |
-| EverSweet Max Cordless | CTW3 † | — | — |
+| EverSweet Max Cordless, EverSweet Max 2 | CTW3 † | — | — |
 | YumShare Dual-Hopper | D4SH | ✅ | — |
 | Fresh Element Solo | D4 | — | — |
 | Fresh Element Gemini | D4S | — | — |
@@ -117,6 +117,9 @@ flash and the MQTT path have not yet been exercised on real hardware.
 The D4S Gemini has completed a local one-portion feed over HTTP heartbeats.
 Leave the default device-facing MQTT TLS listener enabled; the unit tested here
 failed to resume heartbeats after one restart with it disabled.
+Both generations of the EverSweet Max share the codename CTW3, and nothing either one sends tells
+them apart: say which one yours is in the **Model** card of its panel on the Devices tab. It is
+shown as an EverSweet Max Cordless until you do.
 
 **Should work.** Same firmware family, and the protocol was verified against their firmware — but
 nobody has run one.

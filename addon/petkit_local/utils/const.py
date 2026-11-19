@@ -157,9 +157,10 @@ DEVICE_TYPES_AI = {"t5", "t6", "t7", "w7h"}
 #
 # These are the names of a codename's FIRST generation. PetKit keeps one codename
 # across generations (Pura Max / Pura Max 2 / Pura Max 3, YumShare Solo / Solo
-# 2, Dual-Hopper / Dual-Hopper 2), so a later generation is named from
-# `MODEL_GENERATIONS` below once it is known (`Device.generation`), and by the
-# entry here while it is not.
+# 2, Dual-Hopper / Dual-Hopper 2, EverSweet Max Cordless / Max 2), so a later
+# generation is named from `MODEL_GENERATIONS` below once it is known
+# (`Device.generation`, `BLEDevice.generation`), and by the entry here while it
+# is not.
 #
 # Entries known to be imprecise, left as they are because the alternative is a
 # guess:
@@ -261,6 +262,20 @@ MODEL_GENERATIONS: dict[str, dict[int, ModelGeneration]] = {
         2: ModelGeneration("YumShare Solo 2", "inferred",
                            "PetKit sells a Solo 2 under this codename and its app has "
                            "`d4h_2_*` pictures; no D4H has been seen to report it."),
+    },
+    # A Bluetooth accessory (issue #115), and nothing on the wire tells its two
+    # generations apart: PetKit's `dev_ble_device` entry is `id, secret, type,
+    # mac, interval` with `type: 24` for every CTW3 (the scan number, not a
+    # typeCode), the relay events carry `{mac, type: 24}`, and the fountain's
+    # own frames (230/210 status, 211 settings, the 251/252 link-up notices)
+    # hold no hardware or version byte that we know of. So the owner's choice
+    # in the panel is the only way in (`BLEDevice.generation`).
+    "ctw3": {
+        1: ModelGeneration("EverSweet Max Cordless", "inferred",
+                           "The codename's name before generations were told apart."),
+        2: ModelGeneration("EverSweet Max 2", "inferred",
+                           "An owner's CTW3 that PetKit's app names EverSweet Max 2 "
+                           "(issue #115); no wire value has been seen to say so."),
     },
 }
 

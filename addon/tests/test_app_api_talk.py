@@ -26,7 +26,6 @@ import math
 import os
 import struct
 from pathlib import Path
-from types import SimpleNamespace
 
 import aiohttp
 import pytest
@@ -38,6 +37,7 @@ from petkit_local.app_api.auth import FILENAME, AppAuth, ScryptParams
 from petkit_local.app_api.handlers import talk as talk_handler
 from petkit_local.app_api.handlers.meta import OPENAPI_PATH
 from petkit_local.app_api.server import PREFIX, create_app_api
+from petkit_local.devices.ble import BLEDevice
 from petkit_local.media import talk
 from petkit_local.media.talk import Talks
 from petkit_local.web.api.talk import api_talk
@@ -114,7 +114,7 @@ async def test_the_device_list_and_detail_say_whether_talk_is_available(env: Env
 
 
 def test_an_accessory_has_no_talk():
-    accessory = SimpleNamespace(petkit_id=7, ble_type="w5", last_seen=None)
+    accessory = BLEDevice(ble_type="w5", petkit_id=7)
     assert serializers.accessory_summary(accessory, None)["talk"] == "unsupported"
 
 

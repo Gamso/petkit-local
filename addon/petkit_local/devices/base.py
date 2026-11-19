@@ -64,6 +64,53 @@ GENERATION_LEARNED_KEY = "generation_learned"
 GENERATION_SOURCES = ("typeCode", "hardware")
 
 
+def resolve_generation(code: str, owner: object, learned: object) -> tuple[int | None, str]:
+    """`(generation, source)` from an owner's choice and the learned values.
+
+    The one precedence rule, shared by a WiFi device (`Device.generation`) and
+    a Bluetooth accessory (`devices/ble/registry.py::BLEDevice.generation`),
+    which store the two in different places: the owner first, then `learned`
+    in `GENERATION_SOURCES` order; `(None, "")` when nothing says. Every value
+    is re-checked against `utils/const.py::MODEL_GENERATIONS` for `code`, so one
+    hand-edited into a JSON file or left by an older table is ignored rather
+    than trusted. `source` is `owner`, a `GENERATION_SOURCES` entry, or `""`.
+    """
+    chosen = valid_generation(code, owner)
+    if chosen is not None:
+        return chosen, "owner"
+    if isinstance(learned, dict):
+        for source in GENERATION_SOURCES:
+            value = valid_generation(code, learned.get(source))
+            if value is not None:
+                return value, source
+    return None, ""
+
+
+def learned_generations(code: str, learned: object) -> dict[str, int]:
+    """The learned values that are still a generation of `code`, by source."""
+    if not isinstance(learned, dict):
+        return {}
+    return {k: v for k, v in learned.items()
+            if k in GENERATION_SOURCES and valid_generation(code, v) is not None}
+
+
+def with_learned_generation(code: str, learned: object, source: str,
+                            value: object) -> dict[str, Any] | None:
+    """`learned` with `value` recorded under `source`, or None if nothing changes.
+
+    Only a generation this codename has is kept (`valid_generation`), from a
+    known source: anything else from the cloud or the device is dropped, never
+    raised on. A stored value that is not a dict is replaced, not merged into.
+    """
+    generation = valid_generation(code, value)
+    if generation is None or source not in GENERATION_SOURCES:
+        return None
+    current = learned if isinstance(learned, dict) else {}
+    if current.get(source) == generation:
+        return None
+    return {**current, source: generation}
+
+
 class Refused(ValueError):
     """The write was understood and rejected, and nothing was changed.
 
@@ -350,16 +397,8 @@ class Device:
     @property
     def generation_and_source(self) -> tuple[int | None, str]:
         """`(generation, source)`: `owner`, a `GENERATION_SOURCES` entry, or `""`."""
-        owner = valid_generation(self.device_type, self.config.get(GENERATION_KEY))
-        if owner is not None:
-            return owner, "owner"
-        learned = self.config.get(GENERATION_LEARNED_KEY)
-        if isinstance(learned, dict):
-            for source in GENERATION_SOURCES:
-                value = valid_generation(self.device_type, learned.get(source))
-                if value is not None:
-                    return value, source
-        return None, ""
+        return resolve_generation(self.device_type, self.config.get(GENERATION_KEY),
+                                  self.config.get(GENERATION_LEARNED_KEY))
 
     @property
     def model_name(self) -> str:
@@ -377,18 +416,14 @@ class Device:
         anything else from the cloud or the device is dropped, never raised on.
         The owner's choice is a different key and is never touched here.
         """
-        generation = valid_generation(self.device_type, value)
-        if generation is None or source not in GENERATION_SOURCES:
-            return False
-        learned = self.config.get(GENERATION_LEARNED_KEY)
-        if not isinstance(learned, dict):
-            learned = {}
-        if learned.get(source) == generation:
+        learned = with_learned_generation(
+            self.device_type, self.config.get(GENERATION_LEARNED_KEY), source, value)
+        if learned is None:
             return False
         before = self.model_name
-        self.config[GENERATION_LEARNED_KEY] = {**learned, source: generation}
+        self.config[GENERATION_LEARNED_KEY] = learned
         log.info("Device %d: learned generation %d from %s (%s -> %s)",
-                 self.petkit_id, generation, source, before, self.model_name)
+                 self.petkit_id, learned[source], source, before, self.model_name)
         return True
 
     def note_hardware(self, report: object) -> bool:

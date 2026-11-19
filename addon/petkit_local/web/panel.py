@@ -54,7 +54,8 @@ from petkit_local.web.api.app_access import (
     api_app_trusted_proxies,
 )
 from petkit_local.web.api.ble import (
-    api_ble_accessories, api_ble_command, api_ble_delete, api_ble_import, api_ble_poll,
+    api_ble_accessories, api_ble_command, api_ble_delete, api_ble_import, api_ble_model,
+    api_ble_poll,
 )
 from petkit_local.web.api.config_import import api_import_config
 from petkit_local.web.api.devices import (
@@ -252,6 +253,8 @@ def create_panel_app(registry: DeviceRegistry, ble_registry: BLERegistry | None,
     app.router.add_delete("/api/ble/{id}", api_ble_delete)
     app.router.add_post("/api/ble/{id}/command", api_ble_command)
     app.router.add_post("/api/ble/{id}/poll", api_ble_poll)
+    app.router.add_get("/api/ble/{id}/model", api_ble_model)
+    app.router.add_post("/api/ble/{id}/model", api_ble_model)
 
     # --- patchers (on-device binary patches) ---
     app.router.add_get("/api/devices/{id}/patcher", api_patcher_status)

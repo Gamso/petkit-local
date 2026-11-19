@@ -36,7 +36,7 @@ from petkit_local.ha.discovery import STATUS_TOPIC, build_discovery_payload, dis
 from petkit_local.devices.state_parsers import apply_consumable_state
 from petkit_local.events.normalize import MQTT_ENVELOPE_KEYS, apply_feed_plan_state
 from petkit_local.ha.commands import LOCAL_DEFAULTS, multi_config_texts
-from petkit_local.utils.const import DEVICE_NAMES, device_display_name
+from petkit_local.utils.const import DEVICE_NAMES
 from petkit_local.utils.jsonio import read_bytes
 
 if TYPE_CHECKING:
@@ -60,6 +60,12 @@ def ha_model(device: Device) -> str:
     turns into the upper-cased codename, as every device showed before.
     """
     return device.model_name if device.device_type in DEVICE_NAMES else ""
+
+
+def ha_ble_model(ble_dev: BLEDevice) -> str:
+    """`ha_model` for a Bluetooth accessory: "EverSweet Max 2" once its
+    generation is known (`BLEDevice.generation`), its codename's name before."""
+    return ble_dev.model_name if ble_dev.ble_type in DEVICE_NAMES else ""
 
 
 class HAPublisher:
@@ -537,6 +543,7 @@ class HAPublisher:
         self._commands.set_entities(ble_dev.petkit_id, entities)
         state_topic = f"petkit-local/{ble_dev.petkit_id}/state"
         device_name = f"PetKit {ble_dev.ble_type.upper()} {ble_dev.serial_number}".strip()
+        model = ha_ble_model(ble_dev)
         for entity in entities:
             topic = discovery_topic(entity, ble_dev.petkit_id, self._prefix)
             payload = build_discovery_payload(
@@ -546,19 +553,26 @@ class HAPublisher:
                 device_name=device_name,
                 serial_number=ble_dev.serial_number,
                 state_topic=state_topic,
-                model=device_display_name(ble_dev.ble_type)
-                if ble_dev.ble_type in DEVICE_NAMES else "",
+                model=model,
             )
             await self._emit(topic, json.dumps(payload), retain=True)
+        self._announced_model[ble_dev.petkit_id] = model
         if entities:
             await self._emit(f"petkit-local/{ble_dev.petkit_id}/availability", "online", retain=True)
             log.info("Published %d discovery configs for BLE %s (id=%d)",
                      len(entities), ble_dev.ble_type, ble_dev.petkit_id)
 
     async def publish_ble_state(self, ble_dev: BLEDevice) -> None:
-        """Publish a BLE accessory's state document (retained)."""
+        """Publish a BLE accessory's state document (retained).
+
+        Like `publish_state`, an accessory announced under a model it no longer
+        has (`BLEDevice.generation` chosen since) is announced again first.
+        """
         if not self._client or not self._connected:
             return
+        announced = self._announced_model.get(ble_dev.petkit_id)
+        if announced is not None and announced != ha_ble_model(ble_dev):
+            await self.publish_ble_discovery(ble_dev)
         topic = f"petkit-local/{ble_dev.petkit_id}/state"
         await self._emit(topic, json.dumps(ble_dev.state or {}), retain=True)
 
