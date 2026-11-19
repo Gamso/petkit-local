@@ -617,12 +617,13 @@ offer the button at all (`available`, `needs_patcher`, `device_unreachable`,
 ### Notifications
 
 The phone app receives notifications **over its own connection to petkit-local**,
-with nothing else to install or run: see [Straight to the app, without
-ntfy](#straight-to-the-app-without-ntfy). petkit-local can also push them
-through **your own [ntfy](https://ntfy.sh) server**, to the ntfy app or to any
-UnifiedPush app — nothing goes through Google or PetKit either way. Which kinds
-are sent is set in the panel, **Setup → Phone notifications**, next to Phone app
-access, and applies to every way they leave.
+with nothing else to install or run: see [Straight to the
+app](#straight-to-the-app). It can also have them pushed to it, through a
+UnifiedPush distributor of your choice: see [Pushed straight to the
+app](#pushed-straight-to-the-app). Nothing goes through Google or PetKit either
+way. Which kinds are sent is set in the panel, **Setup → Phone app access**,
+under the signed-in phones, and applies to every phone and every way they
+arrive.
 
 What can be sent, each with its own switch:
 
@@ -645,75 +646,18 @@ flaps cannot flood the phone. Device offline works the same with or without
 Home Assistant (`--no-ha` included): the watchdog that decides it runs either
 way, and only telling Home Assistant depends on HA publishing being on.
 
-#### On the ntfy server
-
-Run ntfy with access control on, and nothing readable or writable by default
-(`auth-file` set, `auth-default-access: deny-all` in `server.yml`). Then:
-
-1. In the panel, enter the server URL (`https://ntfy.example.org`) and click
-   **Save and enable**. A random topic is generated — something like
-   `petkit-Aj4LZxpuM68UPghQY5MeN6bs…`. On ntfy a topic name is the
-   subscription itself, so treat it as a secret; **Regenerate** replaces it.
-2. Create a user for petkit-local that may only **write** to that topic, and a
-   token for it:
-
-   ```sh
-   ntfy user add petkit-local
-   ntfy access petkit-local 'petkit-Aj4LZx…' write-only
-   ntfy token add petkit-local
-   ```
-
-   Paste the token (`tk_…`) into **Access token** and save. It is stored in
-   `/data/ntfy.json`, never written to the log, and the panel only ever shows
-   its last four characters.
-3. Create a user for the phone that may only **read** it:
-
-   ```sh
-   ntfy user add phone
-   ntfy access phone 'petkit-Aj4LZx…' read-only
-   ```
-
-4. Click **Send test notification**. The panel says whether ntfy accepted it,
-   and why not if it did not (`401` is a wrong token, `403` a missing write
-   permission on the topic).
-
-Serve ntfy over HTTPS: the token travels in every publish, and petkit-local
-verifies the server's certificate and follows no redirect.
-
-#### On the phone
-
-- **With the ntfy Android app**: add your server under *Settings → Manage
-  users* with the `phone` user, then subscribe to the topic on that server.
-  Notifications appear as ntfy notifications, with their title, priority and
-  icon.
-- **Through UnifiedPush**, with the ntfy app as the distributor: an app using
-  UnifiedPush is given an endpoint by the distributor, on your server, of the
-  form `https://ntfy.example.org/upAbC123…?up=1`. Its topic is the `upAbC123…`
-  part — paste that into **Topic** instead of the generated one, and give
-  petkit-local's user write access to it (`ntfy access petkit-local 'up*'
-  write-only` covers every UnifiedPush topic). In this mode only the message
-  body reaches the app — title, priority and tags are the ntfy app's own — so
-  every message is written to make sense on its own ("Mochi used the Purobot
-  Ultra (waste 32 g).").
-
-What a notification carries: a title, one sentence naming the device by its
-product name and the pet by its name, a priority, and two tags (an emoji and
-the kind, e.g. `cat,toilet`). No device id, no token, no link.
-
 #### Pushed straight to the app
 
-The phone app can instead register **its own** UnifiedPush endpoint with
-petkit-local when you sign in — nothing to paste in the panel, one endpoint per
-phone, as many phones as are signed in. The app picks a distributor on the
-phone (the ntfy app pointed at your server, or any other UnifiedPush
+The phone app can register **its own** UnifiedPush endpoint with petkit-local
+when you sign in — nothing to paste in the panel, one endpoint per phone, as
+many phones as are signed in. The app picks a distributor on the phone (the
+ntfy app pointed at your own ntfy server, or any other UnifiedPush
 distributor), gets an endpoint from it, and hands it to petkit-local; from then
-on each notification is POSTed there too. The ntfy topic above keeps working
-alongside, for anyone who wants plain ntfy notifications without the app.
+on each notification is POSTed there.
 
-- **The kind switches above apply to both**, and so does the rest: each event
-  is announced once, and the per-device rate limit counts it once whichever way
-  it goes. The app may narrow the kinds further for its own phone. The ntfy
-  topic does not need to be enabled for the app's pushes to be sent.
+- **The kind switches above apply**, and so does the rest: each event is
+  announced once, and the per-device rate limit counts it once whichever way it
+  goes. The app may narrow the kinds further for its own phone.
 - **The registration belongs to the phone's session.** Signing it out — from the
   app, from **Phone app access** (which shows, per phone, whether push is on and
   with which server), by a password change, or after 90 days unused — stops its
@@ -741,18 +685,18 @@ the `PushMessage` schema of the OpenAPI file — every key and every `code` is
 listed there. `kinds` are the session's own, shared with the notification
 socket below; left out of `PUT /app/v1/push`, they stay as they were.
 
-#### Straight to the app, without ntfy
+#### Straight to the app
 
 The app can also keep **one connection of its own** open to petkit-local in the
-background, the way the ntfy app keeps one to an ntfy server, and receive every
-notification over it. Nothing else is needed — no ntfy server, no second app on
-the phone, no access rule — only the app API you already reach for everything
-else, through the same reverse proxy or tunnel.
+background, the way a push distributor keeps one to its server, and receive
+every notification over it. Nothing else is needed — no push server, no second
+app on the phone, no access rule — only the app API you already reach for
+everything else, through the same reverse proxy or tunnel.
 
 - **The same notifications, decided once.** The kind switches above, the
   once-per-event rule and the per-device rate limit decide whether a
-  notification is sent, once, for the ntfy topic, the pushed endpoints and this
-  connection alike; they can never disagree. Each phone then keeps only the
+  notification is sent, once, for the pushed endpoints and this connection
+  alike; they can never disagree. Each phone then keeps only the
   kinds chosen in its app, whichever way it receives them.
 - **Nothing is lost to a dead zone.** petkit-local keeps the last 500
   notifications of the last 3 days (in `/data/app_notifications.json`, so a
@@ -763,7 +707,7 @@ else, through the same reverse proxy or tunnel.
 - **It stays quiet.** The connection carries notifications only, never device
   updates, and petkit-local pings it every 45 seconds — well inside the 100
   seconds after which Cloudflare drops an idle connection — so it survives a
-  tunnel and costs about what the ntfy app costs.
+  tunnel and costs about what a push distributor's own connection costs.
 - **It belongs to the phone's session**, like everything else: signing the phone
   out (from the app, from **Phone app access**, by a password change, or after
   90 days unused) closes it at once. **Phone app access** shows, per phone,

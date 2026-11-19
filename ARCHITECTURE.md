@@ -67,7 +67,7 @@ petkit_local/
 │                  video.py live video: go2rtc's fMP4 WebSocket and HLS relayed, capped
 │                  handlers/ · openapi.yaml the contract, tested against ROUTES
 │                  push.py a session's own UnifiedPush endpoint: validation, address fence
-│                  notify/ hub subscriber -> rules -> bounded queue -> ntfy topic + push.py sink
+│                  notify/ hub subscriber -> rules -> gates -> push.py (the phones' endpoints)
 │                          + channel.py (the app's notification socket, catch-up log)
 ├── patchers/      on-device patches: cacert · mqtt · cloud · camera · ssh
 │                  firmware (ESP32: a whole image rebuilt, not a file on a device)
@@ -103,7 +103,7 @@ writes:  handlers/controls.py, feeding.py -> ha/commands.py, ha/schedules.py
                                           -> ha/command_router.deliver_command (MQTT, else queue)
 /ws:     EventHub --(device id marked dirty)--> updates.UpdateFeed: re-read, diff, fan out per socket
 /notifications/ws:  EventHub -> notify/notifier.py gates (kind, dedupe, rate limit)
-                    -> ntfy topic, notify/push.py endpoints, notify/channel.py: log + sockets
+                    -> notify/push.py endpoints, notify/channel.py: log + sockets
 /devices/{id}/live:  handlers/video.py -> video.VideoSessions (caps) -> go2rtc on loopback
 /devices/{id}/talk:  handlers/talk.py -> media/talk.py (one per device, shared with the panel)
                      -> ffmpeg (PCM -> ADTS-AAC) -> the device's talk sink, TCP 9010
