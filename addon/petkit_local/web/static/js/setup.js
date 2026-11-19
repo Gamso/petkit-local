@@ -73,10 +73,13 @@ async function loadSetup() {
   const rd = ret.retention || {};
   const on = s.proxy_mode;
   const sw = (key, val, enabled) =>
-    `<span class="sw"><input type="checkbox" ${val ? 'checked' : ''} ${w && enabled !== false ? '' : 'disabled'} data-change="save-setting" data-key="${esc(key)}"><span class="sl"></span></span>`;
-  // A guard row that greys out with proxy mode, rather than disappearing.
+    `<span class="sw"><input type="checkbox" id="setting-${esc(key)}" ${val ? 'checked' : ''} ${w && enabled !== false ? '' : 'disabled'} data-change="save-setting" data-key="${esc(key)}"><span class="sl"></span></span>`;
+  // A guard row that greys out with proxy mode, rather than disappearing. The
+  // label names its switch with `for`: without it, a click anywhere on the row
+  // goes to the label's FIRST labelable descendant, and a title carrying a
+  // help() `?` makes that the `?` button, so the switch could never be turned on.
   const guard = (key, val, title, hint) =>
-    `<label class="ctrl${on ? '' : ' disabled'}"><span>${title}<br><span class="mut" style="font-size:11px">${hint}</span></span>${sw(key, val, on)}</label>`;
+    `<label class="ctrl${on ? '' : ' disabled'}" for="setting-${esc(key)}"><span>${title}<br><span class="mut" style="font-size:11px">${hint}</span></span>${sw(key, val, on)}</label>`;
 
   // An empty setting means the server's default, which it flags for us — the
   // picker must not have to guess which key that is.
