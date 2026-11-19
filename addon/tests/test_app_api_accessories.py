@@ -143,6 +143,23 @@ async def test_accessories_are_listed_as_devices_linked_both_ways(a: AccessoryEn
     assert orphan["parent_id"] is None and orphan["online"] is False
 
 
+async def test_an_accessory_is_named_by_the_generation_the_owner_chose(a: AccessoryEnv):
+    """Issue #115: a CTW3 can be an EverSweet Max 2, and `generation` is no
+    longer null for every accessory. `model` keeps the codename's own name."""
+    schemas = _Schemas()
+    a.ctw3.generation_choice = 2
+    listed = {d["id"]: d for d in (await a.json("/devices"))["devices"]}[CTW3_ID]
+    schemas.check(listed, "DeviceSummary")
+    assert (listed["model"], listed["model_name"], listed["generation"]) == (
+        "EverSweet Max Cordless", "EverSweet Max 2", 2)
+    detail = (await a.json(f"/devices/{CTW3_ID}"))["device"]
+    schemas.check(detail, "DeviceDetail")
+    assert (detail["model_name"], detail["generation"]) == ("EverSweet Max 2", 2)
+    # A K3 has one generation, so it has none to name.
+    k3 = (await a.json(f"/devices/{K3_ID}"))["device"]
+    assert (k3["model_name"], k3["generation"]) == ("Pura Air K3", None)
+
+
 async def test_an_accessory_is_online_and_on_mqtt_while_its_parent_is(a: AccessoryEnv):
     a.t4.online = True
     a.t4.mqtt_connected = True

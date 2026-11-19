@@ -15,8 +15,10 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from petkit_local.devices.base import resolve_generation, with_learned_generation
 from petkit_local.devices.registry import PersistedRegistry
 from petkit_local.utils.coerce import to_int
+from petkit_local.utils.const import device_display_name
 from petkit_local.utils.dicts import dig
 
 if TYPE_CHECKING:
@@ -139,6 +141,18 @@ class BLEDevice:
     #: `dev_k3_device_info`. Separate from `config` because the firmware parses
     #: the two in different places for different things.
     settings: dict[str, Any] = field(default_factory=dict)
+    #: The generation the OWNER chose in the panel (2 for an EverSweet Max 2),
+    #: None for "Automatic". The twin of `Device`'s `GENERATION_KEY`, kept out
+    #: of `config` because a K3's `config` is served to its parent verbatim.
+    #: Re-checked against `utils/const.py::MODEL_GENERATIONS` on every read
+    #: (`generation`), never trusted as stored.
+    generation_choice: Any = None
+    #: Each LEARNED generation by source, as `Device`'s
+    #: `GENERATION_LEARNED_KEY`. Nothing writes it today: no reply, relay
+    #: event or frame seen from a CTW3 says which generation it is (see the
+    #: `ctw3` row of `MODEL_GENERATIONS`). It is here so that a value found
+    #: later lands under the same precedence (`record_generation`).
+    generation_learned: dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         """Canonicalise the MAC at the point it is stored, not at each caller.
@@ -172,6 +186,48 @@ class BLEDevice:
         costs nothing.
         """
         return self.mac.lower()
+
+    @property
+    def generation_and_source(self) -> tuple[int | None, str]:
+        """`(generation, source)`, with `Device.generation_and_source`'s precedence.
+
+        The owner's choice, then what was learned, then `(None, "")`; every
+        stored value re-checked against this codename's listed generations.
+        """
+        return resolve_generation(self.ble_type, self.generation_choice,
+                                  self.generation_learned)
+
+    @property
+    def generation(self) -> int | None:
+        """Which generation of its codename this is -- 2 for an EverSweet Max 2."""
+        return self.generation_and_source[0]
+
+    @property
+    def model_name(self) -> str:
+        """The product name, generation included: "EverSweet Max 2".
+
+        What names the accessory everywhere -- the panel, Home Assistant's
+        device model, the app API's `model_name`. The codename's own name while
+        the generation is unknown, as before.
+        """
+        return device_display_name(self.ble_type, self.generation)
+
+    def record_generation(self, source: str, value: object) -> bool:
+        """Store a LEARNED generation from `source`; True if it changed.
+
+        `Device.record_generation`'s twin, with the same rules: only a listed
+        generation from a known source is kept, nothing raises, and the owner's
+        choice is never touched. The caller persists (`BLERegistry.mark_dirty`).
+        """
+        learned = with_learned_generation(
+            self.ble_type, self.generation_learned, source, value)
+        if learned is None:
+            return False
+        before = self.model_name
+        self.generation_learned = learned
+        log.info("BLE %d: learned generation %d from %s (%s -> %s)",
+                 self.petkit_id, learned[source], source, before, self.model_name)
+        return True
 
     @property
     def ble_type_int(self) -> int:
@@ -226,6 +282,8 @@ class BLEDevice:
             "state": self.state,
             "config": self.config,
             "settings": self.settings,
+            "generation_choice": self.generation_choice,
+            "generation_learned": self.generation_learned,
         }
 
     @classmethod

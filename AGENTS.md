@@ -166,6 +166,9 @@ Two rules about placement that the map does not make obvious:
   The same reply's `typeCode` is the device's GENERATION (2 = Pura Max 2, Dual-Hopper 2;
   `utils/const.py::MODEL_GENERATIONS`, graded) and is learned too (`learn_generation`); it only
   names the device and is never served back. The owner's Model choice in the panel always wins.
+  A Bluetooth accessory has a generation too (a CTW3 is an EverSweet Max Cordless or Max 2,
+  `BLEDevice.generation`, same precedence), but NOTHING learns it: the relay list's `type: 24`
+  is the scan number for every CTW3, and no frame is known to carry it. Do not invent a source.
   A cloud `user/get` push and a proxied `dev_multi_config` are NOT learned from yet: neither shape
   has been captured for this purpose.
 - **A heartbeat delivering a command is never forwarded in proxy mode.** `pop_commands` is

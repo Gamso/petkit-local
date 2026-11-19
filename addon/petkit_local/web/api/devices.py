@@ -17,7 +17,8 @@ from aiohttp import web
 
 from petkit_local.devices import defaults
 from petkit_local.devices.base import (
-    GENERATION_KEY, GENERATION_LEARNED_KEY, TIMEZONE_PUSHED_KEY, Device,
+    GENERATION_KEY, GENERATION_LEARNED_KEY, TIMEZONE_PUSHED_KEY, Device, learned_generations,
+    resolve_generation,
 )
 from petkit_local.events import codes
 from petkit_local.ha.categories import get_entities_for_device
@@ -150,31 +151,62 @@ def _timezone_view(d: Device) -> dict[str, Any]:
     }
 
 
-def _model_view(d: Device) -> dict[str, Any] | None:
-    """Which generation of its codename this device is, and why we think so.
+def model_view(code: str, override: object, learned: object) -> dict[str, Any] | None:
+    """Which generation of its codename a device is, and why we think so.
+
+    Shared by a WiFi device (`_model_view`) and a Bluetooth accessory
+    (`web/api/ble.py`), which keep `override` and `learned` in different places
+    but resolve them with the one rule (`devices/base.py::resolve_generation`).
 
     None for a codename PetKit sells in one generation only: there is nothing
     to choose. `override` is the owner's choice (None for "Automatic"),
-    `learned` what proxy mode or the device's own report said, by source, and
-    `source` which of them is in force (`Device.generation_and_source`).
+    `learned` what was learned, by source, and `source` which of them is in
+    force.
     """
-    rows = MODEL_GENERATIONS.get(d.device_type, {})
+    rows = MODEL_GENERATIONS.get(code, {})
     if not rows:
         return None
-    generation, source = d.generation_and_source
-    learned = d.config.get(GENERATION_LEARNED_KEY)
+    generation, source = resolve_generation(code, override, learned)
     return {
         "generation": generation,
         "source": source,
-        "name": d.model_name,
-        "default_name": device_display_name(d.device_type),
-        "override": valid_generation(d.device_type, d.config.get(GENERATION_KEY)),
-        "learned": {k: v for k, v in learned.items()
-                    if valid_generation(d.device_type, v) is not None}
-        if isinstance(learned, dict) else {},
+        "name": device_display_name(code, generation),
+        "default_name": device_display_name(code),
+        "override": valid_generation(code, override),
+        "learned": learned_generations(code, learned),
         "choices": [{"generation": gen, "name": row.name, "grade": row.grade,
                      "note": row.note} for gen, row in sorted(rows.items())],
     }
+
+
+def _model_view(d: Device) -> dict[str, Any] | None:
+    """`model_view` for a WiFi device (`Device.generation_and_source`)."""
+    return model_view(d.device_type, d.config.get(GENERATION_KEY),
+                      d.config.get(GENERATION_LEARNED_KEY))
+
+
+class ModelChoiceRefused(ValueError):
+    """A model POST that names no generation this codename has."""
+
+
+def parse_model_choice(code: str, body: Any) -> int | None:
+    """The generation a model POST body asks for; None for "Automatic".
+
+    `{"generation": 2}` names one `utils/const.py::MODEL_GENERATIONS` lists for
+    `code`; `null`, `""` or `"auto"` is "Automatic". Raises
+    `ModelChoiceRefused` with the reason for anything else, a missing key
+    included -- shared by the device and the accessory endpoints so the two
+    accept exactly the same values.
+    """
+    if not isinstance(body, dict) or "generation" not in body:
+        raise ModelChoiceRefused("need generation")
+    raw = body["generation"]
+    if raw is None or (isinstance(raw, str) and raw.strip() in ("", "auto")):
+        return None
+    value = valid_generation(code, raw)
+    if value is None:
+        raise ModelChoiceRefused(f"{raw!r} is not a model of a {code}")
+    return value
 
 
 def _ai_view(d: Device) -> dict[str, Any]:
@@ -444,17 +476,13 @@ async def api_model(request: web.Request) -> web.Response:
     if request.method == "GET":
         return web.json_response(view)
 
-    body = await _json_body(request)
-    if "generation" not in body:
-        return web.json_response({"error": "need generation"}, status=400)
-    raw = body["generation"]
-    if raw is None or (isinstance(raw, str) and raw.strip() in ("", "auto")):
+    try:
+        value = parse_model_choice(d.device_type, await _json_body(request))
+    except ModelChoiceRefused as e:
+        return web.json_response({"error": str(e)}, status=400)
+    if value is None:
         d.config.pop(GENERATION_KEY, None)
     else:
-        value = valid_generation(d.device_type, raw)
-        if value is None:
-            return web.json_response(
-                {"error": f"{raw!r} is not a model of a {d.device_type}"}, status=400)
         d.config[GENERATION_KEY] = value
     reg.save()
     log.info("Device %d: model set to %s by the owner", d.petkit_id, d.model_name)

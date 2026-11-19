@@ -158,13 +158,17 @@ def accessory_summary(a: BLEDevice, parent: Device | None) -> dict[str, Any]:
     and has no firmware version we know. `last_seen` is its own — when a frame
     from it last decoded, or for a K3, whose readings ride on its parent's
     reports rather than arriving as frames, when that report last carried them.
+
+    `model`, `model_name` and `generation` mean what they do for a device: a
+    CTW3 the owner named an EverSweet Max 2 in the panel has `model_name`
+    "EverSweet Max 2" and `generation` 2 (`BLEDevice.generation`).
     """
     return {
         "id": a.petkit_id,
         "type": a.ble_type,
         "model": device_display_name(a.ble_type),
-        "model_name": device_display_name(a.ble_type),
-        "generation": None,
+        "model_name": a.model_name,
+        "generation": a.generation,
         "kind": accessory_kind(a),
         "online": bool(parent and parent.online),
         "transport": "mqtt" if parent and parent.mqtt_connected else "http",

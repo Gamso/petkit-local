@@ -18,6 +18,22 @@
   start an existing `/data/ntfy.json` gives up its switches to it and is
   deleted, with the access token it held.
 
+### New
+
+- **A Bluetooth accessory is named by its generation too: a CTW3 can be an
+  EverSweet Max 2** (issue #115). PetKit sells the EverSweet Max Cordless and
+  the EverSweet Max 2 under the one codename `ctw3`, so every one showed as a
+  Cordless. An accessory's panel now has the same Model card as a WiFi
+  device: Automatic, or each generation. The choice is kept in
+  `ble_devices.json` and renames the accessory in the panel, as Home
+  Assistant's device model (re-announced at once; entity ids and the HA
+  device name are unchanged) and in the app API, whose accessory
+  `model_name` and `generation` are no longer always the codename's name and
+  null. It is never learned: PetKit's relay list gives every CTW3 the same
+  `type: 24`, and nothing the fountain sends is known to tell the two apart,
+  so the owner's choice is the only way in. The panel's
+  `/api/ble/{id}/model` takes `{"generation": 2}` or `null`, like a device's.
+
 ## 2.3.0 — 2026-11-14
 
 The first release published from this fork's own image, `ghcr.io/gamso/petkit-local`.

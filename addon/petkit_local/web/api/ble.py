@@ -24,9 +24,9 @@ from petkit_local.ha.entities.ble import get_ble_entities
 from petkit_local.http.cloud_fetch import CLOUD_TIMEOUT, CloudRefused, fetch_as_device
 from petkit_local.patchers.esp32_ota import PATCHABLE_TYPES
 from petkit_local.utils.coerce import to_int
-from petkit_local.utils.const import device_display_name
 from petkit_local.utils.dicts import dig_path
 from petkit_local.web.api._common import _cloud_upstream, _json_body, _path_id
+from petkit_local.web.api.devices import ModelChoiceRefused, model_view, parse_model_choice
 from petkit_local.web.appkeys import BLE_REGISTRY, BRIDGE, HA_PUBLISHER, HUB, REGISTRY
 
 if TYPE_CHECKING:
@@ -89,7 +89,13 @@ def _ble_view(dev: BLEDevice, reg: DeviceRegistry | None = None) -> dict[str, An
     return {
         "petkit_id": dev.petkit_id,
         "ble_type": dev.ble_type,
-        "name": device_display_name(dev.ble_type),
+        # The product name, generation included ("EverSweet Max 2"); the
+        # codename's own name while the generation is unknown.
+        "name": dev.model_name,
+        "generation": dev.generation,
+        # The Model card, as a WiFi device's detail carries it; None for a
+        # codename sold in one generation only.
+        "modelInfo": _ble_model_view(dev),
         # Who relays for it. An accessory with no reachable parent is not
         # merely offline, it is unaddressable, and the panel says which.
         "parent_name": parent.model_name if parent else "",
@@ -137,6 +143,51 @@ def _ble_view(dev: BLEDevice, reg: DeviceRegistry | None = None) -> dict[str, An
         "wire_entry": dev.to_ble_list_entry(),
         "state": dev.state,
     }
+
+
+def _ble_model_view(dev: BLEDevice) -> dict[str, Any] | None:
+    """`web/api/devices.py::model_view` for an accessory (`BLEDevice.generation`)."""
+    return model_view(dev.ble_type, dev.generation_choice, dev.generation_learned)
+
+
+async def api_ble_model(request: web.Request) -> web.Response:
+    """GET/POST which generation of its codename an accessory is.
+
+    The accessory twin of `web/api/devices.py::api_model`, with the same body:
+    `{"generation": 2}` for an EverSweet Max 2, `{"generation": null}` for
+    "Automatic", which hands the name back to whatever was learned -- nothing,
+    for a CTW3 today -- or to the codename's own name. Persisted in
+    `ble_devices.json` with the rest of the accessory; nothing is sent to the
+    accessory or its parent, neither of which has such a setting. Home
+    Assistant's device model is re-announced at once.
+
+    Answers the model view; 404 for no such accessory, 400 for a codename with
+    one generation, or a value it does not have.
+    """
+    ble = request.app[BLE_REGISTRY]
+    if ble is None:
+        return web.json_response({"error": "no BLE registry"}, status=503)
+    dev = ble.get(_path_id(request))
+    if dev is None:
+        return web.json_response({"error": "not found"}, status=404)
+    view = _ble_model_view(dev)
+    if view is None:
+        return web.json_response(
+            {"error": f"a {dev.model_name} comes in one model only"}, status=400)
+    if request.method == "GET":
+        return web.json_response(view)
+
+    try:
+        dev.generation_choice = parse_model_choice(dev.ble_type, await _json_body(request))
+    except ModelChoiceRefused as e:
+        return web.json_response({"error": str(e)}, status=400)
+    ble.save()
+    log.info("BLE %d: model set to %s by the owner", dev.petkit_id, dev.model_name)
+
+    publisher = request.app.get(HA_PUBLISHER)
+    if publisher is not None:
+        await publisher.publish_ble_discovery(dev)
+    return web.json_response({"ok": True, **_ble_model_view(dev)})
 
 
 async def _send_k3_link(request: web.Request, parent_id: int, k3_id: int) -> str:
@@ -496,7 +547,7 @@ async def api_ble_poll(request: web.Request) -> web.Response:
         # this one work. A `connect` for a K3 asks the parent to scan for a
         # device it was never told to relay.
         return web.json_response(
-            {"error": f"a {device_display_name(dev.ble_type)} has nothing to read on its own: "
+            {"error": f"a {dev.model_name} has nothing to read on its own: "
                       f"it reports inside its parent's state, on the parent's schedule"},
             status=409)
     parent = reg.get(dev.link_with) if dev.link_with else None

@@ -256,6 +256,7 @@ function accBody(a) {
       : ''
   }
   ${accActions(a, actions)}
+  ${a.modelInfo ? modelCard(a.modelInfo, a.petkit_id, 'ble') : ''}
   ${
     sensors.length
       ? `<div class="card"><h3>State</h3>
@@ -589,12 +590,17 @@ async function setTimezone(id, offset) {
 }
 
 // "Automatic" is the empty value: it drops the owner's choice and hands the
-// name back to whatever was learned, or to the codename's own name.
+// name back to whatever was learned, or to the codename's own name. A
+// Bluetooth accessory (`data-kind="ble"`) has its own endpoint and the same body.
 onChange('set-model', el =>
-  setModel(Number(el.dataset.id), el.value === '' ? null : Number(el.value)),
+  setModel(
+    Number(el.dataset.id),
+    el.value === '' ? null : Number(el.value),
+    el.dataset.kind === 'ble',
+  ),
 );
-async function setModel(id, generation) {
-  const r = await api('devices/' + id + '/model', {
+async function setModel(id, generation, ble) {
+  const r = await api((ble ? 'ble/' : 'devices/') + id + '/model', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ generation }),
@@ -608,8 +614,14 @@ const MODEL_SOURCES = {
   typeCode: "PetKit's typeCode (proxy mode)",
   hardware: "the device's own report",
 };
-function modelCard(d) {
-  const m = d.modelInfo;
+// The accessory's help says why its generation is never learned: nothing on
+// the wire tells a CTW3's two generations apart (`utils/const.py`).
+const MODEL_HELP = {
+  dev: "PetKit sells several generations under one codename — a Pura Max 2 is still a t4 — and the device never says which. It is learned from PetKit's own reply in proxy mode, or from the device's report where that is known to carry it. Set it here when neither has, or to correct it; your choice always wins. It names the device here, in Home Assistant and in the phone app, and tells a YumShare 2 that it can recognise pets.",
+  ble: "PetKit sells several generations under one codename — an EverSweet Max 2 is still a ctw3 — and nothing the accessory, its parent or PetKit sends says which, so it is never learned. Set it here to match what PetKit's app calls it. It names the accessory here, in Home Assistant and in the phone app.",
+};
+// `m` is a `modelInfo` block, from a device's detail or an accessory's row.
+function modelCard(m, id, kind = 'dev') {
   const learned = Object.entries(m.learned || {})
     .map(([src, gen]) => {
       const row = m.choices.find(c => c.generation === gen);
@@ -624,14 +636,12 @@ function modelCard(d) {
       ),
     )
     .join('');
-  return `<div class="card"><h3>Model${help(
-    "PetKit sells several generations under one codename — a Pura Max 2 is still a t4 — and the device never says which. It is learned from PetKit's own reply in proxy mode, or from the device's report where that is known to carry it. Set it here when neither has, or to correct it; your choice always wins. It names the device here, in Home Assistant and in the phone app, and tells a YumShare 2 that it can recognise pets.",
-  )}</h3>
+  return `<div class="card"><h3>Model${help(MODEL_HELP[kind])}</h3>
     <p class="sub">Shown as <b>${esc(m.name)}</b>${
       m.source === 'owner' ? ', as set here' : m.source ? '' : ' — generation unknown'
     }${learned ? ` · learned: ${learned}` : ''}</p>
     <div class="ctrls"><label class="ctrl"><span>Model</span>
-      <span class="cn"><select data-change="set-model" data-id="${esc(d.id)}">${opts}</select></span></label></div></div>`;
+      <span class="cn"><select data-change="set-model" data-id="${esc(id)}" data-kind="${esc(kind)}">${opts}</select></span></label></div></div>`;
 }
 
 onChange('set-log-upload', el => setLogUpload(Number(el.dataset.id), el.checked));
@@ -803,7 +813,7 @@ function renderPanelBody(d) {
       : ''
   }
 
-  ${d.modelInfo ? modelCard(d) : ''}
+  ${d.modelInfo ? modelCard(d.modelInfo, d.id) : ''}
 
   ${
     d.logInfo
