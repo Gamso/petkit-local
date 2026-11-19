@@ -67,16 +67,18 @@ BLE_SENDABLE = frozenset(
 BLE_READABLE = frozenset(
     cmd for cmd, op in BLE_OPCODES.items() if op.send == BLE_SEND_READ)
 
-#: The mode values that are real, on EVERY fountain. Anything else is the
+#: The mode values a W5-family fountain really runs in. Anything else is the
 #: device saying "not running right now" in a field that has no way to say it,
 #: and it must not be stored — `ble_command_for` rebuilds the mode frame from
 #: the last reading, so a latched 0 is a command to switch off.
 #:
-#: A CTW3 reports 0 in the sleep half of its smart cycle (aavdberg/ha-petkit
-#: issue #57). A W5, W4, W4X or CTW2 reports 0 whenever it is powered off
-#: (their #106), which is a different cause with the same two consequences: the
-#: mode select renders blank, and switching the fountain back on silently puts
-#: it in normal mode because the smart it was in reads as nothing.
+#: A W5, W4, W4X or CTW2 reports 0 whenever it is powered off (aavdberg/ha-petkit
+#: #106): the mode select renders blank, and switching the fountain back on
+#: silently puts it in normal mode because the smart it was in reads as nothing.
+#:
+#: A CTW3 has a third mode, 3 on battery, and its own graded table
+#: (`codes.CTW3_MODES`); only its suspected smart-cycle 0 (their #57) is
+#: dropped there for the same reason as here.
 FOUNTAIN_MODES = (1, 2)
 
 

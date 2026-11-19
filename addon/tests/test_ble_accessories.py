@@ -663,6 +663,78 @@ def test_a_transient_mode_of_zero_is_not_taken_as_the_mode():
     assert _ctw3(data=base64.b64encode(bytes(full)).decode())["states"]["mode"] == 2
 
 
+def _ctw3_in_mode(mode):
+    import base64
+
+    full = bytearray(base64.b64decode(CTW3_CMD230))
+    full[2] = mode
+    return _ctw3(data=base64.b64encode(bytes(full)).decode())["states"]
+
+
+def test_mode_3_is_the_battery_mode_and_is_kept():
+    """Issue #116. 3 was dropped with everything outside 1/2 as "the smart
+    cycle's sleep half", so an unplugged fountain went on showing the mode it
+    had on mains. PetKit's app reads 3 as the battery mode it cannot select
+    (`CTW3HomeActivity.onClick`, 13.8.1), and no capture shows a smart cycle
+    reporting it -- the one real frame we hold reads 1."""
+    st = _ctw3_in_mode(3)
+    assert st["mode"] == 3
+    assert st["batteryMode"] == 1
+
+
+def test_the_battery_flag_follows_every_real_mode():
+    """It is set whenever `mode` is, so plugging the fountain back in clears
+    it -- a flag only ever set to 1 would latch, the state being merged."""
+    assert _ctw3_in_mode(1)["batteryMode"] == 0
+    assert _ctw3_in_mode(2)["batteryMode"] == 0
+    assert _ctw3()["states"]["batteryMode"] == 0      # the real frame, mode 1
+
+
+def test_a_fountain_plugged_back_in_shows_its_real_mode_again():
+    """Merged the way the relay merges a decoded frame (`ble_relay.py`)."""
+    states: dict = {}
+    states.update(_ctw3_in_mode(3))
+    assert (states["mode"], states["batteryMode"]) == (3, 1)
+    states.update(_ctw3_in_mode(0))       # a non-mode in between changes nothing
+    assert (states["mode"], states["batteryMode"]) == (3, 1)
+    states.update(_ctw3_in_mode(2))
+    assert (states["mode"], states["batteryMode"]) == (2, 0)
+
+
+def test_values_that_are_not_modes_are_still_dropped_with_their_flag():
+    """0 (the suspected smart-cycle sleep, aavdberg/ha-petkit #57) and anything
+    unknown keep the last real mode -- and say nothing about the battery,
+    rather than declaring the fountain plugged in."""
+    for value in (0, 4, 255):
+        st = _ctw3_in_mode(value)
+        assert "mode" not in st and "batteryMode" not in st, value
+
+
+def test_the_w5_family_still_drops_a_3():
+    """`FOUNTAIN_MODES` is the W5 family's, and has no battery mode in it."""
+    from petkit_local.devices.ble import FOUNTAIN_MODES, _decode_w5_status
+
+    assert FOUNTAIN_MODES == (1, 2)
+    assert "mode" not in _decode_w5_status(bytes([1, 3, 0, 0, 0, 0, 0, 0, 0, 0, 90, 1]))["states"]
+
+
+def test_the_ctw3_modes_are_graded_in_codes():
+    """Protocol knowledge lives in `events/codes.py`, graded, and the select
+    reads its keys from there."""
+    from petkit_local.events.codes import CTW3_BATTERY_MODE, CTW3_MODES, GRADES, INFERRED
+    from petkit_local.ha.entities.ble import get_ble_entities
+
+    assert all(m.grade in GRADES and m.source for m in CTW3_MODES.values())
+    assert CTW3_MODES[CTW3_BATTERY_MODE].key == "battery"
+    assert CTW3_MODES[CTW3_BATTERY_MODE].grade == INFERRED
+    assert not CTW3_MODES[CTW3_BATTERY_MODE].selectable
+    assert [CTW3_MODES[v].label for v in (1, 2)] == ["Continuous", "Intermittent"]
+
+    mode = next(e for e in get_ble_entities("ctw3") if e.key == "ctw3_mode")
+    assert (mode.options, mode.option_values) == (["normal", "smart"], [1, 2])
+    assert mode.readonly_options == {3: "battery"}
+
+
 def test_a_non_status_cmd_is_ignored():
     """220/221 ACKs and 251/252 share the channel with the status frames."""
     import base64
@@ -920,6 +992,78 @@ def test_a_ctw3_key_is_refused_on_a_w5_and_the_other_way_round():
         ble_command_for(w5, "ctw3_power", 1)
     with pytest.raises(Refused):
         ble_command_for(_paired_ctw3(powerStatus=1), "w5_power", 1)
+
+
+# --- a CTW3 on battery (issue #116) ------------------------------------------
+
+def test_a_mode_write_on_battery_is_refused_with_a_reason():
+    """PetKit's app skips both mode buttons while the fountain reports 3; so
+    does this, and says why instead of sending a frame it would ignore."""
+    from petkit_local.devices.ble import OnBattery, Refused, ble_command_for
+
+    dev = _paired_ctw3(powerStatus=1, suspendStatus=1, mode=3, batteryMode=1)
+    for value in (1, 2):
+        with pytest.raises(OnBattery) as err:
+            ble_command_for(dev, "ctw3_mode", value)
+        assert isinstance(err.value, Refused)
+        assert err.value.code == "on_battery"
+        assert "battery" in str(err.value)
+    assert dev.state["states"]["mode"] == 3
+
+
+def test_battery_is_never_written_as_a_mode():
+    from petkit_local.devices.ble import OnBattery, Refused, ble_command_for
+
+    for state in ({"mode": 1}, {"mode": 3}):
+        with pytest.raises(Refused) as err:
+            ble_command_for(_paired_ctw3(powerStatus=1, suspendStatus=1, **state),
+                            "ctw3_mode", 3)
+        assert not isinstance(err.value, OnBattery)
+
+
+def test_pause_and_power_still_work_on_battery_and_keep_mode_3():
+    """PetKit's Pause is `[power, !suspendStatus, mode]` with the mode the
+    fountain reports (`changePauseState`), 3 included."""
+    from petkit_local.devices.ble import CMD_SET_MODE, ble_command_for
+
+    dev = _paired_ctw3(powerStatus=1, suspendStatus=1, mode=3)
+    assert ble_command_for(dev, "ctw3_working", 0) == (CMD_SET_MODE, bytes([1, 0, 3]))
+    paused = _paired_ctw3(powerStatus=1, suspendStatus=0, mode=3)
+    assert ble_command_for(paused, "ctw3_working", 1) == (CMD_SET_MODE, bytes([1, 1, 3]))
+    assert ble_command_for(dev, "ctw3_power", 0) == (CMD_SET_MODE, bytes([0, 0, 3]))
+
+
+def test_off_battery_the_modes_are_written_as_before():
+    from petkit_local.devices.ble import ble_command_for
+
+    dev = _paired_ctw3(powerStatus=1, suspendStatus=0, mode=2, batteryMode=0)
+    assert ble_command_for(dev, "ctw3_mode", 1)[1] == bytes([1, 1, 1])
+
+
+def test_the_battery_times_are_petkits_ranges_and_refused_outside_them():
+    """`CTW3BatteryModeWindow(ctx, 15, 300, 60, 10800, ...)` in PetKit's app,
+    seconds, stepped by the minimum. A write outside them is refused before a
+    frame is built: past 65535 it could not even be packed."""
+    from petkit_local.devices.ble import CMD_SET_CONFIG, Refused
+    from petkit_local.ha.command_router import build_ble_command
+    from petkit_local.ha.entities.ble import get_ble_entities
+
+    ents = {e.key: e for e in get_ble_entities("ctw3")}
+    work, sleep = ents["ctw3_energy_interval"], ents["ctw3_sleep_time"]
+    assert (work.min_value, work.max_value, work.step, work.unit) == (15, 300, 15, "s")
+    assert (sleep.min_value, sleep.max_value, sleep.step, sleep.unit) == (60, 10800, 60, "s")
+
+    dev = _paired_ctw3(smartWorkingTime=3, smartSleepTime=3, energyInterval=300,
+                       sleepTime=1200, lightSwitch=1, brightness=3,
+                       noDisturbingSwitch=0, mode=3)
+    cmd, payload = build_ble_command(dev, work, 120)
+    assert cmd == CMD_SET_CONFIG and payload[2:4] == (120).to_bytes(2, "big")
+    cmd, payload = build_ble_command(dev, sleep, 10800)
+    assert payload[4:6] == (10800).to_bytes(2, "big")
+    for entity, bad in ((work, 14), (work, 301), (work, 70000), (sleep, 59),
+                        (sleep, 10801), (sleep, -1)):
+        with pytest.raises(Refused, match="between"):
+            build_ble_command(dev, entity, bad)
 
 
 def test_the_filter_reset_needs_no_reading_at_all():
@@ -1631,6 +1775,52 @@ async def test_read_now_and_a_write_refuse_in_the_rows_words():
         assert r.status == 409 and (await r.json())["error"] == reason
     finally:
         await c.close()
+
+
+async def test_the_panel_shows_battery_and_refuses_a_mode_on_it():
+    """Issue #116, the panel's half: the row carries the label the select shows
+    for mode 3, and a mode write is refused with the reason, nothing sent."""
+    from petkit_local.web import appkeys as panel_keys
+
+    sent = []
+
+    class _Bridge:
+        _client = object()
+
+        async def publish_ble_command(self, parent, dev, cmd, payload):
+            sent.append((cmd, payload))
+            return True
+
+    app, reg, ble = _panel()
+    parent = reg.get_or_create(petkit_id=10, device_type="t4", serial_number="SN10")
+    parent.online = parent.mqtt_connected = True
+    dev = ble.register(ble_type="ctw3", petkit_id=700, mac="A4C138AABBCC", link_with=10)
+    dev.state = {"states": {"powerStatus": 1, "suspendStatus": 1, "mode": 3,
+                            "batteryMode": 1}}
+    app[panel_keys.BRIDGE] = _Bridge()
+    c = await _client(app)
+    try:
+        row = (await (await c.get("/api/ble")).json())["accessories"][0]
+        ents = {e["key"]: e for e in row["entities"]}
+        assert ents["ctw3_mode"]["value"] == 3
+        assert ents["ctw3_mode"]["readonly_options"] == {"3": "battery"}
+        assert ents["ctw3_battery_mode"]["value"] == 1
+        r = await c.post("/api/ble/700/command", json={"entity": "ctw3_mode", "value": "smart"})
+        assert r.status == 400 and "battery" in (await r.json())["error"]
+        assert not sent
+        r = await c.post("/api/ble/700/command", json={"entity": "ctw3_working", "value": "OFF"})
+        assert r.status == 200, await r.text()
+        assert sent == [(220, bytes([1, 0, 3]))]
+    finally:
+        await c.close()
+
+
+def test_the_panel_select_shows_a_value_it_does_not_offer():
+    """Without it the browser selects the first option, so a fountain on
+    battery read `normal` in the panel."""
+    js = (Path(__file__).resolve().parents[1] / "petkit_local" / "web" / "static"
+          / "js" / "entities.js").read_text(encoding="utf-8")
+    assert "readonly_options" in js and "selected disabled" in js
 
 
 def test_the_panel_offers_no_button_that_would_fail():

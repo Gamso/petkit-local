@@ -38,6 +38,8 @@ function fmtEntityValue(e) {
     // An unmapped value stays visible as its raw self, matching
     // `_enum_sensor_value_template`: blanking it would hide a real state.
     if (i >= 0) return esc(e.options[i]);
+    const shown = (e.readonly_options || {})[String(v)];
+    if (shown !== undefined) return esc(shown);
   }
   if (e.component === 'binary_sensor') return v === 0 || v === '0' || v === false ? 'off' : 'on';
   // These two carry their own units ("1d 15h", a formatted date), so the raw

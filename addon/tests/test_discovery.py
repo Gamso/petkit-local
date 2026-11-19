@@ -229,3 +229,41 @@ def test_event_entity_payload_reaches_ha_unwrapped():
         assert "value_template" not in p
         assert p["state_topic"] == f"petkit-local/7/event/{e.unique_id_suffix}"
         assert p["event_types"] == e.options
+
+
+def test_a_ctw3_on_battery_is_unknown_in_its_select_and_on_in_its_sensor():
+    """Issue #116. HA's MQTT select accepts only a declared option, and battery
+    must never be offered, so the select renders `None` (unknown) for it rather
+    than nothing — which would have kept showing the mode the fountain was in
+    on mains. The yes/no beside it says what is going on."""
+    from petkit_local.ha.entities.ble import get_ble_entities
+
+    ents = {e.key: e for e in get_ble_entities("ctw3")}
+    mode = build_discovery_payload(
+        entity=ents["ctw3_mode"], device_id=700, device_type="ctw3",
+        device_name="dev", serial_number="SN", state_topic="petkit-local/700/state")
+    assert mode["options"] == ["normal", "smart"]
+    tpl = mode["value_template"]
+    assert _render(tpl, {"states": {"mode": 1}}) == "normal"
+    assert _render(tpl, {"states": {"mode": 2}}) == "smart"
+    assert _render(tpl, {"states": {"mode": 3}}) == "None"
+    assert _render(tpl, {"states": {}}) == ""
+    assert _render(tpl, {"states": {"mode": 9}}) == ""   # unmapped: left alone, as before
+
+    flag = build_discovery_payload(
+        entity=ents["ctw3_battery_mode"], device_id=700, device_type="ctw3",
+        device_name="dev", serial_number="SN", state_topic="petkit-local/700/state")
+    assert "command_topic" not in flag
+    assert _render(flag["value_template"], {"states": {"batteryMode": 1}}) == "ON"
+    assert _render(flag["value_template"], {"states": {"batteryMode": 0}}) == "OFF"
+
+
+def test_a_select_without_shown_only_values_renders_as_it_always_did():
+    """`readonly_options` is opt-in: every other select still renders nothing
+    for a value it does not map."""
+    from petkit_local.ha.discovery import EntityDef, _value_template
+
+    e = EntityDef(component="select", key="x", name="X", value_path="states.x",
+                  options=["a", "b"], option_values=[1, 2])
+    assert "None" not in _value_template(e)
+    assert _render(_value_template(e), {"states": {"x": 3}}) == ""

@@ -128,9 +128,17 @@ function controlRow(id, e, kind) {
       ? e.option_values
       : (e.options || []).map((_, idx) => idx);
   const sel = values.findIndex(v => String(v) === String(e.value));
-  const opts = (e.options || [])
-    .map((o, idx) => `<option ${idx === sel ? 'selected' : ''}>${esc(o)}</option>`)
-    .join('');
+  // A value the device reports but the select never offers (a CTW3 on battery,
+  // `readonly_options`) is shown as a disabled entry rather than letting the
+  // browser fall back to the first option — which would claim a mode the
+  // fountain is not in, and swallow the change event if you picked it.
+  const shown =
+    sel < 0 && e.value != null ? (e.readonly_options || {})[String(e.value)] : undefined;
+  const opts =
+    (shown !== undefined ? `<option selected disabled>${esc(shown)}</option>` : '') +
+    (e.options || [])
+      .map((o, idx) => `<option ${idx === sel ? 'selected' : ''}>${esc(o)}</option>`)
+      .join('');
   return `<label class="ctrl"><span>${nm}</span>
     <span class="cn"><select data-change="set-entity-select" data-id="${esc(id)}" data-key="${esc(e.key)}"${k}>${opts}</select></span></label>`;
 }

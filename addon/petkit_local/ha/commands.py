@@ -764,6 +764,22 @@ def _bounds_text(entity: EntityDef) -> str:
     return f"at most {entity.max_value}"
 
 
+def check_number_bounds(entity: EntityDef, value: float) -> None:
+    """Refuse a `number` value outside the bounds `entity` declares.
+
+    The device path checks this inside `handle_ha_command`. A Bluetooth
+    accessory's write never goes through there (`ha/command_router.py::
+    build_ble_command`), and its frame packs the value into a byte or a
+    big-endian short — so an unchecked one is a nonsense setting at best and,
+    past 65535 or below 0, an exception mid-request.
+
+    Raises:
+        Refused: the value is outside a declared bound.
+    """
+    if not _within_bounds(entity, value):
+        raise Refused(f"{entity.name} must be {_bounds_text(entity)}")
+
+
 #: Longest text a `text` entity takes — HA's own ceiling for the platform.
 TEXT_MAX_LENGTH = 255
 

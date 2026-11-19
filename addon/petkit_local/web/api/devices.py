@@ -268,6 +268,7 @@ async def api_device_detail(request: web.Request) -> web.Response:
             "component": e.component, "key": e.key, "name": e.name,
             "value_path": e.value_path, "unit": e.unit, "device_class": e.device_class,
             "icon": e.icon, "options": e.options, "option_values": e.option_values,
+            "readonly_options": e.readonly_options,
             "settable": e.is_settable,
             # Config/diagnostic, exactly as HA groups them — the panel sorts by
             # it so the two present the same entity in the same place.

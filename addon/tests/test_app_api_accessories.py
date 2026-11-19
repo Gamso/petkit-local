@@ -299,6 +299,90 @@ async def test_a_confirmed_filter_reset_is_sent(a: AccessoryEnv):
     assert [(p, b) for p, b, _, _ in a.sink.frames] == [(300, CTW3_ID)]
 
 
+# --- a CTW3's modes, pause and battery times (issue #116) -------------------------
+
+#: A CTW3 unplugged: running, in its battery mode, settings block known.
+ON_BATTERY = {"powerStatus": 1, "suspendStatus": 1, "mode": 3, "batteryMode": 1,
+              "smartWorkingTime": 3, "smartSleepTime": 3, "energyInterval": 300,
+              "sleepTime": 1200, "lightSwitch": 1, "brightness": 3,
+              "noDisturbingSwitch": 0}
+
+
+def _entities(detail: dict) -> dict[str, dict]:
+    return {e["key"]: e for e in detail["entities"]}
+
+
+async def test_a_ctw3_on_battery_shows_battery_and_does_not_offer_it(a: AccessoryEnv):
+    a.ctw3.state = {"states": dict(ON_BATTERY)}
+    detail = (await a.json(f"/devices/{CTW3_ID}"))["device"]
+    _Schemas().check(detail, "DeviceDetail")
+    ents = _entities(detail)
+    mode = ents["ctw3_mode"]
+    assert (mode["value"], mode["display"]) == (3, "battery")
+    assert mode["options"] == ["normal", "smart"] and mode["settable"]
+    flag = ents["ctw3_battery_mode"]
+    assert (flag["component"], flag["value"], flag["settable"]) == ("binary_sensor", True, False)
+    assert (ents["ctw3_working"]["component"], ents["ctw3_working"]["value"]) == ("switch", True)
+
+    a.ctw3.state["states"].update(mode=1, batteryMode=0)
+    ents = _entities((await a.json(f"/devices/{CTW3_ID}"))["device"])
+    assert (ents["ctw3_mode"]["display"], ents["ctw3_battery_mode"]["value"]) == ("normal", False)
+
+
+async def test_a_mode_write_on_battery_is_refused_with_its_own_code(a: AccessoryEnv):
+    a.t4.mqtt_connected = True
+    a.ctw3.state = {"states": dict(ON_BATTERY)}
+    for choice in ("normal", "smart"):
+        r = await a.call("PUT", f"/devices/{CTW3_ID}/entities/ctw3_mode", {"value": choice})
+        await _refused(r, 422, "on_battery")
+        _Schemas().check(await r.json(), "Error")
+        assert "battery" in (await r.json())["message"]
+    # Battery itself is a state, not a choice: refused as any unknown option.
+    r = await a.call("PUT", f"/devices/{CTW3_ID}/entities/ctw3_mode", {"value": "battery"})
+    await _refused(r, 422, "refused")
+    assert not a.sink.frames
+    assert a.ctw3.state["states"]["mode"] == 3
+
+
+async def test_pause_is_a_switch_the_app_can_flip_on_battery(a: AccessoryEnv):
+    a.t4.mqtt_connected = True
+    a.ctw3.state = {"states": dict(ON_BATTERY)}
+    r = await a.call("PUT", f"/devices/{CTW3_ID}/entities/ctw3_working", {"value": False})
+    assert r.status == 200, await r.text()
+    body = await r.json()
+    _Schemas().check(body, "EntityWriteResult")
+    assert body["entity"]["value"] is False
+    # PetKit's Pause: power and the mode the fountain reports, suspend flipped.
+    assert a.sink.frames == [(300, CTW3_ID, CMD_SET_MODE, bytes([1, 0, 3]))]
+
+    r = await a.call("PUT", f"/devices/{CTW3_ID}/entities/ctw3_working", {"value": True})
+    assert r.status == 200, await r.text()
+    assert a.sink.frames[-1] == (300, CTW3_ID, CMD_SET_MODE, bytes([1, 1, 3]))
+
+
+async def test_the_battery_times_carry_petkits_units_and_ranges(a: AccessoryEnv):
+    from petkit_local.devices.ble import CMD_SET_CONFIG
+
+    a.t4.mqtt_connected = True
+    a.ctw3.state = {"states": dict(ON_BATTERY)}
+    ents = _entities((await a.json(f"/devices/{CTW3_ID}"))["device"])
+    work, sleep = ents["ctw3_energy_interval"], ents["ctw3_sleep_time"]
+    assert (work["unit"], work["min"], work["max"], work["step"], work["value"]) ==         ("s", 15, 300, 15, 300)
+    assert (sleep["unit"], sleep["min"], sleep["max"], sleep["step"], sleep["value"]) ==         ("s", 60, 10800, 60, 1200)
+
+    r = await a.call("PUT", f"/devices/{CTW3_ID}/entities/ctw3_energy_interval", {"value": 120})
+    assert r.status == 200, await r.text()
+    (_, _, cmd, payload), = a.sink.frames
+    assert cmd == CMD_SET_CONFIG and payload[2:4] == (120).to_bytes(2, "big")
+
+    for key, bad in (("ctw3_energy_interval", 301), ("ctw3_sleep_time", 30),
+                     ("ctw3_sleep_time", 70000)):
+        r = await a.call("PUT", f"/devices/{CTW3_ID}/entities/{key}", {"value": bad})
+        await _refused(r, 422, "refused")
+        assert "between" in (await r.json())["message"]
+    assert len(a.sink.frames) == 1
+
+
 # --- live updates ---------------------------------------------------------------------
 
 @pytest.fixture

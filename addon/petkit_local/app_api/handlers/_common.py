@@ -17,9 +17,9 @@ from petkit_local.app_api.appkeys import (
 )
 from petkit_local.app_api.middleware import ApiError
 from petkit_local.devices.base import Device, Refused
-from petkit_local.devices.ble import BLEDevice, ble_command_for, relay_blocker
+from petkit_local.devices.ble import BLEDevice, relay_blocker
 from petkit_local.ha.command_router import (
-    DELIVERED_MQTT, ble_command_value, deliver_command, reflect_ble_write,
+    DELIVERED_MQTT, ble_command_value, build_ble_command, deliver_command, reflect_ble_write,
 )
 from petkit_local.ha.commands import Command
 from petkit_local.ha.discovery import EntityDef
@@ -129,7 +129,8 @@ async def send_accessory_command(request: web.Request, accessory: BLEDevice,
 
     Raises:
         ApiError: 422 `refused` when the frame cannot be built (a block the
-            accessory has never reported in full, a field it cannot write);
+            accessory has never reported in full, a field it cannot write),
+            422 `on_battery` for a CTW3 mode write while it is on battery;
             409 `accessory_unreachable` when no parent on MQTT can relay it.
     """
     value = ble_command_value(entity, payload)
@@ -147,9 +148,10 @@ async def send_accessory_command(request: web.Request, accessory: BLEDevice,
     if sink is None:
         raise ApiError(409, "accessory_unreachable", "the MQTT bridge is not running")
     try:
-        cmd, frame = ble_command_for(accessory, entity.key, value)
+        cmd, frame = build_ble_command(accessory, entity, value)
     except Refused as exc:
-        raise ApiError(422, "refused", str(exc)) from None
+        # `on_battery` for a CTW3 mode write on battery, `refused` otherwise.
+        raise ApiError(422, exc.code, str(exc)) from None
     if not await sink.publish_ble_command(parent, accessory, cmd, frame):
         raise ApiError(409, "accessory_unreachable", "nothing could be sent to it")
 
