@@ -1,4 +1,4 @@
-"""Setup -> Phone app access: the app API's password, its sessions, its proxies.
+"""Setup -> Phone app access: the app API's password, sessions, proxies, notification kinds.
 
 The panel is where the app API's password is set, and the recovery path when
 it is forgotten: it is reachable only through Ingress or the LAN, never through
@@ -11,6 +11,11 @@ back: `GET` says only whether one is set. A session's push registration is
 shown by its host only — the endpoint is a capability URL (`app_api/push.py`).
 Each session also says whether its phone holds the notification socket
 (`app_api/notify/channel.py`) right now, as the notifier knows it.
+
+The kind switches are the notifier's (`app_api/notify/settings.py`): which kinds
+of notification any phone may get, over its socket or its push endpoint. They
+sit on this card because they concern nothing but the signed-in phones. Like
+everything else here they are set only from the panel, never from the app.
 """
 from __future__ import annotations
 
@@ -22,6 +27,7 @@ from aiohttp import web
 from petkit_local.app_api.auth import (
     MIN_PASSWORD_LENGTH, SESSION_IDLE_LIFETIME, AppAuth, PasswordRejected,
 )
+from petkit_local.app_api.notify.settings import SettingsRejected
 from petkit_local.web.api._common import _json_body, _refuse
 from petkit_local.web.appkeys import APP_AUTH, CFG, NOTIFIER
 
@@ -36,7 +42,8 @@ def _auth(request: web.Request) -> AppAuth:
 
 
 def _view(request: web.Request, auth: AppAuth) -> dict[str, Any]:
-    channel = getattr(request.app.get(NOTIFIER), "channel", None)
+    notifier = request.app.get(NOTIFIER)
+    channel = getattr(notifier, "channel", None)
     return {
         "password_set": auth.password_set,
         "min_password_length": MIN_PASSWORD_LENGTH,
@@ -45,6 +52,8 @@ def _view(request: web.Request, auth: AppAuth) -> dict[str, Any]:
         "trusted_proxies": auth.trusted_proxies,
         "sessions": [{**s.public(), "notify": channel.status(s) if channel is not None else None}
                      for s in auth.sessions()],
+        # None when notifications are not running: the card then shows no switches.
+        "notify_kinds": notifier.config.settings.public() if notifier is not None else None,
     }
 
 
@@ -99,4 +108,24 @@ async def api_app_trusted_proxies(request: web.Request) -> web.Response:
         await auth.set_trusted_proxies(body.get("trusted_proxies"))
     except ValueError as e:
         raise _refuse(web.HTTPBadRequest, str(e)) from None
+    return web.json_response({"ok": True, **_view(request, auth)})
+
+
+async def api_app_notify_kinds(request: web.Request) -> web.Response:
+    """`POST {kinds: {kind: bool}}` — switch kinds of notification on or off for every phone.
+
+    Kinds left out keep their switch. A kind switched off here reaches no phone,
+    whatever the phone itself chose.
+    """
+    auth = _auth(request)
+    notifier = request.app.get(NOTIFIER)
+    if notifier is None:
+        raise _refuse(web.HTTPServiceUnavailable, "notifications are not running")
+    body = await _json_body(request)
+    try:
+        settings = await notifier.config.set_kinds(body.get("kinds"))
+    except SettingsRejected as e:
+        raise _refuse(web.HTTPBadRequest, str(e)) from None
+    log.info("notifications: kinds switched from the panel; off: %s",
+             ", ".join(k for k in settings.kinds if not settings.wants(k)) or "none")
     return web.json_response({"ok": True, **_view(request, auth)})

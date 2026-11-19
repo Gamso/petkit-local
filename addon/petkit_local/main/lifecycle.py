@@ -420,10 +420,10 @@ async def start_background(services: Services, app_instance: web.Application) ->
              " (HA Ingress)" if services.ha_addon else "")
 
     await _start_app_api(services, app_instance)
-    # Phone notifications through ntfy. Idle until enabled in the panel; it
-    # only listens to the hub, and only ever calls the configured ntfy server.
+    # Phone notifications. It only listens to the hub, and only ever calls the
+    # push endpoints the phones registered.
     if services.notifier is not None:
-        _spawn(app_instance, "ntfy-notifier", services.notifier.run())
+        _spawn(app_instance, "notifier", services.notifier.run())
 
     # A device holds a fixed UTC offset and knows nothing of DST, so when its
     # zone changes offset somebody has to tell it (see ha/timezone_sync.py).

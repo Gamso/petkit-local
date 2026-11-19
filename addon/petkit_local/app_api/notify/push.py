@@ -1,10 +1,11 @@
-"""The second sink: a small JSON message to every phone that registered for push.
+"""One sink: a small JSON message to every phone that registered for push.
 
 A phone registers its own UnifiedPush endpoint with its session
 (`PUT /app/v1/push`, stored by `auth.py`). For every notification that got
 through the notifier's gates — the kind switch, the `event_uid` dedupe, the
-rate limit, the bounded queue, shared with the ntfy topic — `dispatch` POSTs the
-same message to every live registration whose session's `kinds` allow it.
+rate limit, shared with the notification socket (`channel.py`) — `dispatch`
+POSTs the same message to every live registration whose session's `kinds`
+allow it.
 
 The message (`message`, `PUSH_VERSION` 1) is stable keys only, so the app writes
 the notification itself, in the phone's language, and nothing in it is worth
@@ -23,8 +24,8 @@ actually dialled — this machine's own addresses (`app_api/push.py`).
 
 Nothing here waits on an endpoint. Each registration has its own lane — a
 queue of at most `LANE_SIZE` messages, sent in order, one at a time, by a task
-of its own — so a dead phone delays neither the others nor the ntfy publisher
-nor the event path, and a burst to a healthy one is delivered, not dropped. A
+of its own — so a dead phone delays neither the others nor the notification
+socket nor the event path, and a burst to a healthy one is delivered, not dropped. A
 lane that is full (its endpoint is not keeping up) drops what does not fit, and
 says so. Lanes are bounded by the sessions (`auth.MAX_SESSIONS`).
 An endpoint answering 404 or 410 (UnifiedPush's "gone") `GONE_LIMIT` times in a

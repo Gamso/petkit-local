@@ -1,9 +1,9 @@
-"""The third sink: notifications over the app API's own WebSocket, with catch-up.
+"""One sink: notifications over the app API's own WebSocket, with catch-up.
 
 `GET /app/v1/notifications/ws` (`handlers/notifications.py`) is what lets the
-phone app do without ntfy: it keeps this one socket open in the background, as
-the ntfy app keeps one to its server, and the server writes each notification
-to it. It carries notifications only — never device state, which is `/ws`'s —
+phone app do without any push service: it keeps this one socket open in the
+background, as a push distributor keeps one to its server, and the server
+writes each notification to it. It carries notifications only — never device state, which is `/ws`'s —
 so a socket open all day is silent until something happens, apart from the
 protocol ping every `HEARTBEAT_SEC` that keeps a tunnel from dropping it.
 
@@ -15,9 +15,9 @@ of `openapi.yaml`), wrapped with an id::
 so both channels carry one payload and the app parses one shape.
 
 **One decision point.** Nothing here decides whether a notification is sent:
-`deliver` is called by the notifier's worker for exactly what passed its gates
-(the panel's kind switches, the `event_uid` dedupe, the rate limit), the same
-notifications the ntfy topic and the UnifiedPush endpoints get. What this sink
+`deliver` is called by the notifier for exactly what passed its gates (the
+panel's kind switches, the `event_uid` dedupe, the rate limit), the same
+notifications the UnifiedPush endpoints get. What this sink
 adds is only WHICH phones: each live session that has opened the socket, whose
 `kinds` (`AppSession.kinds`, the same choice its push endpoint obeys) allow it.
 

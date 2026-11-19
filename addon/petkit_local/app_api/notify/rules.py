@@ -16,8 +16,10 @@ Two sources, because the things an owner wants to hear about arrive two ways:
   model that never sends `food` says nothing about food, it does not say "full".
 
 Payloads stay minimal on purpose: a device's product name, a pet's name, what
-happened. No ids, no URLs, no token — a notification is shown on a lock screen
-and passes through the ntfy server.
+happened. No ids, no URLs, no token — a notification is shown on a lock screen.
+That wording (`title`, `message`, `tags`) does not leave the server today: the
+phones are sent only the stable keys below and write their own text, so here it
+is what a notification reads as, and what the tests pin a classification by.
 
 Each `Notification` also carries the stable keys the phone app's own push
 message is built from (`notify/push.py`): `code` — the event's `event_type` for
@@ -40,7 +42,8 @@ from petkit_local.events import codes, decode
 from petkit_local.utils.coerce import to_float, to_int
 from petkit_local.utils.const import device_display_name
 
-#: ntfy's priorities: 1 min, 2 low, 3 default, 4 high, 5 urgent.
+#: Priorities: 1 min, 2 low, 3 default, 4 high, 5 urgent. `PRIORITY_HIGH` and
+#: above is pushed with `Urgency: high` (`push.py`).
 PRIORITY_LOW = 2
 PRIORITY_DEFAULT = 3
 PRIORITY_HIGH = 4

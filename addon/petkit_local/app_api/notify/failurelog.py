@@ -1,8 +1,8 @@
 """A warning written at most every `FAILURE_LOG_INTERVAL`, the ones between counted.
 
-Shared by both sinks (`notifier.py`'s ntfy publisher, `push.py`'s endpoints): a
-dead server fails on every notification, and the log should say so once in a
-while, not on every one.
+Shared by the notifier (`notifier.py`) and each phone's push endpoint
+(`push.py`): a dead endpoint fails on every notification, and the log should say
+so once in a while, not on every one.
 """
 from __future__ import annotations
 
@@ -18,7 +18,7 @@ FAILURE_LOG_INTERVAL = 300.0
 class FailureLog:
     """Logs `"{label}: {message}"` at most every `FAILURE_LOG_INTERVAL`."""
 
-    def __init__(self, clock: Callable[[], float], label: str = "ntfy") -> None:
+    def __init__(self, clock: Callable[[], float], label: str = "notify") -> None:
         self._clock = clock
         self._label = label
         self._last = float("-inf")

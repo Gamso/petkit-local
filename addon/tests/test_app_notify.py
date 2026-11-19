@@ -1,4 +1,4 @@
-"""Phone notifications through ntfy (`app_api/notify/`).
+"""Phone notifications: what is announced, and the gates before the phones (`app_api/notify/`).
 
 What is held here:
 
@@ -8,40 +8,39 @@ What is held here:
 * one notification per event: `event_uid` (`event_id + event_type`) is the
   dedupe key, so the reports of one session are distinct but a retried report
   is not, and an update of a stored row (`is_new` False) is never announced;
-* the per-device, per-kind rate limit; switched-off kinds; disabled settings;
+* the per-device, per-kind rate limit; switched-off kinds;
 * state conditions fire on their START only, after their hold, gated on the
   key being present, and not for what was already true at startup;
-* the publish request a real ntfy server would receive (a fake one, here);
-* a dead or failing ntfy server never raises into the event path, and the
-  failures it causes are logged at a bounded rate;
-* the token and the topic appear in no log line, and the token in no panel
-  response.
+* a bad hub entry never ends the feed;
+* the kind switches persist, and an `ntfy.json` from before keeps its kinds and
+  loses everything else — its access token above all;
+* the panel sets the switches on its Phone app access card, and nothing of ntfy
+  is left there.
+
+The sinks themselves (the notification socket and the push endpoints) are
+`test_app_notify_ws.py` and `test_app_push.py`; here a recorder stands in for
+them, so what passed the gates is read directly.
 """
 from __future__ import annotations
 
 import asyncio
-import base64
 import json
-import logging
-import os
-import stat
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
 import pytest
 from aiohttp import web
-from aiohttp.test_utils import TestClient, TestServer, unused_port
+from aiohttp.test_utils import TestClient, TestServer
 
+from petkit_local.app_api.auth import FILENAME as AUTH_FILENAME
+from petkit_local.app_api.auth import AppAuth, ScryptParams
 from petkit_local.app_api.notify import rules
-from petkit_local.app_api.notify.notifier import (
-    FAILURE_LOG_INTERVAL, RATE_LIMITS, Notifier, encode_header,
-)
+from petkit_local.app_api.notify.notifier import RATE_LIMITS, Notifier
 from petkit_local.app_api.notify.rules import Notification
 from petkit_local.app_api.notify.settings import (
-    FILENAME, KIND_CONSUMABLE, KIND_ERROR, KIND_FEED_FAILED, KIND_FEED_SERVED, KIND_FOOD_LOW,
-    KIND_OFFLINE, KIND_TOILET, KINDS, NtfyConfig, SettingsRejected, check_server,
-    generate_topic,
+    FILENAME, KIND_CONSUMABLE, KIND_ERROR, KIND_FEED_SERVED, KIND_FOOD_LOW, KIND_OFFLINE,
+    KIND_TOILET, KINDS, LEGACY_FILENAME, NotifyConfig, SettingsRejected,
 )
 from petkit_local.devices.registry import DeviceRegistry
 from petkit_local.events.store import EventStore
@@ -51,7 +50,10 @@ from petkit_local.web.appkeys import NOTIFIER
 from petkit_local.web.hub import EventHub
 from petkit_local.web.panel import create_panel_app
 
+#: What an old `ntfy.json` held: none of it may survive the migration.
 TOKEN = "tk_s3cretT0kenValueNobodyMaySee"
+TOPIC = "petkit-Aj4LZxpuM68UPghQY5MeN6bs"
+FAST = ScryptParams(n=2 ** 10, r=8, p=1)
 
 
 class Clock:
@@ -65,68 +67,58 @@ class Clock:
         self.now += seconds
 
 
-class FakeNtfy:
-    """An aiohttp server answering like ntfy, recording what it was sent."""
+class Recorder:
+    """Stands in for the phones: wants every kind, keeps what it is handed."""
 
-    def __init__(self, status: int = 200) -> None:
-        self.status = status
-        self.requests: list[dict[str, Any]] = []
-        self.received = asyncio.Event()
-        app = web.Application()
-        app.router.add_route("*", "/{path:.*}", self._handle)
-        self.server = TestServer(app)
+    def __init__(self) -> None:
+        self.got: list[Notification] = []
+        self.arrived = asyncio.Event()
 
-    async def _handle(self, request: web.Request) -> web.Response:
-        self.requests.append({"method": request.method, "path": request.path,
-                              "query": request.query_string,
-                              "headers": dict(request.headers),
-                              "body": (await request.read()).decode("utf-8")})
-        self.received.set()
-        if self.status != 200:
-            return web.json_response({"code": 40101, "http": self.status,
-                                      "error": "unauthorized"}, status=self.status)
-        return web.json_response({"id": "abc", "event": "message"})
+    def wants(self, kind: str) -> bool:
+        return True
 
-    async def start(self) -> str:
-        await self.server.start_server()
-        return str(self.server.make_url("")).rstrip("/")
+    def deliver(self, notification: Notification) -> int:
+        self.got.append(notification)
+        self.arrived.set()
+        return 1
+
+    async def flush(self) -> None:
+        pass
 
     async def wait(self, count: int = 1, timeout: float = 5.0) -> None:
         async def _until():
-            while len(self.requests) < count:
-                self.received.clear()
-                await self.received.wait()
+            while len(self.got) < count:
+                self.arrived.clear()
+                await self.arrived.wait()
         await asyncio.wait_for(_until(), timeout)
 
 
-@pytest.fixture
-async def ntfy():
-    fake = FakeNtfy()
-    yield fake
-    await fake.server.close()
+def _recorded(notifier: Notifier) -> Recorder:
+    """`notifier` with a recorder as its socket sink; returns the recorder."""
+    recorder = Recorder()
+    notifier._channel = recorder
+    return recorder
 
 
-async def _config(tmp_path: Path, server: str = "https://ntfy.example.org",
-                  **kw: Any) -> NtfyConfig:
-    config = NtfyConfig(tmp_path / FILENAME)
-    await config.update({"server": server, "token": TOKEN, "enabled": True, **kw})
+async def _config(tmp_path: Path, **kinds: bool) -> NotifyConfig:
+    config = NotifyConfig(tmp_path / FILENAME)
+    if kinds:
+        await config.set_kinds(kinds)
     return config
 
 
 class Env:
-    """A notifier over a real registry, with the queue read directly."""
+    """A notifier over a real registry, with what passed its gates read directly."""
 
-    def __init__(self, config: NtfyConfig, registry: DeviceRegistry | None = None,
+    def __init__(self, config: NotifyConfig, registry: DeviceRegistry | None = None,
                  pets: Any = None) -> None:
         self.clock = Clock()
         self.registry = registry or DeviceRegistry()
         self.notifier = Notifier(config, self.registry, pet_registry=pets, clock=self.clock)
+        self.recorder = _recorded(self.notifier)
 
     def queued(self) -> list[Notification]:
-        out = []
-        q = self.notifier._queue
-        while not q.empty():
-            out.append(q.get_nowait())
+        out, self.recorder.got = self.recorder.got, []
         return out
 
 
@@ -169,11 +161,11 @@ def test_feed_outcomes_split_into_served_skipped_and_failed():
     served = rules.from_event(_row("4", "d4sh", content={"result": 0}))
     assert served.kind == KIND_FEED_SERVED and served.title == "Meal served"
     failed = rules.from_event(_row("4", "d4sh", content={"result": 8}))
-    assert failed.kind == KIND_FEED_FAILED and failed.priority == rules.PRIORITY_HIGH
+    assert failed.kind == "feed_failed" and failed.priority == rules.PRIORITY_HIGH
     assert "nothing dispensed" in failed.message
     # Hoppers empty: the cat did not eat, so it is a failure.
     assert rules.from_event(_row("feed_over", "d4h", content={"result": 9})).kind \
-        == KIND_FEED_FAILED
+        == "feed_failed"
     # (8, err_code 10) is the surplus-control skip, not a failed dispense.
     skipped = rules.from_event(_row("feed_over", "d4h", content={"result": 8, "err_code": 10}))
     assert skipped.kind == KIND_FEED_SERVED and skipped.title == "Meal skipped"
@@ -222,7 +214,7 @@ async def test_reports_of_one_session_are_each_their_own_event(tmp_path):
     assert [n.kind for n in env.queued()] == [KIND_ERROR, KIND_TOILET]
 
 
-# --- rate limit, kinds, disabled --------------------------------------------------
+# --- rate limit, kinds ------------------------------------------------------------
 
 async def test_a_flapping_device_is_rate_limited_per_kind(tmp_path):
     env = Env(await _config(tmp_path))
@@ -242,16 +234,29 @@ async def test_a_flapping_device_is_rate_limited_per_kind(tmp_path):
     assert len(env.queued()) == 1
 
 
-async def test_a_switched_off_kind_and_disabled_settings_send_nothing(tmp_path):
-    config = await _config(tmp_path, kinds={KIND_TOILET: False})
+async def test_a_switched_off_kind_sends_nothing(tmp_path):
+    config = await _config(tmp_path, **{KIND_TOILET: False})
     env = Env(config)
     await _event(env, _row("10", "t5"))
     await _event(env, _row("2", "d4h", event_id="f"))
     assert [n.kind for n in env.queued()] == [KIND_FEED_SERVED]
 
-    await config.update({"enabled": False})
+    await config.set_kinds({KIND_FEED_SERVED: False})
     await _event(env, _row("2", "d4h", event_id="g"))
     assert env.queued() == []
+    # Switched back on: counted from now, never what was skipped meanwhile.
+    await config.set_kinds({KIND_TOILET: True})
+    await _event(env, _row("10", "t5", event_id="h"))
+    assert [n.dedupe_key for n in env.queued()] == ["h:10"]
+
+
+async def test_with_no_phone_wanting_it_nothing_is_counted(tmp_path):
+    """No sink, no notification — and no dedupe entry, so a later phone still gets it."""
+    env = Env(await _config(tmp_path))
+    env.notifier._channel = None
+    note = Notification(kind=KIND_TOILET, device_id=1, title="t", message="m", dedupe_key="k")
+    assert env.notifier.submit(note) is False
+    assert "k" not in env.notifier._seen
 
 
 async def test_the_pet_name_comes_from_the_pet_registry(tmp_path, pet_registry):
@@ -345,18 +350,18 @@ async def test_the_offline_watchdog_decision_and_nothing_else_is_an_offline(tmp_
     assert "stopped responding" in queued[0].message
 
 
-async def test_without_home_assistant_a_silent_device_still_reaches_the_phone(tmp_path, ntfy):
+async def test_without_home_assistant_a_silent_device_still_reaches_the_phone(tmp_path):
     """`--no-ha`: no publisher, yet the watchdog runs and "Device offline" is sent."""
     from petkit_local.main.lifecycle import _start_offline_watchdog
 
-    server = await ntfy.start()
     registry = DeviceRegistry()
     device = registry.get_or_create(petkit_id=100, device_type="t5")
     device.online = True
     device.mqtt_connected = True
     device.last_seen = 1.0  # long ago
     hub = EventHub()
-    notifier = Notifier(await _config(tmp_path, server=server), registry, hub=hub)
+    notifier = Notifier(await _config(tmp_path), registry, hub=hub)
+    phone = _recorded(notifier)
     notifier_task = asyncio.create_task(notifier.run())
     host = web.Application()
     host[device_keys.BACKGROUND_TASKS] = []
@@ -366,10 +371,9 @@ async def test_without_home_assistant_a_silent_device_still_reaches_the_phone(tm
         await asyncio.sleep(0)  # let the notifier subscribe
         watchdog = _start_offline_watchdog(services, host, interval=0.01)
         assert host[device_keys.BACKGROUND_TASKS] == [watchdog]
-        await ntfy.wait(1)
+        await phone.wait(1)
         assert not device.online and not device.mqtt_connected
-        assert ntfy.requests[0]["headers"]["Title"] == "Device offline"
-        assert ntfy.requests[0]["headers"]["Tags"] == "electric_plug,offline"
+        assert [(n.kind, n.title) for n in phone.got] == [(KIND_OFFLINE, "Device offline")]
     finally:
         for task in (*host[device_keys.BACKGROUND_TASKS], notifier_task):
             task.cancel()
@@ -377,47 +381,8 @@ async def test_without_home_assistant_a_silent_device_still_reaches_the_phone(tm
                 await task
 
 
-# --- the publish request ----------------------------------------------------------
-
-async def test_the_request_is_what_ntfy_expects(tmp_path, ntfy):
-    server = await ntfy.start()
-    config = await _config(tmp_path, server=server)
-    env = Env(config)
-    note = rules.from_event(_row("10", "t5"), "Félix")
-    ok, reason = await env.notifier.publish(note, config.settings)
-    await env.notifier.close()
-    assert ok and reason == ""
-    req = ntfy.requests[0]
-    assert req["method"] == "POST" and req["path"] == f"/{config.settings.topic}"
-    assert req["query"] == ""
-    headers = req["headers"]
-    assert headers["Authorization"] == f"Bearer {TOKEN}"
-    assert headers["Title"] == "Toilet visit"
-    assert headers["Priority"] == str(rules.PRIORITY_LOW)
-    assert headers["Tags"] == "cat,toilet"
-    assert req["body"] == note.message and "Félix" in req["body"]
-
-
-def test_a_non_ascii_title_is_an_rfc_2047_word_and_controls_are_dropped():
-    assert encode_header("Meal served") == "Meal served"
-    word = encode_header("Félix\r\nX-Evil: 1")
-    assert word.startswith("=?UTF-8?B?") and word.endswith("?=")
-    assert base64.b64decode(word[10:-2]).decode() == "FélixX-Evil: 1"
-
-
-async def test_no_token_means_no_authorization_header(tmp_path, ntfy):
-    server = await ntfy.start()
-    config = await _config(tmp_path, server=server)
-    await config.update({"token": ""})
-    env = Env(config)
-    assert (await env.notifier.send_test())[0]
-    await env.notifier.close()
-    assert "Authorization" not in ntfy.requests[0]["headers"]
-
-
-async def test_the_hub_feeds_the_publisher_end_to_end(tmp_path, ntfy):
+async def test_the_hub_feeds_the_phones_end_to_end(tmp_path):
     """A retried dev_event_report rings the phone once, over the real hub."""
-    server = await ntfy.start()
     registry = DeviceRegistry()
     registry.get_or_create(petkit_id=100, device_type="t5", serial_number="SN100")
     store = EventStore(tmp_path / "petkit.db")
@@ -428,7 +393,8 @@ async def test_the_hub_feeds_the_publisher_end_to_end(tmp_path, ntfy):
     device_app[device_keys.EVENT_HUB] = hub
     client = TestClient(TestServer(device_app))
     await client.start_server()
-    notifier = Notifier(await _config(tmp_path, server=server), registry, hub=hub)
+    notifier = Notifier(await _config(tmp_path), registry, hub=hub)
+    phone = _recorded(notifier)
     task = asyncio.create_task(notifier.run())
     try:
         await asyncio.sleep(0)  # let it subscribe
@@ -436,88 +402,15 @@ async def test_the_hub_feeds_the_publisher_end_to_end(tmp_path, ntfy):
             r = await client.post("/6/t5/dev_event_report", data="eventType=10&eventId=v1",
                                   headers={"X-Device": "id=100&sn=SN100"})
             assert r.status == 200
-        await ntfy.wait(1)
+        await phone.wait(1)
         await asyncio.sleep(0.1)
-        assert len(ntfy.requests) == 1
-        assert ntfy.requests[0]["headers"]["Title"] == "Toilet visit"
+        assert [n.title for n in phone.got] == ["Toilet visit"]
     finally:
         task.cancel()
         with pytest.raises(asyncio.CancelledError):
             await task
         await client.close()
         await store.close()
-
-
-# --- failure isolation and secrecy ------------------------------------------------
-
-async def test_a_refusing_server_is_reported_without_the_token_or_topic(tmp_path, caplog):
-    fake = FakeNtfy(status=401)
-    server = await fake.start()
-    try:
-        config = await _config(tmp_path, server=server)
-        env = Env(config)
-        with caplog.at_level(logging.DEBUG):
-            ok, reason = await env.notifier.send_test()
-        await env.notifier.close()
-        assert not ok and "401" in reason
-        # Ours, not the fake server's own access log, which names the path it served.
-        ours = " ".join(r.getMessage() for r in caplog.records
-                        if r.name.startswith("petkit_local"))
-        assert "401" in ours
-        for text in (reason, ours):
-            assert TOKEN not in text
-            assert config.settings.topic not in text
-    finally:
-        await fake.server.close()
-
-
-async def test_an_unreachable_server_never_raises_and_the_log_is_rate_limited(
-        tmp_path, caplog):
-    port = unused_port()  # nothing listens there
-    config = await _config(tmp_path, server=f"http://127.0.0.1:{port}")
-    env = Env(config)
-    note = Notification(kind=KIND_TOILET, device_id=1, title="t", message="m")
-    with caplog.at_level(logging.WARNING):
-        for _ in range(3):
-            ok, _ = await env.notifier.publish(note, config.settings)
-            assert not ok
-        assert caplog.text.count("ntfy:") == 1
-        env.clock.advance(FAILURE_LOG_INTERVAL)
-        await env.notifier.publish(note, config.settings)
-        assert caplog.text.count("ntfy:") == 2
-        assert "2 more since the last report" in caplog.text
-    await env.notifier.close()
-    assert TOKEN not in caplog.text
-    assert config.settings.topic not in caplog.text
-
-
-async def test_a_failing_publish_does_not_stop_the_worker_or_block_the_feed(tmp_path, ntfy):
-    server = await ntfy.start()
-    config = await _config(tmp_path, server=server)
-    env = Env(config)
-    worker = asyncio.create_task(env.notifier.publish_forever())
-    try:
-        ntfy.status = 500
-        await _event(env, _row("10", "t5", event_id="a"))
-        await ntfy.wait(1)
-        ntfy.status = 200
-        await _event(env, _row("10", "t5", event_id="b"))
-        await ntfy.wait(2)
-    finally:
-        worker.cancel()
-        with pytest.raises(asyncio.CancelledError):
-            await worker
-        await env.notifier.close()
-
-
-async def test_the_queue_is_bounded_and_overflow_is_dropped(tmp_path):
-    config = await _config(tmp_path)
-    env = Env(config)
-    env.notifier = Notifier(config, env.registry, clock=env.clock, queue_size=2)
-    accepted = [env.notifier.submit(Notification(kind=KIND_TOILET, device_id=i,
-                                                 title="t", message="m"))
-                for i in range(4)]
-    assert accepted == [True, True, False, False]
 
 
 async def test_a_bad_hub_entry_does_not_end_the_feed(tmp_path, monkeypatch):
@@ -530,25 +423,15 @@ async def test_a_bad_hub_entry_does_not_end_the_feed(tmp_path, monkeypatch):
 
     monkeypatch.setattr(rules, "from_event", flaky)
     hub = EventHub()
-    config = await _config(tmp_path)
-    notifier = Notifier(config, DeviceRegistry(), hub=hub)
-    published: list[Notification] = []
-
-    async def record(notification, settings):
-        published.append(notification)
-        return True, ""
-
-    monkeypatch.setattr(notifier, "publish", record)
+    notifier = Notifier(await _config(tmp_path), DeviceRegistry(), hub=hub)
+    phone = _recorded(notifier)
     task = asyncio.create_task(notifier.run())
     try:
         await asyncio.sleep(0)
         hub.publish("event", 1, "weird", detail={"event_type": "boom"})
         hub.publish("event", 1, "fine", detail=_row("10", "t5", device_id=1))
-        for _ in range(100):
-            if published:
-                break
-            await asyncio.sleep(0.01)
-        assert [n.kind for n in published] == [KIND_TOILET]
+        await phone.wait(1)
+        assert [n.kind for n in phone.got] == [KIND_TOILET]
         assert not task.done()
     finally:
         task.cancel()
@@ -556,46 +439,93 @@ async def test_a_bad_hub_entry_does_not_end_the_feed(tmp_path, monkeypatch):
             await task
 
 
-# --- settings ---------------------------------------------------------------------
+# --- the kind switches and their file ---------------------------------------------
 
-def test_a_server_url_must_be_plain_http_or_https_without_credentials():
-    assert check_server("https://ntfy.example.org/") == "https://ntfy.example.org"
-    assert check_server("http://10.0.0.2:8080/ntfy") == "http://10.0.0.2:8080/ntfy"
-    for bad in ("ftp://x", "https://user:pw@ntfy.example.org", "https://x?auth=1",
-                "https://x#f", "ntfy.example.org", "https://x:99999", 5):
-        with pytest.raises(SettingsRejected):
-            check_server(bad)
-
-
-async def test_settings_persist_and_a_damaged_file_fails_closed(tmp_path):
-    config = await _config(tmp_path)
-    topic = config.settings.topic
-    assert topic.startswith("petkit-") and len(topic) <= 64
-    assert generate_topic() != generate_topic()
-    again = NtfyConfig(tmp_path / FILENAME)
+async def test_the_switches_persist_and_a_bad_value_changes_nothing(tmp_path):
+    config = NotifyConfig(tmp_path / FILENAME)
+    assert all(config.settings.wants(k) for k in KINDS)  # a first start: all on
+    await config.set_kinds({KIND_OFFLINE: False})
+    await config.set_kinds({KIND_TOILET: False})  # the others are left alone
+    again = NotifyConfig(tmp_path / FILENAME)
     assert again.settings == config.settings
-    if os.name == "posix":
-        assert stat.S_IMODE(os.stat(tmp_path / FILENAME).st_mode) == 0o600
+    assert {k for k in KINDS if not again.settings.wants(k)} == {KIND_OFFLINE, KIND_TOILET}
+    stored = json.loads((tmp_path / FILENAME).read_text())
+    assert stored == {"version": 1, "kinds": dict(config.settings.kinds)}
 
-    (tmp_path / FILENAME).write_text(json.dumps({"enabled": True, "server": "ftp://x",
-                                                 "topic": "t"}))
-    assert NtfyConfig(tmp_path / FILENAME).settings.ready is False
+    for bad in ({"nope": True}, {KIND_TOILET: "yes"}, [KIND_TOILET], None):
+        with pytest.raises(SettingsRejected):
+            await config.set_kinds(bad)
+    assert NotifyConfig(tmp_path / FILENAME).settings == again.settings
+
+    # A damaged file turns every kind back on rather than stopping the add-on.
+    (tmp_path / FILENAME).write_text("{not json")
+    assert all(NotifyConfig(tmp_path / FILENAME).settings.wants(k) for k in KINDS)
 
 
-async def test_enabling_needs_a_server_and_generates_a_topic(tmp_path):
-    config = NtfyConfig(tmp_path / FILENAME)
-    with pytest.raises(SettingsRejected):
-        await config.update({"enabled": True})
-    s = await config.update({"server": "https://n.example", "enabled": True})
-    assert s.topic and s.ready and all(s.wants(k) for k in KINDS)
-    old = s.topic
-    assert (await config.regenerate_topic()).topic != old
-    with pytest.raises(SettingsRejected):
-        await config.update({"topic": "../admin"})
-    with pytest.raises(SettingsRejected):
-        await config.update({"token": "has space"})
-    with pytest.raises(SettingsRejected):
-        await config.update({"kinds": {"nope": True}})
+def _write_legacy(tmp_path: Path, kinds: dict[str, bool]) -> Path:
+    legacy = tmp_path / LEGACY_FILENAME
+    legacy.write_text(json.dumps({"version": 1, "enabled": True,
+                                  "server": "https://ntfy.example.org", "token": TOKEN,
+                                  "topic": TOPIC, "kinds": kinds}, indent=2))
+    return legacy
+
+
+def _nothing_of_ntfy_left(tmp_path: Path) -> None:
+    for path in tmp_path.rglob("*"):
+        if path.is_file():
+            text = path.read_text(errors="replace")
+            for secret in (TOKEN, TOPIC, "ntfy.example.org"):
+                assert secret not in text, (path.name, secret)
+
+
+async def test_an_old_ntfy_json_keeps_its_kinds_and_loses_its_token(tmp_path):
+    legacy = _write_legacy(tmp_path, {KIND_TOILET: False, KIND_FOOD_LOW: False})
+    config = NotifyConfig(tmp_path / FILENAME)
+    assert {k for k in KINDS if not config.settings.wants(k)} == {KIND_TOILET, KIND_FOOD_LOW}
+    # The old file is gone, and the new one holds the switches and nothing else.
+    assert not legacy.exists()
+    stored = json.loads((tmp_path / FILENAME).read_text())
+    assert stored == {"version": 1, "kinds": {k: k not in (KIND_TOILET, KIND_FOOD_LOW)
+                                              for k in KINDS}}
+    _nothing_of_ntfy_left(tmp_path)
+    # Read once: the next start reads the new file alone.
+    assert NotifyConfig(tmp_path / FILENAME).settings == config.settings
+
+
+async def test_a_leftover_ntfy_json_is_deleted_and_the_new_file_wins(tmp_path):
+    """A migration cut short between its two steps, or a downgrade that wrote one again."""
+    config = await _config(tmp_path, **{KIND_ERROR: False})
+    legacy = _write_legacy(tmp_path, {KIND_TOILET: False})
+    again = NotifyConfig(tmp_path / FILENAME)
+    assert again.settings == config.settings
+    assert not legacy.exists()
+    _nothing_of_ntfy_left(tmp_path)
+
+
+async def test_a_damaged_ntfy_json_is_deleted_with_every_kind_on(tmp_path):
+    legacy = tmp_path / LEGACY_FILENAME
+    legacy.write_text('{"token": "' + TOKEN + '", "kinds": ')
+    config = NotifyConfig(tmp_path / FILENAME)
+    assert all(config.settings.wants(k) for k in KINDS)
+    assert not legacy.exists()
+    _nothing_of_ntfy_left(tmp_path)
+
+
+async def test_an_old_ntfy_json_is_kept_until_the_new_file_can_be_written(tmp_path, monkeypatch):
+    """The switches are not lost to a full disk: the migration runs again next start."""
+    import petkit_local.app_api.notify.settings as settings_module
+
+    legacy = _write_legacy(tmp_path, {KIND_TOILET: False})
+
+    def refuse(*_a, **_k):
+        raise OSError("no space left on device")
+
+    monkeypatch.setattr(settings_module, "atomic_write_text", refuse)
+    assert not NotifyConfig(tmp_path / FILENAME).settings.wants(KIND_TOILET)
+    assert legacy.exists() and not (tmp_path / FILENAME).exists()
+    monkeypatch.undo()
+    assert not NotifyConfig(tmp_path / FILENAME).settings.wants(KIND_TOILET)
+    assert not legacy.exists()
 
 
 # --- the panel --------------------------------------------------------------------
@@ -603,8 +533,9 @@ async def test_enabling_needs_a_server_and_generates_a_topic(tmp_path):
 @pytest.fixture
 async def panel(tmp_path):
     registry = DeviceRegistry()
-    app = create_panel_app(registry, None, EventHub(), {})
-    notifier = Notifier(NtfyConfig(tmp_path / FILENAME), registry)
+    auth = AppAuth(tmp_path / AUTH_FILENAME, scrypt_params=FAST)
+    app = create_panel_app(registry, None, EventHub(), {"app_port": 8097}, app_auth=auth)
+    notifier = Notifier(NotifyConfig(tmp_path / FILENAME), registry, app_auth=auth)
     app[NOTIFIER] = notifier
     client = TestClient(TestServer(app))
     await client.start_server()
@@ -613,43 +544,45 @@ async def panel(tmp_path):
     await notifier.close()
 
 
-async def test_the_panel_never_returns_the_token(panel, ntfy):
+async def test_the_switches_are_on_the_phone_app_access_card(panel):
     client, notifier = panel
-    server = await ntfy.start()
-    r = await client.post("/api/app-notify", json={"server": server, "token": TOKEN,
-                                                   "enabled": True,
-                                                   "kinds": {KIND_OFFLINE: False}})
+    body = await (await client.get("/api/app-access")).json()
+    assert [k["kind"] for k in body["notify_kinds"]] == list(KINDS)
+    assert all(k["enabled"] and k["label"] for k in body["notify_kinds"])
+
+    r = await client.post("/api/app-access/notify-kinds", json={"kinds": {KIND_OFFLINE: False}})
     assert r.status == 200
-    text = await r.text()
-    body = json.loads(text)
-    assert TOKEN not in text and body["token_set"] is True
-    assert body["token_masked"].endswith(TOKEN[-4:])
-    assert body["enabled"] is True and body["topic"]
-    assert {k["kind"]: k["enabled"] for k in body["kinds"]}[KIND_OFFLINE] is False
-    assert TOKEN not in await (await client.get("/api/app-notify")).text()
+    body = await r.json()
+    assert body["ok"] is True and "sessions" in body  # the whole card, re-rendered
+    assert {k["kind"]: k["enabled"] for k in body["notify_kinds"]}[KIND_OFFLINE] is False
+    assert not notifier.config.settings.wants(KIND_OFFLINE)
 
-    # Leaving the token out keeps it; the test button uses it.
-    r = await client.post("/api/app-notify", json={"server": server})
-    assert (await r.json())["token_set"] is True
-    r = await client.post("/api/app-notify/test", json={})
-    assert (await r.json()) == {"ok": True, "error": None}
-    assert ntfy.requests[0]["headers"]["Authorization"] == f"Bearer {TOKEN}"
-
-    old = body["topic"]
-    r = await client.post("/api/app-notify/topic", json={})
-    assert (await r.json())["topic"] != old
-
-    r = await client.post("/api/app-notify", json={"server": "https://u:p@x"})
-    assert r.status == 400
-    r = await client.post("/api/app-notify", json={"token": ""})
-    assert (await r.json())["token_set"] is False
+    for bad in ({"kinds": {"nope": True}}, {"kinds": {KIND_TOILET: 1}}, {}):
+        r = await client.post("/api/app-access/notify-kinds", json=bad)
+        assert r.status == 400
+    assert notifier.config.settings.wants(KIND_TOILET)
 
 
-async def test_the_panel_without_a_notifier_says_so():
-    app = create_panel_app(DeviceRegistry(), None, EventHub(), {})
+async def test_the_panel_has_nothing_of_ntfy_left(panel):
+    client, _ = panel
+    for path in ("/api/app-notify", "/api/app-notify/topic", "/api/app-notify/test"):
+        r = await client.post(path, json={"server": "https://ntfy.example.org"})
+        assert r.status == 404, path
+    text = await (await client.get("/api/app-access")).text()
+    assert "ntfy" not in text and "token" not in text and "topic" not in text
+    js_dir = Path(__file__).resolve().parents[1] / "petkit_local" / "web" / "static" / "js"
+    assert not (js_dir / "appnotify.js").exists()
+    assert "ntfy" not in "\n".join(p.read_text(encoding="utf-8") for p in js_dir.glob("*.js"))
+
+
+async def test_the_panel_without_a_notifier_shows_no_switches(tmp_path):
+    auth = AppAuth(tmp_path / AUTH_FILENAME, scrypt_params=FAST)
+    app = create_panel_app(DeviceRegistry(), None, EventHub(), {}, app_auth=auth)
     client = TestClient(TestServer(app))
     await client.start_server()
     try:
-        assert (await client.get("/api/app-notify")).status == 503
+        assert (await (await client.get("/api/app-access")).json())["notify_kinds"] is None
+        r = await client.post("/api/app-access/notify-kinds", json={"kinds": {}})
+        assert r.status == 503
     finally:
         await client.close()

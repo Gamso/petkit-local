@@ -4,15 +4,34 @@ import { help } from './help.js';
 
 // ---------------- Setup → Phone app access ----------------
 // The app API (its own port, `app_api/` on the server) is administered from
-// here and only here: its password, the phones signed in with it, and the
-// reverse proxies whose forwarded addresses it believes. The password is sent
-// once and never read back — the server only says whether one is set.
+// here and only here: its password, the phones signed in with it, which kinds
+// of notification those phones may get, and the reverse proxies whose forwarded
+// addresses it believes. The password is sent once and never read back — the
+// server only says whether one is set.
 const jsonPost = (path, body, method = 'POST') =>
   api(path, {
     method,
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
   });
+
+// The switches for each kind of notification, for every phone and every way it
+// receives them. Absent when notifications are not running.
+function kindSwitches(kinds) {
+  if (!Array.isArray(kinds)) return '';
+  return `<p class="sub" style="margin-top:14px">Notifications${help(
+    'Which kinds of notification the phones get, over their own notification connection or the push endpoint they registered. A kind switched off here reaches no phone; each phone can narrow the rest further in its app, never widen them. Each kind is sent at most a few times per device and hour, so a flapping device cannot flood the phone.',
+  )}</p>
+    <div style="display:flex;flex-wrap:wrap;gap:4px 14px">
+      ${kinds
+        .map(
+          k =>
+            `<label><input type="checkbox" class="appKind" data-kind="${esc(k.kind)}" ${k.enabled ? 'checked' : ''}> ${esc(k.label)}</label>`,
+        )
+        .join('')}
+    </div>
+    <div style="margin-top:6px"><button class="mini" data-action="app-save-kinds">Save notification kinds</button></div>`;
+}
 
 // Whether that phone holds the notification socket: null when it never opened one.
 function notifyCell(n) {
@@ -44,9 +63,9 @@ function render(a) {
     ${
       sessions.length
         ? `<table><thead><tr><th>Name</th><th>Signed in</th><th>Last used</th><th>Notifications${help(
-            'Whether the app holds its own notification connection to this server right now — the way it receives notifications with no ntfy at all. A phone that is offline gets what it missed when it reconnects (up to a few days). Filtered by the kind switches under Phone notifications, then by the kinds chosen in the app.',
+            'Whether the app holds its own notification connection to this server right now — the way it receives notifications with nothing else to run. A phone that is offline gets what it missed when it reconnects (up to a few days). Filtered by the notification switches below, then by the kinds chosen in the app.',
           )}</th><th>Push${help(
-            'Whether the app registered its own push endpoint, and with which server (the endpoint itself is a secret and is never shown). Notifications reach that phone without any ntfy topic set up here, filtered by the kind switches under Phone notifications. Signing the phone out stops them at once.',
+            'Whether the app registered its own push endpoint, and with which server (the endpoint itself is a secret and is never shown). Notifications are pushed there with nothing to set up here, filtered by the notification switches below, then by the kinds chosen in the app. Signing the phone out stops them at once.',
           )}</th><th></th></tr></thead><tbody>${sessions
             .map(
               s => `<tr><td>${esc(s.name)}</td>
@@ -60,6 +79,7 @@ function render(a) {
       <div style="margin-top:8px"><button class="mini" data-action="app-revoke-all">Sign out all phones</button></div>`
         : '<p class="sub mut">None.</p>'
     }
+    ${kindSwitches(a.notify_kinds)}
     <label class="mut" style="display:block;margin-top:14px">Trusted reverse proxies${help(
       'Addresses or CIDRs, comma-separated. Only a request arriving FROM one of these may name the real client in X-Forwarded-For or CF-Connecting-IP — that is the address failed logins are counted against. Leave empty if nothing sits in front of the app port; anyone else sending those headers is ignored.',
     )}</label>
@@ -103,6 +123,14 @@ onAction('app-revoke-all', async () => {
   const r = await api('app-access/sessions', { method: 'DELETE' });
   if (r.error) return toast('Error: ' + r.error);
   toast(`${r.revoked} phone(s) signed out`);
+  render(r);
+});
+onAction('app-save-kinds', async () => {
+  const kinds = {};
+  document.querySelectorAll('.appKind').forEach(c => (kinds[c.dataset.kind] = c.checked));
+  const r = await jsonPost('app-access/notify-kinds', { kinds });
+  if (r.error) return toast('Error: ' + r.error);
+  toast('Notification kinds saved');
   render(r);
 });
 onAction('app-save-proxies', async () => {
