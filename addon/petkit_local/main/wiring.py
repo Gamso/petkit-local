@@ -21,8 +21,8 @@ from petkit_local.app_api.auth import FILENAME as APP_AUTH_FILENAME
 from petkit_local.app_api.auth import AppAuth
 from petkit_local.app_api.notify.notifier import Notifier
 from petkit_local.app_api.notify.channel import FILENAME as NOTIFY_LOG_FILENAME
-from petkit_local.app_api.notify.settings import FILENAME as NTFY_FILENAME
-from petkit_local.app_api.notify.settings import NtfyConfig
+from petkit_local.app_api.notify.settings import FILENAME as NOTIFY_KINDS_FILENAME
+from petkit_local.app_api.notify.settings import NotifyConfig
 from petkit_local.config import Config
 from petkit_local.devices.ble import BLERegistry
 from petkit_local.devices.registry import DeviceRegistry
@@ -292,11 +292,11 @@ def build_services(config: Config, args: argparse.Namespace) -> Services:
     # The phone app API's account: read here, served by its own listener and
     # administered from the panel, which is why both are handed this object.
     app_auth = AppAuth(f"{config.data_dir}/{APP_AUTH_FILENAME}")
-    # Push notifications to the phone: fed by the hub, configured from the panel,
-    # and sent to the endpoints the phones registered with their sessions and
-    # to their notification sockets, which the app API serves from
-    # `notifier.channel`.
-    notifier = Notifier(NtfyConfig(f"{config.data_dir}/{NTFY_FILENAME}"), registry,
+    # Push notifications to the phone: fed by the hub, their kinds switched from
+    # the panel, and sent to the endpoints the phones registered with their
+    # sessions and to their notification sockets, which the app API serves from
+    # `notifier.channel`. Building the config migrates an old `ntfy.json`.
+    notifier = Notifier(NotifyConfig(f"{config.data_dir}/{NOTIFY_KINDS_FILENAME}"), registry,
                         pet_registry=pet_registry, hub=hub, app_auth=app_auth,
                         notify_log=f"{config.data_dir}/{NOTIFY_LOG_FILENAME}")
 

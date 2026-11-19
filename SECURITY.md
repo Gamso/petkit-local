@@ -70,14 +70,7 @@ press something — are:
 | PetKit's cloud (`http/cloud_fetch.py`, the firmware fetch) | only when a panel button asks it to (an accessory secret, a pet's photos, an ESP32 firmware image) | a request signed as the device |
 | Proxy mode's upstream (`http/proxy.py`, `mqtt/upstream.py`) | while proxy mode is on, relaying the device's own traffic | the device's traffic, redacted on the way back |
 | Cloudflare's TURN API (`media/turn.py`) | when a live view is opened and a TURN key is configured | a request for short-lived relay credentials |
-| Your ntfy server (`app_api/notify/`) | while phone notifications are on, once per notification (bounded per device and kind) | `POST {server}/{topic}` with `Authorization: Bearer <token>`, a title, a priority, tags and one sentence: a device's product name, a pet's name, what happened. No device id, no media, no link, no credential of anything else. TLS is verified and redirects are not followed, so the token goes to the configured host or nowhere. |
-| The push endpoint each signed-in phone registered (`app_api/notify/push.py`) | once per notification and phone, through the same bounds | a six-key JSON object (kind, ids, an event code, a time) and no credential; see below for where it may go |
-
-The ntfy access token and the topic are secrets — on ntfy the topic name is the
-subscription. Both live in `/data/ntfy.json` (0600), never in the add-on
-options; neither is written to the log, and the panel shows the token only by
-its last four characters. Give the token a user that may only **write** that one
-topic, and the phone a separate user that may only read it.
+| The push endpoint each signed-in phone registered (`app_api/notify/push.py`) | once per notification and phone, bounded per device and kind | a six-key JSON object (kind, ids, an event code, a time) and no credential; see below for where it may go |
 
 #### Push endpoints the phones register
 
@@ -85,7 +78,7 @@ The one outbound call whose address is NOT set in the panel: a signed-in phone
 may register its own UnifiedPush endpoint (`PUT /app/v1/push`,
 `app_api/push.py`), and petkit-local then POSTs each notification there
 (`app_api/notify/push.py`), once per notification and phone, through the same
-gates and rate limits as the ntfy topic.
+gates and rate limits as the notification socket below.
 
 | What | How it is bounded |
 |---|---|
@@ -107,8 +100,8 @@ password, and the phones signed in with it, must be kept tight.
 
 A phone can also receive notifications with no outbound call at all, over a
 WebSocket it opens to the app API itself (`GET /app/v1/notifications/ws`,
-`app_api/notify/channel.py`) — no ntfy server and no distributor, so nothing of
-the above applies to it. It is one more route of the app API, protected like
+`app_api/notify/channel.py`) — no push service and no distributor, so nothing
+of the above applies to it. It is one more route of the app API, protected like
 every other: the bearer token on the upgrade request, and the socket closed
 within about a second when the session ends (logout, revocation, a password
 change or removal, 90 days unused). One socket per session; a second replaces

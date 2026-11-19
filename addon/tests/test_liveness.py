@@ -2,7 +2,7 @@
 
 Held here: MQTT contact counts as contact (a device on the broker stops polling
 the HTTP heartbeat); a stale device loses `online` AND `mqtt_connected`, since
-that flag picks the transport; the hub gets the `online: False` entry the ntfy
+that flag picks the transport; the hub gets the `online: False` entry the phone
 notifier keys on; Home Assistant is only a listener, and one that fails does
 not stop the sweep.
 """

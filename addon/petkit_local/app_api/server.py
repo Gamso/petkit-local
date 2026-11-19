@@ -14,10 +14,10 @@ authenticated by default. The WebSocket (phase 3) is one too — the bearer
 check runs on the upgrade request like any other — fed by `updates.UpdateFeed`.
 Extension points for the later phases:
 
-* phase 4 (ntfy) — no route here: a publisher fed by the `EventHub`, with its
-  settings in the panel. `PUT`/`DELETE /app/v1/push` let a phone register its
-  own UnifiedPush endpoint with its session, a second sink of that publisher;
-  `GET /app/v1/notifications/ws` is the third, the app's own socket, with
+* phase 4 (notifications) — a notifier fed by the `EventHub`, with its kind
+  switches in the panel. `PUT`/`DELETE /app/v1/push` let a phone register its
+  own UnifiedPush endpoint with its session, one sink of that notifier;
+  `GET /app/v1/notifications/ws` is the other, the app's own socket, with
   `GET`/`PUT /app/v1/notifications` for the kinds a phone wants on every one
   (`notify/channel.py`);
 * phase 5 (live video) — `GET /app/v1/devices/{id}/live` (WebSocket, fMP4) and

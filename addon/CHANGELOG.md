@@ -1,5 +1,23 @@
 # Changelog
 
+## Unreleased
+
+### Before you update
+
+- **Phone notifications no longer go through an ntfy server.** The phone app
+  receives them over its own connection to the app API, or at the UnifiedPush
+  endpoint it registers when it signs in; neither needs anything set up in the
+  panel. The **Phone notifications** card and its server, access token and
+  topic are gone, and nothing in the add-on contacts an ntfy server any more.
+  If you subscribed the ntfy app to that topic, it stops receiving; use the
+  phone app instead. (The ntfy app still works as the phone's UnifiedPush
+  distributor: that is the app's choice, not a panel setting.)
+- **The kind switches moved to Setup → Phone app access**, under the signed-in
+  phones. They apply, as before, to every phone and every way it receives
+  notifications. They are kept in `/data/notify_kinds.json`: at the first
+  start an existing `/data/ntfy.json` gives up its switches to it and is
+  deleted, with the access token it held.
+
 ## 2.3.0 — 2026-11-14
 
 The first release published from this fork's own image, `ghcr.io/gamso/petkit-local`.

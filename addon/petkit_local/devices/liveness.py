@@ -7,7 +7,7 @@ picks the transport, so a stale True swallows every command — and the phone's
 "Device offline" notification has nothing to fire on. All of that holds with
 `--no-ha` as much as with it. HA is one listener among others: it is handed
 the decision through `on_offline` to publish availability, and the event hub
-gets a `connect` entry with `online: False` that the ntfy notifier reads.
+gets a `connect` entry with `online: False` that the phone notifier reads.
 
 `mqtt_connected` comes down three ways (AGENTS.md): the broker's disconnect
 hook, the heartbeat's `?iotStatus=0`, and this watchdog, the last resort.

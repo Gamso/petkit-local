@@ -925,7 +925,7 @@ paths:
     get:
       tags: [notifications]
       operationId: openNotificationSocket
-      summary: Notifications over a WebSocket, with catch-up — no ntfy needed.
+      summary: Notifications over a WebSocket, with catch-up — no push service needed.
       description: |
         A socket for the app to keep open in the background, as a push distributor
         would. It carries notifications only, never device state (that is `/ws`), so it
@@ -958,9 +958,9 @@ paths:
         reused unless the log file itself is lost, which the next `hello` reports as
         a `gap`.
 
-        What is sent is what the ntfy topic and the UnifiedPush endpoints are sent: the
-        server's per-kind switches, one notification per event and the per-device rate
-        limit decide once for all three, then this session's `kinds`
+        What is sent is what the UnifiedPush endpoints are sent: the server's per-kind
+        switches, one notification per event and the per-device rate limit decide once
+        for both, then this session's `kinds`
         (`PUT /notifications`) choose among it. A session is owed catch-up from the
         first time it opens this socket until it ends.
 

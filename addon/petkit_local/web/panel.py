@@ -50,10 +50,8 @@ from aiohttp import web
 from petkit_local.utils.paths import UnsafePathError, safe_join
 
 from petkit_local.web.api.app_access import (
-    api_app_access, api_app_password, api_app_sessions, api_app_trusted_proxies,
-)
-from petkit_local.web.api.app_notify import (
-    api_app_notify, api_app_notify_test, api_app_notify_topic,
+    api_app_access, api_app_notify_kinds, api_app_password, api_app_sessions,
+    api_app_trusted_proxies,
 )
 from petkit_local.web.api.ble import (
     api_ble_accessories, api_ble_command, api_ble_delete, api_ble_import, api_ble_poll,
@@ -275,11 +273,8 @@ def create_panel_app(registry: DeviceRegistry, ble_registry: BLERegistry | None,
     app.router.add_delete("/api/app-access/sessions", api_app_sessions)
     app.router.add_delete("/api/app-access/sessions/{session_id}", api_app_sessions)
     app.router.add_post("/api/app-access/trusted-proxies", api_app_trusted_proxies)
-    # --- phone notifications (ntfy; the notifier is injected by main/lifecycle.py) ---
-    app.router.add_get("/api/app-notify", api_app_notify)
-    app.router.add_post("/api/app-notify", api_app_notify)
-    app.router.add_post("/api/app-notify/topic", api_app_notify_topic)
-    app.router.add_post("/api/app-notify/test", api_app_notify_test)
+    # The phones' notification kinds (the notifier is injected by main/lifecycle.py).
+    app.router.add_post("/api/app-access/notify-kinds", api_app_notify_kinds)
 
     # --- live log (ring buffer poll + WebSocket stream) ---
     app.router.add_get("/api/events", api_events)

@@ -41,8 +41,8 @@ key                  what it holds                               set by
 `go2rtc`             the camera sidecar, for a device's RTSP     main/lifecycle.py
                      URL. Injected so a test that builds a
                      panel need not know about it
-`notifier`           the ntfy `Notifier` (its settings and the   main/lifecycle.py
-                     test button). Injected for the same reason
+`notifier`           the phones' `Notifier` (its kind switches   main/lifecycle.py
+                     and socket status). Injected for the same reason
 ===================  ==========================================  ===============
 
 The injected keys are set BEFORE `runner.setup()`, which freezes the

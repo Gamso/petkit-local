@@ -6,7 +6,7 @@ What is held here, in the order issue 89 asks:
   upgrade;
 * each notification arrives as the push message itself, with a monotonic id;
 * the server's kind switches, the dedupe and the rate limit are decided ONCE
-  for the ntfy topic, the UnifiedPush endpoints and the sockets, and each
+  for the UnifiedPush endpoints and the sockets, and each
   session's own `kinds` — settable without any push endpoint — filter after;
 * catch-up: a phone that comes back with `after` is replayed what it missed
   (its kinds, nothing from before its session), then goes live with nothing
@@ -44,7 +44,7 @@ from petkit_local.app_api.notify.channel import (
 from petkit_local.app_api.notify.notifier import RATE_LIMITS, Notifier
 from petkit_local.app_api.notify.rules import Notification
 from petkit_local.app_api.notify.settings import (
-    FILENAME as NTFY_FILENAME, KIND_ERROR, KIND_FEED_SERVED, KIND_TOILET, KINDS, NtfyConfig,
+    FILENAME as KINDS_FILENAME, KIND_ERROR, KIND_FEED_SERVED, KIND_TOILET, KINDS, NotifyConfig,
 )
 from petkit_local.app_api.push import PushRegistration
 from petkit_local.app_api.server import PREFIX, _close_notify_sockets
@@ -55,7 +55,7 @@ from petkit_local.web.hub import EventHub
 from petkit_local.web.panel import create_panel_app
 from tests.test_app_api import FAST, PASSWORD, START, Clock, Env, _Schemas
 from tests.test_app_api_updates import _next, _quiet
-from tests.test_app_notify import FakeNtfy, _row
+from tests.test_app_notify import _row
 from tests.test_app_push import FakePush
 
 TS = 1_763_150_000
@@ -90,18 +90,17 @@ async def _closed(ws: aiohttp.ClientWebSocketResponse, timeout: float = 3.0) -> 
 
 
 class NotifyEnv(Env):
-    """An app API whose notification channel is the notifier's, with its worker running."""
+    """An app API whose notification channel is the notifier's."""
 
     def __init__(self, tmp: Path, store: Any, pet_registry: Any) -> None:
         super().__init__(tmp, store, pet_registry)
-        self.ntfy_config = NtfyConfig(tmp / NTFY_FILENAME)  # the topic sink: off
-        self.notifier = Notifier(self.ntfy_config, self.registry, clock=Clock(1000.0),
+        self.kinds_config = NotifyConfig(tmp / KINDS_FILENAME)
+        self.notifier = Notifier(self.kinds_config, self.registry, clock=Clock(1000.0),
                                  app_auth=self.auth, notify_log=tmp / LOG_FILENAME)
         self.channel = self.notifier.channel
         self.channel._check_interval = 0.05
         self.channel._save_delay = 0.01
         self.app[NOTIFY_CHANNEL] = self.channel
-        self.worker: asyncio.Task | None = None
         self.token = ""
 
     async def connect(self, token: str | None = None,
@@ -115,11 +114,9 @@ class NotifyEnv(Env):
                                     "detail": {**row, "is_new": True}})
 
     async def settle(self) -> None:
-        for _ in range(100):
+        # Handing over is synchronous; this lets the sockets' writers run.
+        for _ in range(3):
             await asyncio.sleep(0)
-            if self.notifier._queue.empty():
-                break
-        await asyncio.sleep(0)
 
     def session_id(self) -> str:
         return next(s.id for s in self.auth.sessions() if s.name == "Pixel")
@@ -131,12 +128,8 @@ async def nenv(tmp_path: Path, event_store, pet_registry):
     await e.start()
     await e.auth.set_password(PASSWORD)
     e.token = await e.login()
-    e.worker = asyncio.create_task(e.notifier.publish_forever())
     yield e
     await e.client.close()
-    e.worker.cancel()
-    with pytest.raises(asyncio.CancelledError):
-        await e.worker
     await e.notifier.close()
 
 
@@ -232,7 +225,7 @@ async def test_hello_then_each_notification_as_the_push_message_with_an_id(nenv:
 # --- one decision, then each phone's kinds ------------------------------------------
 
 async def test_the_server_switches_and_each_sessions_kinds_filter(nenv: NotifyEnv):
-    await nenv.ntfy_config.update({"kinds": {KIND_FEED_SERVED: False}})
+    await nenv.kinds_config.set_kinds({KIND_FEED_SERVED: False})
     other = await nenv.login(name="errors only")
     r = await nenv.client.put(f"{PREFIX}/notifications",
                               json={"kinds": [KIND_ERROR, KIND_FEED_SERVED, "future_kind"]},
@@ -261,13 +254,11 @@ async def test_the_server_switches_and_each_sessions_kinds_filter(nenv: NotifyEn
     await errors_only.close()
 
 
-async def test_one_decision_for_the_topic_the_endpoints_and_the_sockets(nenv: NotifyEnv,
-                                                                        allow_loopback):
-    ntfy, endpoint = FakeNtfy(), FakePush()
-    server = await ntfy.start()
+async def test_one_decision_for_the_endpoints_and_the_sockets(nenv: NotifyEnv,
+                                                             allow_loopback):
+    endpoint = FakePush()
     await endpoint.start()
     try:
-        await nenv.ntfy_config.update({"server": server, "enabled": True})
         await nenv.auth.set_push(nenv.session_id(), PushRegistration(endpoint.url("/a"), 0.0))
         ws = await nenv.connect()
         await _next(ws, "hello")
@@ -277,24 +268,22 @@ async def test_one_decision_for_the_topic_the_endpoints_and_the_sockets(nenv: No
         for i in range(count + 3):
             await nenv.event(_row("10", "t5", event_id=f"v{i}"))
         await nenv.settle()
-        await ntfy.wait(count)
         await endpoint.wait(count)
         got = [await _next(ws) for _ in range(count)]
         assert await _quiet(ws, 0.2) == []
-        assert len(ntfy.requests) == len(endpoint.to("/a")) == len(got) == count
+        assert len(endpoint.to("/a")) == len(got) == count
         assert [m["id"] for m in got] == list(range(1, count + 1))
         # The very same payload on both channels.
         assert [json.loads(r["body"]) for r in endpoint.to("/a")] == [m["message"] for m in got]
         await ws.close()
     finally:
         await nenv.notifier.push.close()
-        await ntfy.server.close()
         await endpoint.server.close()
 
 
 async def test_a_phone_is_owed_notifications_from_its_first_socket_on(nenv: NotifyEnv):
     note = Notification(kind=KIND_TOILET, device_id=1, title="t", message="m", dedupe_key="k")
-    # No topic, no endpoint, a session that never opened the socket: no sink at all,
+    # No endpoint and a session that never opened the socket: no sink at all,
     # so nothing is classified or counted.
     assert nenv.notifier.submit(note) is False
     assert "k" not in nenv.notifier._seen

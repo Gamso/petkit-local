@@ -22,9 +22,9 @@ authenticate), every request here is authenticated by petkit-local itself.
                     push (a UnifiedPush endpoint), notifications (kinds, and the
                     notification WebSocket)
     openapi.yaml    the contract the app's client is generated from (tested against ROUTES)
-    notify/         notifications, fed by the event hub, to the owner's ntfy server,
-                    the phones' UnifiedPush endpoints and their notification sockets;
-                    settings in `{data_dir}/ntfy.json`, set from the panel
+    notify/         notifications, fed by the event hub, to the phones' UnifiedPush
+                    endpoints and their notification sockets; the kind switches in
+                    `{data_dir}/notify_kinds.json`, set from the panel
 
 Layering: this package reads the same stores, registries and helpers the panel
 reads (`events/`, `ai/pets.py`, `devices/ble/`, `ha/categories.py`,

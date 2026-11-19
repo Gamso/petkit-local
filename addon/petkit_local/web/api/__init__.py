@@ -24,7 +24,8 @@ control:
   (`api_pets_*`).
 * **Phone app access** — the app API's password, signed-in phones and trusted
   proxies (`api_app_*`); the app API itself is `app_api/`, on its own port.
-  Its ntfy push notifications are set beside it (`api_app_notify*`).
+  The kinds of notification the phones get are switched there too
+  (`api_app_notify_kinds`).
 * **Provisioning** — the Web Bluetooth page is pure frontend; it talks to the
   device directly from the browser, so there is no route for it here.
 
@@ -47,8 +48,8 @@ Which module owns what
 `pets.py`       pet CRUD, reference face photos, and the cloud import
 `ble.py`        the BLE accessories: pairing, commands, cloud import
 `patchers.py`   applying and removing the on-device binary patches
-`app_access.py` the app API's password, sessions and trusted proxies
-`app_notify.py` the ntfy notification settings and their test button
+`app_access.py` the app API's password, sessions and trusted proxies, and the
+                notification kind switches
 `logs.py`       the live event ring and WebSocket, the capture browser and the
                 uploaded device logs
 

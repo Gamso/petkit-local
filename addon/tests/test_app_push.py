@@ -10,7 +10,7 @@ What is held here, in the order issue 86 asks:
 * the message a fake UnifiedPush server receives: six stable keys, compact,
   no credential, TTL and Urgency set;
 * the server's kind switches and the phone's own `kinds` both filter, and the
-  dedupe and the rate limit are the ntfy topic's, shared;
+  dedupe and the rate limit count a notification once, however many phones;
 * a slow, failing or vanished endpoint delays nobody else, and one answering
   404/410 three times in a row is unregistered;
 * the endpoint — a capability URL — appears in no log line, no API answer and
@@ -45,8 +45,8 @@ from petkit_local.app_api.notify.push import (
 )
 from petkit_local.app_api.notify.rules import Notification
 from petkit_local.app_api.notify.settings import (
-    FILENAME as NTFY_FILENAME, KIND_ERROR, KIND_FEED_SERVED, KIND_OFFLINE, KIND_TOILET, KINDS,
-    NtfyConfig,
+    FILENAME as KINDS_FILENAME, KIND_ERROR, KIND_FEED_SERVED, KIND_OFFLINE, KIND_TOILET, KINDS,
+    NotifyConfig,
 )
 from petkit_local.app_api.push import PushRegistration, PushRejected, check_endpoint, check_kinds
 from petkit_local.app_api.server import PREFIX
@@ -54,7 +54,7 @@ from petkit_local.devices.registry import DeviceRegistry
 from petkit_local.web.hub import EventHub
 from petkit_local.web.panel import create_panel_app
 from tests.test_app_api import FAST, PASSWORD, Clock, Env, _Schemas
-from tests.test_app_notify import FakeNtfy, _row
+from tests.test_app_notify import _row
 
 SECRET = "upS3cretTopicNobodyMaySee"
 QUERY_SECRET = "t0kenInTheQuery"
@@ -132,16 +132,15 @@ def allow_loopback(monkeypatch):
 
 
 class PushEnv:
-    """An account with a password, a notifier with both sinks, a worker draining it."""
+    """An account with a password and a notifier with both sinks."""
 
     def __init__(self, tmp: Path) -> None:
         self.clock = Clock()
         self.auth = AppAuth(tmp / FILENAME, clock=self.clock, scrypt_params=FAST)
-        self.config = NtfyConfig(tmp / NTFY_FILENAME)  # the topic sink: off
+        self.config = NotifyConfig(tmp / KINDS_FILENAME)
         self.notifier_clock = Clock(1000.0)
         self.notifier = Notifier(self.config, DeviceRegistry(), clock=self.notifier_clock,
                                  app_auth=self.auth)
-        self.worker: asyncio.Task | None = None
 
     async def session(self, name: str, endpoint: str | None = None,
                       kinds: tuple[str, ...] | None = None) -> str:
@@ -154,23 +153,12 @@ class PushEnv:
         await self.notifier.handle({"kind": "event", "device_id": row["device_id"],
                                     "detail": {**row, "is_new": True}})
 
-    def start(self) -> None:
-        self.worker = asyncio.create_task(self.notifier.publish_forever())
-
     async def settle(self) -> None:
-        """Until the queue is empty and every POST it started has finished."""
-        for _ in range(100):
-            await asyncio.sleep(0)
-            if self.notifier._queue.empty():
-                break
+        """Until every POST the notifier started has finished."""
         await asyncio.sleep(0)
         await self.notifier.push.drain()
 
     async def close(self) -> None:
-        if self.worker is not None:
-            self.worker.cancel()
-            with pytest.raises(asyncio.CancelledError):
-                await self.worker
         await self.notifier.close()
 
 
@@ -358,7 +346,6 @@ async def test_whatever_ends_the_session_ends_its_registration(api: Env):
 async def test_the_push_server_receives_six_stable_keys(penv: PushEnv, fake, allow_loopback):
     endpoint = fake.url(f"/{SECRET}") + f"?up=1&k={QUERY_SECRET}%2Fz"
     await penv.session("Pixel", endpoint)
-    penv.start()
     await penv.event(_row("10", "t5", content={"is_shit": 1, "shit_weight": 32},
                           pet_id=2, ts=TS + 0.7))
     await fake.wait(1)
@@ -410,11 +397,10 @@ def test_a_state_condition_sends_its_key_and_never_the_fault_text():
 
 async def test_server_switches_and_each_phones_kinds_both_filter(penv: PushEnv, fake,
                                                                  allow_loopback, tmp_path):
-    await penv.config.update({"kinds": {KIND_FEED_SERVED: False}})
+    await penv.config.set_kinds({KIND_FEED_SERVED: False})
     await penv.session("errors only", fake.url("/a"), (KIND_ERROR, KIND_FEED_SERVED))
     await penv.session("everything", fake.url("/b"))
     await penv.session("not registered")
-    penv.start()
     await penv.event(_row("10", "t5", event_id="v"))       # toilet
     await penv.event(_row("1", "t5", event_id="e"))        # error
     await penv.event(_row("2", "d4h", event_id="f"))       # feed_served: off on the server
@@ -424,42 +410,32 @@ async def test_server_switches_and_each_phones_kinds_both_filter(penv: PushEnv, 
 
 
 async def test_with_no_sink_at_all_nothing_is_classified_or_counted(penv: PushEnv):
-    assert not penv.config.settings.ready
     await penv.session("not registered")
     assert penv.notifier.submit(Notification(kind=KIND_TOILET, device_id=1, title="t",
                                              message="m", dedupe_key="k")) is False
     assert "k" not in penv.notifier._seen  # a later registration still gets it
 
 
-async def test_dedupe_and_rate_limit_are_shared_with_the_ntfy_topic(penv: PushEnv, fake,
-                                                                    allow_loopback):
-    ntfy = FakeNtfy()
-    server = await ntfy.start()
-    try:
-        await penv.config.update({"server": server, "enabled": True})
-        await penv.session("Pixel", fake.url("/a"))
-        penv.start()
-        await penv.event(_row("10", "t5", event_id="same"))
-        await penv.event(_row("10", "t5", event_id="same"))  # a retried report
-        count, _ = RATE_LIMITS[KIND_TOILET]
-        for i in range(count + 3):
-            await penv.event(_row("10", "t5", event_id=f"v{i}"))
-        await penv.settle()
-        await ntfy.wait(count)
-        await asyncio.sleep(0.05)
-        assert len(ntfy.requests) == count
-        assert len(fake.to("/a")) == count
-    finally:
-        await ntfy.server.close()
+async def test_dedupe_and_rate_limit_count_once_for_every_phone(penv: PushEnv, fake,
+                                                                 allow_loopback):
+    await penv.session("Pixel", fake.url("/a"))
+    await penv.session("Tablet", fake.url("/b"))
+    await penv.event(_row("10", "t5", event_id="same"))
+    await penv.event(_row("10", "t5", event_id="same"))  # a retried report
+    count, _ = RATE_LIMITS[KIND_TOILET]
+    for i in range(count + 3):
+        await penv.event(_row("10", "t5", event_id=f"v{i}"))
+    await penv.settle()
+    # Both phones get the same `count`: a second phone does not use up the first's share.
+    assert len(fake.to("/a")) == len(fake.to("/b")) == count
 
 
 async def test_a_phone_revoked_while_a_notification_waited_receives_nothing(
         penv: PushEnv, fake, allow_loopback):
     revoked = await penv.session("revoked", fake.url("/gone"))
     await penv.session("kept", fake.url("/kept"))
-    await penv.event(_row("10", "t5"))  # queued; the worker is not running yet
+    await penv.event(_row("10", "t5"))  # on both lanes; neither POST has run yet
     assert await penv.auth.revoke(revoked)
-    penv.start()
     await fake.wait(1, "/kept")
     await penv.settle()
     assert fake.to("/gone") == []
@@ -480,10 +456,7 @@ async def test_a_registration_dropped_between_fan_out_and_post_is_skipped(
 async def test_a_slow_or_failing_endpoint_holds_up_nobody(penv: PushEnv, fake, allow_loopback,
                                                          caplog, monkeypatch):
     monkeypatch.setattr(sink_module, "LANE_SIZE", 1)  # so /slow overflows at once
-    ntfy = FakeNtfy()
-    server = await ntfy.start()
     try:
-        await penv.config.update({"server": server, "enabled": True})
         fake.hold["/slow"] = asyncio.Event()
         fake.status["/broken"] = 500
         await penv.session("slow", fake.url("/slow"))
@@ -491,17 +464,14 @@ async def test_a_slow_or_failing_endpoint_holds_up_nobody(penv: PushEnv, fake, a
         await penv.session("fine", fake.url("/fine"))
         dead = f"http://127.0.0.1:{unused_port()}/{SECRET}"
         await penv.session("dead", dead)
-        penv.start()
         with caplog.at_level(logging.WARNING):
             for i in range(3):
                 await penv.event(_row("1", "t5", event_id=f"e{i}", device_id=100 + i))
-            # Every other phone, and the ntfy topic, got all three while /slow
-            # still holds its first request open; its lane kept one more.
-            await fake.wait(3, "/fine")
-            await fake.wait(3, "/broken")
-            await ntfy.wait(3)
+                # Every other phone gets each one while /slow still holds its
+                # first request open; its lane keeps one more.
+                await fake.wait(i + 1, "/fine")
+                await fake.wait(i + 1, "/broken")
             assert len(fake.to("/slow")) == 1
-            assert not penv.worker.done()
             fake.hold["/slow"].set()
             await penv.settle()
             assert len(fake.to("/slow")) == 2  # in order, the third dropped
@@ -513,7 +483,8 @@ async def test_a_slow_or_failing_endpoint_holds_up_nobody(penv: PushEnv, fake, a
         # All four are still registered: only "gone" unregisters.
         assert len(penv.auth.push_targets()) == 4
     finally:
-        await ntfy.server.close()
+        for held in fake.hold.values():  # never leave a request open for the teardown
+            held.set()
 
 
 async def test_an_endpoint_gone_three_times_in_a_row_is_unregistered(penv: PushEnv, fake,
