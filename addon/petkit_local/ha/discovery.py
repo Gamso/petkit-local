@@ -63,6 +63,12 @@ class EntityDef:
         option_values: device-side values corresponding 1:1 to `options`, for
             selects whose device enum is not a plain 0-based index (e.g. the
             minute intervals 0/5/10/15...). Empty means "use the option index".
+        readonly_options: a select's device values it can REPORT but must
+            never OFFER, as `{value: label}` — a mode the device enters by
+            itself (a CTW3 on battery). Never in the discovery `options`, so
+            HA neither offers nor accepts it: HA shows such a value as unknown
+            (see `_select_value_template`), the panel and the app API by its
+            label.
         min_value, max_value, step: `number` bounds. Either bound may be None,
             meaning the entity declares none on that side: `ha/commands.py`
             enforces a bound as a hard refusal, so a made-up default would
@@ -86,6 +92,7 @@ class EntityDef:
     entity_category: str = ""
     options: list[str] = field(default_factory=list)
     option_values: list = field(default_factory=list)
+    readonly_options: dict = field(default_factory=dict)
     min_value: float | None = None
     max_value: float | None = None
     step: float = 1
@@ -369,6 +376,12 @@ def _select_value_template(entity: EntityDef, accessor: str) -> str:
     explicit enum, e.g. sandType 1/2/3) or by position. Unmapped values render
     nothing rather than an invalid option, so HA leaves the entity alone
     instead of erroring.
+
+    A `readonly_options` value is the exception: it is a real state, and
+    leaving the entity alone would keep showing the mode the device has just
+    left. It renders `None`, which HA's MQTT select reads as unknown — the one
+    thing a select can show that it does not offer. The entity carrying the
+    real answer is a sensor beside it (`ctw3_battery_mode`).
     """
     values = entity.option_values or list(range(len(entity.options)))
     # strict=False deliberately: a mismatch here must not raise while publishing
@@ -378,9 +391,13 @@ def _select_value_template(entity: EntityDef, accessor: str) -> str:
         f"{_jinja_literal(v)}: {_jinja_literal(label)}"
         for v, label in zip(values, entity.options, strict=False)
     )
+    unknown = ""
+    if entity.readonly_options:
+        shown = ", ".join(_jinja_literal(v) for v in entity.readonly_options)
+        unknown = "{% elif v in [" + shown + "] %}None"
     return ("{% set v = " + accessor + " | default(none) %}"
             "{% set m = {" + mapping + "} %}"
-            "{% if v in m %}{{ m[v] }}{% endif %}")
+            "{% if v in m %}{{ m[v] }}" + unknown + "{% endif %}")
 
 
 def _enum_sensor_value_template(entity: EntityDef, accessor: str) -> str:

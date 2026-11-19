@@ -1812,7 +1812,9 @@ BLE_OPCODES: dict[int, BleOpcode] = {
         grade=INFERRED, send=BLE_SEND_WRITE,
         source="aavdberg/ha-petkit; PetKit app CTW3HomePresenter.changeDeviceMode",
         note="Answered with a bare `01` on the same cmd. A CTW3 adds a suspend "
-             "byte the W5 family does not have."),
+             "byte the W5 family does not have: `[power, suspend, mode]`, and "
+             "PetKit's Pause button restates the current mode, 3 on battery, "
+             "with suspend flipped (`changePauseState`). See `CTW3_MODES`."),
     221: BleOpcode(
         name="set_config", label="Write settings", direction=BLE_TO_ACCESSORY,
         grade=INFERRED, send=BLE_SEND_WRITE,
@@ -1871,6 +1873,84 @@ def ble_opcode_label(cmd: object) -> str:
     """`cmd 252 (Unknown (seen on link-up))`-style text for a log line."""
     op = BLE_OPCODES.get(cmd) if isinstance(cmd, int) else None
     return f"cmd {cmd} ({op.label})" if op else f"cmd {cmd}"
+
+
+@dataclass(frozen=True)
+class FountainMode:
+    """One value of a fountain's status `mode` byte, graded like an opcode.
+
+    Attributes:
+        key: The stable key: Home Assistant's select option, the app API's
+            `display`. User state -- an automation matches on it.
+        label: PetKit's own name for it, in its English UI.
+        grade: Evidence grade, from `GRADES`.
+        selectable: Whether a cmd-220 write may ask for it. A mode the
+            fountain enters by itself is shown, never offered.
+        source: Where the meaning comes from, verbatim.
+        note: Caveat, or what is still unknown.
+    """
+
+    key: str
+    label: str
+    grade: str
+    selectable: bool
+    source: str = ""
+    note: str = ""
+
+
+#: A CTW3's status byte 2 (`devices/ble/ctw3.py`), and cmd 220's third byte.
+#:
+#: PetKit's app (13.8.1) draws four buttons for a CTW3 -- Pause, Continuous,
+#: Intermittent, Battery mode -- and `CTW3HomeActivity.onClick` wires them so:
+#: Continuous is `CTW3HomePresenter.changeDeviceMode(1)` and Intermittent
+#: `changeDeviceMode(2)`, both skipped while `CTW3Record.getMode() == 3`; Battery
+#: mode sends NO mode at all -- it opens `CTW3BatteryModeWindow` and writes the
+#: battery working/sleep times with a cmd 221 (`changeBatteryModeTime` ->
+#: `CTW3DataConvertor.changeBatteryMode`). So 3 is a mode the fountain reports
+#: and the app can never select: the fountain's own, on battery.
+#:
+#: Anything else is not a mode and is not stored (the decoder drops it, and the
+#: last real mode stands). 0 is the case that rule was written for: a CTW3 is
+#: suspected of reporting it in the sleep half of its smart cycle
+#: (aavdberg/ha-petkit issue #57, which asked for the frame and never got one).
+#: That suspicion was once stretched to cover every value outside 1/2, 3
+#: included; no capture here or there shows a smart cycle reporting 3 -- the one
+#: real CTW3 status frame we hold (issue #4) reads 1.
+CTW3_MODES: dict[int, FountainMode] = {
+    1: FountainMode(
+        key="normal", label="Continuous", grade=CONFIRMED, selectable=True,
+        source="issue #4 (a real cmd-230 frame reads 1); PetKit app "
+               "CTW3HomeActivity.onClick ll_persistent_icon -> changeDeviceMode(1)",
+        note="The pump runs without a break."),
+    2: FountainMode(
+        key="smart", label="Intermittent", grade=INFERRED, selectable=True,
+        source="PetKit app CTW3HomeActivity.onClick ll_induction_icon -> "
+               "changeDeviceMode(2); aavdberg/ha-petkit (a production log)",
+        note="Runs `smartWorkingTime`, rests `smartSleepTime` (minutes). "
+             "`smart` is the key and stays: PetKit calls this Intermittent."),
+    3: FountainMode(
+        key="battery", label="Battery mode", grade=INFERRED, selectable=False,
+        source="PetKit app CTW3HomeActivity.onClick (modes 1 and 2 skipped "
+               "while getMode() == 3; ll_customize_icon sends no mode), "
+               "CTW3HomePresenter.changeBatteryModeTime",
+        note="Entered by the fountain itself, unplugged; runs `energyInterval`, "
+             "rests `sleepTime` (seconds). Not yet seen on our side: unplugging "
+             "one and reading its status would confirm it."),
+}
+
+#: The mode a CTW3 reports on battery, in which PetKit's app refuses to switch
+#: it to another.
+CTW3_BATTERY_MODE = 3
+
+#: The battery working and sleep times, `(min, max)` in SECONDS, each a multiple
+#: of its minimum. PetKit's two `CTW3BatteryModeWindow` constructors pass
+#: `(15, 300, 60, 10800)` (`CTW3HomeActivity.initWindow`,
+#: `CTW3PowerManagementActivity`), and its seek bars step by the minimum
+#: (`progress * min + min`). Graded with the app, not with the fountain: what
+#: the firmware does with a value outside them is unknown.
+CTW3_BATTERY_WORK_RANGE = (15, 300)
+CTW3_BATTERY_SLEEP_RANGE = (60, 10800)
+CTW3_BATTERY_RANGES_GRADE = INFERRED
 
 
 # --- derived views ---------------------------------------------------------

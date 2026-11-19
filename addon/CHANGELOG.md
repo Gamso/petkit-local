@@ -33,6 +33,29 @@
   `type: 24`, and nothing the fountain sends is known to tell the two apart,
   so the owner's choice is the only way in. The panel's
   `/api/ble/{id}/model` takes `{"generation": 2}` or `null`, like a device's.
+- **An unplugged CTW3 shows that it is on battery** (issue #116). It reports
+  mode 3 then, which was thrown away as "the smart cycle's sleep half", so the
+  fountain went on showing the mode it had on mains. PetKit's app 13.8.1 reads
+  3 as the battery mode it cannot select, and no capture shows a smart cycle
+  reporting it (graded `inferred` in `events/codes.py`). Now the **Flow Mode**
+  select shows *battery* in the panel and the phone app and goes unknown in
+  Home Assistant, which cannot show a value it does not offer, and a new
+  read-only **Battery Mode** binary sensor (`ctw3_battery_mode`) turns on.
+  Normal and Smart are refused while it lasts, as PetKit's app refuses them:
+  nothing is sent, and the app API answers 422 `on_battery`. Pause
+  (`ctw3_working`) still works on battery, restating mode 3 as PetKit's own
+  Pause does. The panel's select no longer falls back to its first option for
+  a value it does not offer.
+
+### Fixed
+
+- **A CTW3's battery working and sleep times take PetKit's ranges**: 15–300 s
+  and 60–10800 s, in steps of 15 and 60, as PetKit's battery-mode window
+  offers them. They were 15–3600 and 60–7200. An accessory's number write —
+  from Home Assistant, the panel or the phone app — is now refused outside its
+  bounds rather than sent; past 65535 it used to fail mid-request. The CTW3's
+  smart-mode times are named **Intermittent Run Time** and **Intermittent
+  Rest Time**, PetKit's word for the mode (entity keys unchanged).
 
 ## 2.3.0 — 2026-11-14
 

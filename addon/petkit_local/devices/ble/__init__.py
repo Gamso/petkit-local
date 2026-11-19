@@ -22,8 +22,8 @@ from petkit_local.devices.base import Refused
 from petkit_local.devices.ble.ctw3 import (
     _CTW3_BYTE_FIELDS, _CTW3_CONFIG_FIELDS, _CTW3_INT_FIELDS, _CTW3_MIN_STATUS_LEN,
     _CTW3_MODE_FIELDS, _ctw3_command_for, _decode_ctw3_status, CTW3_CONFIG_LEN,
-    CTW3_CONFIG_OFFSET, CTW3_WRITABLE, ctw3_config_payload, ctw3_mode_payload,
-    decode_ctw3_config, parse_ctw3_ble_response,
+    CTW3_CONFIG_OFFSET, CTW3_WRITABLE, ON_BATTERY_REASON, OnBattery, ctw3_config_payload,
+    ctw3_mode_payload, decode_ctw3_config, parse_ctw3_ble_response,
 )
 from petkit_local.devices.ble.framing import (
     _ble_decode_data, _ble_unframe, _iter_ble_frames, BLE_FRAME_HEADER,
@@ -135,6 +135,8 @@ __all__ = [
     "FOUNTAIN_MODES",
     "K3_DEFAULT_CONFIG",
     "K3_SETTING_KEYS",
+    "ON_BATTERY_REASON",
+    "OnBattery",
     "Refused",
     "W5_CONFIG_LEN",
     "W5_CONFIG_LOCK_OFFSET",

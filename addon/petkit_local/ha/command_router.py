@@ -19,7 +19,7 @@ import logging
 from typing import TYPE_CHECKING, Any, AsyncIterable, Iterable
 
 from petkit_local.devices.ble import ble_command_for
-from petkit_local.ha.commands import Refused, handle_ha_command
+from petkit_local.ha.commands import Refused, check_number_bounds, handle_ha_command
 from petkit_local.utils.coerce import to_int
 from petkit_local.utils.logtext import excerpt
 
@@ -69,6 +69,23 @@ def ble_command_value(entity: Any, payload: str) -> int | None:
             return to_int(values[index], None)
         return None
     return to_int(text, None)
+
+
+def build_ble_command(ble_dev: BLEDevice, entity: Any, value: int) -> tuple[int, bytes]:
+    """`(cmd, payload)` for one accessory entity, its declared bounds checked first.
+
+    The one way an entity write becomes a frame — Home Assistant's, the panel's
+    and the phone app's — so all three refuse the same values: a number outside
+    its `min_value`/`max_value` (a CTW3's battery times are PetKit's own
+    ranges), then whatever `ble_command_for` refuses (a block never reported, a
+    CTW3 mode write on battery).
+
+    Raises:
+        Refused: as above; nothing is sent.
+    """
+    if entity.component == "number":
+        check_number_bounds(entity, value)
+    return ble_command_for(ble_dev, entity.key, value)
 
 
 def reflect_ble_write(ble_dev: BLEDevice, entity: Any, value: int) -> None:
@@ -221,7 +238,7 @@ class CommandRouter:
             return
 
         try:
-            cmd, frame_payload = ble_command_for(ble_dev, entity.key, value)
+            cmd, frame_payload = build_ble_command(ble_dev, entity, value)
         except Refused as exc:
             log.warning("Refused %s on accessory %d: %s", entity.key, ble_id, exc)
             return

@@ -120,6 +120,11 @@ failed to resume heartbeats after one restart with it disabled.
 Both generations of the EverSweet Max share the codename CTW3, and nothing either one sends tells
 them apart: say which one yours is in the **Model** card of its panel on the Devices tab. It is
 shown as an EverSweet Max Cordless until you do.
+Unplugged, a CTW3 runs its own battery mode: its **Flow Mode** then reads *battery* in the panel
+and the phone app (unknown in Home Assistant, whose select can only show what it offers) and
+**Battery Mode** turns on. Normal and Smart — PetKit's Continuous and Intermittent — are refused
+until it is plugged in again, as PetKit's app refuses them; Pause and the battery working and sleep
+times can still be set. Read from PetKit's app, not yet seen on an unplugged fountain here.
 
 **Should work.** Same firmware family, and the protocol was verified against their firmware — but
 nobody has run one.

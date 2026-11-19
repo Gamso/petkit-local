@@ -6,6 +6,9 @@ Which kinds exist, how their frames decode and which keys can be written back
 is `devices/ble/`; only the HA-facing declarations are here.
 """
 from petkit_local.devices.ble import W5_PROTOCOL
+from petkit_local.events.codes import (
+    CTW3_BATTERY_SLEEP_RANGE, CTW3_BATTERY_WORK_RANGE, CTW3_MODES,
+)
 from petkit_local.ha.discovery import EntityDef
 
 K3_ENTITIES = [
@@ -83,6 +86,12 @@ W5_ENTITIES = [
 #: `electricStatus` value meaning mains power rather than the battery.
 CTW3_ELECTRIC_AC = 2
 
+#: The modes the `ctw3_mode` select offers, and the one it only shows. Out of
+#: `codes.CTW3_MODES`, so the stable keys (`normal`, `smart`, `battery`) and
+#: which of them may be written are decided in one place.
+_CTW3_SELECTABLE = {v: m.key for v, m in CTW3_MODES.items() if m.selectable}
+_CTW3_SHOWN_ONLY = {v: m.key for v, m in CTW3_MODES.items() if not m.selectable}
+
 
 #: CTW3 (EverSweet Max Cordless). Named after the fields the decoder produces,
 #: which are PetKit's own — see the block above `_decode_ctw3_status`.
@@ -102,14 +111,25 @@ CTW3_ENTITIES = [
     # key to the frame.
     EntityDef(component="switch", key="ctw3_power", name="Power",
               value_path="states.powerStatus", icon="mdi:power"),
+    # PetKit's Pause button, the right way up: on is running, off is paused
+    # (`suspendStatus` is inverted against its name). Allowed on battery, as
+    # PetKit's is.
     EntityDef(component="switch", key="ctw3_working", name="Working",
               value_path="states.suspendStatus", icon="mdi:play-pause"),
-    # PetKit's own two names for these, and both other implementations use
-    # them. They were "continuous"/"intermittent" here, which describes what
-    # the pump does but matches nothing a user can compare against.
+    # `normal` and `smart` are keys, kept because they are user state: PetKit's
+    # app calls them Continuous and Intermittent (`codes.CTW3_MODES`). Battery
+    # (3) is the fountain's own mode, never offered — a write while it reports
+    # it is refused (`ctw3.OnBattery`) — and HA shows it as unknown, with
+    # `ctw3_battery_mode` saying why.
     EntityDef(component="select", key="ctw3_mode", name="Flow Mode",
               value_path="states.mode", icon="mdi:water-pump",
-              options=["normal", "smart"], option_values=[1, 2]),
+              options=list(_CTW3_SELECTABLE.values()),
+              option_values=list(_CTW3_SELECTABLE),
+              readonly_options=_CTW3_SHOWN_ONLY),
+    # Mode 3, as the yes/no a select cannot show. Read-only: the fountain
+    # enters it unplugged and leaves it plugged in, and nothing selects it.
+    EntityDef(component="binary_sensor", key="ctw3_battery_mode", name="Battery Mode",
+              value_path="states.batteryMode", icon="mdi:battery-clock"),
     EntityDef(component="switch", key="ctw3_light", name="Light",
               value_path="states.lightSwitch", icon="mdi:lightbulb"),
     EntityDef(component="select", key="ctw3_brightness", name="Brightness",
@@ -120,16 +140,22 @@ CTW3_ENTITIES = [
     EntityDef(component="switch", key="ctw3_child_lock", name="Child Lock",
               value_path="states.childLock", icon="mdi:lock",
               entity_category="config"),
+    # The battery mode's run and rest, in SECONDS, bounded and stepped exactly
+    # as PetKit's `CTW3BatteryModeWindow` offers them (`codes`). They were
+    # 15-3600 and 60-7200 here, which matched nothing.
     EntityDef(component="number", key="ctw3_energy_interval", name="Battery Work Time",
               value_path="states.energyInterval", unit="s", icon="mdi:timer-outline",
-              min_value=15, max_value=3600, step=15, entity_category="config"),
+              min_value=CTW3_BATTERY_WORK_RANGE[0], max_value=CTW3_BATTERY_WORK_RANGE[1],
+              step=CTW3_BATTERY_WORK_RANGE[0], entity_category="config"),
     EntityDef(component="number", key="ctw3_sleep_time", name="Battery Sleep Time",
               value_path="states.sleepTime", unit="s", icon="mdi:timer-sand",
-              min_value=60, max_value=7200, step=60, entity_category="config"),
-    EntityDef(component="number", key="ctw3_smart_work", name="Smart Mode Run Time",
+              min_value=CTW3_BATTERY_SLEEP_RANGE[0], max_value=CTW3_BATTERY_SLEEP_RANGE[1],
+              step=CTW3_BATTERY_SLEEP_RANGE[0], entity_category="config"),
+    # Mode 2's run and rest, in MINUTES. PetKit calls the mode Intermittent.
+    EntityDef(component="number", key="ctw3_smart_work", name="Intermittent Run Time",
               value_path="states.smartWorkingTime", unit="min", icon="mdi:timer-outline",
               min_value=1, max_value=60, step=1, entity_category="config"),
-    EntityDef(component="number", key="ctw3_smart_sleep", name="Smart Mode Rest Time",
+    EntityDef(component="number", key="ctw3_smart_sleep", name="Intermittent Rest Time",
               value_path="states.smartSleepTime", unit="min", icon="mdi:timer-sand",
               min_value=1, max_value=60, step=1, entity_category="config"),
     EntityDef(component="button", key="ctw3_reset_filter", name="Reset Filter",

@@ -187,6 +187,10 @@ def _display(entity: EntityDef, value: Any) -> str | None:
 
     `option_values` when the entity has them, the option's index otherwise —
     the same fallback `ha/discovery.py` and the panel's `entities.js` use.
+
+    A value the select only shows (`readonly_options`, a CTW3's `battery`) has
+    a label too, and it is NOT among `options`: that absence is how the app
+    tells a state it can show from a choice it can offer.
     """
     if not entity.options or value is None:
         return None
@@ -194,6 +198,9 @@ def _display(entity: EntityDef, value: Any) -> str | None:
     for i, candidate in enumerate(values):
         if i < len(entity.options) and (candidate == value or str(candidate) == str(value)):
             return entity.options[i]
+    for candidate, label in entity.readonly_options.items():
+        if candidate == value or str(candidate) == str(value):
+            return label
     return None
 
 

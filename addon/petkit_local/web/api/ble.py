@@ -16,9 +16,9 @@ import aiohttp
 from aiohttp import web
 
 from petkit_local.devices.ble import (
-    BLE_TYPES, CLOUD_BINDING_ENDPOINTS, ble_command_for, cloud_bindings, normalize_mac,
-    relay_blocker,
+    BLE_TYPES, CLOUD_BINDING_ENDPOINTS, cloud_bindings, normalize_mac, relay_blocker,
 )
+from petkit_local.ha.command_router import build_ble_command
 from petkit_local.ha.commands import PROPERTY_SET_SUFFIX, Refused, make_mqtt_property_set
 from petkit_local.ha.entities.ble import get_ble_entities
 from petkit_local.http.cloud_fetch import CLOUD_TIMEOUT, CloudRefused, fetch_as_device
@@ -123,6 +123,7 @@ def _ble_view(dev: BLEDevice, reg: DeviceRegistry | None = None) -> dict[str, An
             "component": e.component, "key": e.key, "name": e.name,
             "value_path": e.value_path, "unit": e.unit, "device_class": e.device_class,
             "icon": e.icon, "options": e.options, "option_values": e.option_values,
+            "readonly_options": e.readonly_options,
             "settable": e.is_settable,
             "entity_category": e.entity_category,
             "min": e.min_value, "max": e.max_value, "step": e.step,
@@ -505,7 +506,7 @@ async def api_ble_command(request: web.Request) -> web.Response:
         return web.json_response({"error": "MQTT bridge is not running"}, status=409)
 
     try:
-        cmd, payload = ble_command_for(dev, entity.key, value)
+        cmd, payload = build_ble_command(dev, entity, value)
     except Refused as exc:
         return web.json_response({"error": str(exc)}, status=400)
 

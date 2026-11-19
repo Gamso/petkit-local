@@ -14,8 +14,9 @@ from typing import TYPE_CHECKING, Any
 from petkit_local.devices.base import Refused
 from petkit_local.devices.ble.framing import (
     CMD_DEVICE_STATUS, CMD_GET_CONFIG, CMD_GET_STATE, CMD_SET_CONFIG, CMD_SET_MODE,
-    FOUNTAIN_MODES, _iter_ble_frames,
+    _iter_ble_frames,
 )
+from petkit_local.events.codes import CTW3_BATTERY_MODE, CTW3_MODES
 
 if TYPE_CHECKING:
     from petkit_local.devices.ble.registry import BLEDevice
@@ -46,7 +47,8 @@ _CTW3_BYTE_FIELDS = {
     "powerStatus": 0,
     # Inverted against the English: 0 is paused/sleeping, 1 is working.
     "suspendStatus": 1,
-    "mode": 2,                  # 1 normal (continuous), 2 smart (cycling)
+    # 1 normal (continuous), 2 smart (intermittent), 3 battery: `codes.CTW3_MODES`.
+    "mode": 2,
     # NOT a boolean. 2 is the AC path — the fountain is on mains.
     "electricStatus": 3,
     "noDisturbingSwitch": 4,
@@ -135,12 +137,24 @@ def _decode_ctw3_status(data: bytes) -> dict[str, dict[str, int]]:
     for name, (off, width) in _CTW3_INT_FIELDS.items():
         states[name] = int.from_bytes(data[off:off + width], "big")
 
-    # A mode outside 1/2 is the smart cycle's sleep half, not a new mode. Drop
-    # the key rather than store it: the caller merges, so absence keeps what was
-    # there, and what was there is the last mode the fountain really had.
-    if states.get("mode") not in FOUNTAIN_MODES:
-        log.debug("CTW3 reported mode=%s - keeping the last real one",
-                  states.get("mode"))
+    # 1 and 2 are the two modes PetKit's app selects, and 3 is the one the
+    # fountain enters by itself on battery (`codes.CTW3_MODES`, graded there).
+    # 3 used to be dropped here with everything else outside 1/2, as "the smart
+    # cycle's sleep half" -- which no capture ever showed: that suspicion is
+    # about 0 (aavdberg/ha-petkit #57), and the one real frame we hold reads 1.
+    # Dropping 3 left an unplugged fountain showing the mode it had on mains.
+    #
+    # Anything else is still dropped rather than stored: the caller merges, so
+    # absence keeps the last real mode, and `ctw3_mode_payload` restates that
+    # mode on every power and pause write -- a latched 0 would send one.
+    mode = states.get("mode")
+    if mode in CTW3_MODES:
+        # Its own field, so an entity can ask a yes/no question of it (a binary
+        # sensor tests for truth, not for a value). Set whenever `mode` is, so
+        # the two never disagree.
+        states["batteryMode"] = int(mode == CTW3_BATTERY_MODE)
+    else:
+        log.debug("CTW3 reported mode=%s - keeping the last real one", mode)
         states.pop("mode", None)
 
     # `filterPercent` is the one field a human treats as a consumable rather
@@ -254,11 +268,44 @@ CTW3_WRITABLE = (frozenset(_CTW3_MODE_FIELDS) | frozenset(_CTW3_CONFIG_FIELDS)
                  | {"ctw3_reset_filter"})
 
 
+class OnBattery(Refused):
+    """A mode write to a CTW3 that reports it is on battery.
+
+    Its own class so the app API can answer with a code a phone can act on
+    (`on_battery`) rather than a sentence it can only display.
+    """
+
+    code = "on_battery"
+
+
+#: What a refused mode write says, wherever it surfaces: the HA log, the
+#: panel's toast, the app API's `message`.
+ON_BATTERY_REASON = ("the fountain is on battery and runs its battery mode until it "
+                     "is plugged in again; its battery working and sleep times are "
+                     "what can be set meanwhile")
+
+
 def _ctw3_command_for(ble_dev: BLEDevice, key: str, value: int) -> tuple[int, bytes]:
-    """`(cmd, payload)` for one CTW3 entity. See `ble_command_for`."""
+    """`(cmd, payload)` for one CTW3 entity. See `ble_command_for`.
+
+    Raises:
+        OnBattery: a mode write while the fountain reports mode 3. PetKit's app
+            skips both of its mode buttons then (`CTW3HomeActivity.onClick`,
+            13.8.1), and so does this: nothing is sent.
+        Refused: a mode that cannot be selected, or a block never reported.
+    """
     states = dict(ble_dev.state.get("states") or {})
 
     if key in _CTW3_MODE_FIELDS:
+        if key == "ctw3_mode":
+            mode = CTW3_MODES.get(value)
+            if mode is None or not mode.selectable:
+                raise Refused(f"mode {value} is not one a CTW3 can be switched to")
+            if states.get("mode") == CTW3_BATTERY_MODE:
+                raise OnBattery(ON_BATTERY_REASON)
+        # Power and pause are NOT refused on battery: PetKit's Pause button
+        # restates the mode the fountain reports, 3 included
+        # (`CTW3HomePresenter.changePauseState`), and so does this frame.
         states[_CTW3_MODE_FIELDS[key]] = value
         if key == "ctw3_mode":
             # Picking a mode means "run in it": PetKit's app sends power 1 and

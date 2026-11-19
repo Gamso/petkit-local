@@ -123,7 +123,12 @@ class Refused(ValueError):
     writes too (`devices/ble/`), and `devices/` cannot import `ha/`. Two
     classes of one name reaching the same `except` in `web/api/` is the
     trap this avoids.
+
+    `code` is the app API's `error` for it. A subclass that a phone should be
+    able to tell apart from the rest overrides it (`devices/ble/ctw3.OnBattery`).
     """
+
+    code = "refused"
 
 
 def encode_multi_range(key: str, value: Any) -> str:
