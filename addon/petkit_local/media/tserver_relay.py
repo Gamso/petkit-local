@@ -31,6 +31,16 @@ device, and this relay is the only thing that ever dials the device:
   and the FLV after it, byte for byte, so go2rtc sees the stream it read when
   it dialled the device itself. The request the device gets is the one
   go2rtc's Go client sends (`device_request`).
+* **A stream that stops is resumed, not ended** (issue #128). The camera
+  pipeline restarts every ~82 s and tserver never re-attaches an open
+  connection to it, while a new connection works. So when the device sends
+  nothing for `STALL_SECONDS` the relay resets it, reopens it with the same
+  retries, and splices the new FLV onto the one go2rtc is reading
+  (`FlvSplicer`): the new file header goes, and every tag's timestamp is
+  shifted to carry on from the last one sent. The first connection still
+  passes through untouched; only a reopened one is rewritten. A reopen that
+  fails, a stream the parser cannot follow, or more than `MAX_RESUMES` in
+  `RESUME_WINDOW` ends the stream as before.
 
 The relay listens on loopback only and dials nothing but a known device of a
 relayed model, at the IPv4 address it reported and the stream path we chose —
@@ -46,6 +56,7 @@ import re
 import socket
 import struct
 import sys
+from collections import deque
 from collections.abc import Iterator
 from typing import TYPE_CHECKING, Any
 
@@ -77,6 +88,23 @@ CLAIM_WAIT = 10.0
 MAX_HEADER_BYTES = 16 * 1024
 #: go2rtc's request to us: one line and a few Go defaults.
 REQUEST_TIMEOUT = 5.0
+#: Silence from the device, while go2rtc is still reading, after which the
+#: connection is reset and reopened (issue #128). Measured 2026-11-21 on a
+#: Dual-Hopper 2 through this relay: ~27 fps for 5-20 s, then nothing for over
+#: a minute with the device's Send-Q at 0 — tserver had nothing to send. Its
+#: camera pipeline (`media`) restarts every ~82 s and tserver never re-attaches
+#: an open connection afterwards; a new connection works. At 27 fps three
+#: seconds is ~80 frames missing, never jitter. Before a connection's first
+#: FLV tag the allowance is `header_timeout` instead (a first keyframe may
+#: take a GOP).
+STALL_SECONDS = 3.0
+#: Resumes allowed in `RESUME_WINDOW` seconds; one more ends the stream, so a
+#: dead camera is not reopened forever. A healthy one needs one per ~82 s.
+MAX_RESUMES = 3
+RESUME_WINDOW = 60.0
+#: Added after the last timestamp sent to place the first tag of a reopened
+#: connection: one frame at 25 fps (~27 was measured).
+FRAME_INTERVAL_MS = 40
 _CHUNK = 64 * 1024
 _TARGET = re.compile(r"/([0-9]{1,20})")
 
@@ -224,6 +252,164 @@ async def _probe_once(target: tuple[str, int], path: str, signature: bytes,
         sock.close()
 
 
+#: FLV framing (Adobe FLV spec 10.1, annex E): a 9-byte file header (`FLV`,
+#: version, flags, u32 header size), then per tag a u32 PreviousTagSize and an
+#: 11-byte header — type, u24 data size, u24 timestamp, u8 timestamp bits
+#: 31-24, u24 stream id — then the data. go2rtc reads it the same way: 4+11
+#: bytes, then the data (go2rtc 1.9.14 `pkg/flv/producer.go::readPacket`).
+_FLV_HEADER = 9
+_TAG_PREFIX = 4 + 11
+_TAG_TYPES = frozenset({8, 9, 18})  # audio, video, script
+#: A file header longer than this is not tserver's.
+_MAX_HEADER_EXTRA = 64 * 1024
+_HEADER, _SKIP, _PREFIX, _DATA = range(4)
+
+
+class FlvSplicer:
+    """Follows the FLV the relay forwards, and splices a reopened one onto it.
+
+    Fed every body byte the device sends. On the first connection `feed`
+    returns its input unchanged — the same object — and only walks the tags,
+    so it knows where they begin and the last timestamp sent. After `restart`
+    (a new connection to the device) it rewrites: the new file header is
+    dropped, the new `PreviousTagSize0` becomes the size of the last tag
+    go2rtc got (or nothing, if that size already went out), and each tag's
+    timestamp gets `offset` added — `last_ts + FRAME_INTERVAL_MS` minus the
+    first new tag's — so time keeps increasing across the seam. Script tags
+    and sequence headers are rebased and passed like any other: go2rtc 1.9.14
+    reads codecs only while probing, and in `Producer.Start` skips a repeated
+    AVC sequence header, AAC header or script tag (`continue` / no case), so
+    a repeat is harmless; and a stall during go2rtc's probe still needs them.
+
+    Never raises. Bytes it cannot follow set `broken`: on the first connection
+    they still pass (only a resume becomes impossible); on a reopened one
+    nothing more is returned, and the relay ends the stream.
+    """
+
+    def __init__(self, frame_ms: int = FRAME_INTERVAL_MS) -> None:
+        self.frame_ms = frame_ms
+        #: Why the stream could not be followed; None while it can.
+        self.broken: str | None = None
+        #: The highest timestamp go2rtc has been sent, in ms; None before a tag.
+        self.last_ts: int | None = None
+        #: This reopened connection's shift, in ms; None before its first tag
+        #: (and always on the first connection).
+        self.offset: int | None = None
+        #: Tags read on the current connection.
+        self.tags = 0
+        self.rewriting = False
+        self._state = _HEADER
+        self._buf = bytearray()
+        self._left = 0          # data or header-extra bytes still to go
+        self._last_size: int | None = None
+        # Where go2rtc's stream stands at the seam: how many bytes of the last
+        # tag's PreviousTagSize it already has, and that size's value.
+        self._seam_sent = 0
+        self._seam_size = 0
+        self._seam_open = False  # restarted, and no tag sent since
+
+    def splice_blocker(self) -> str | None:
+        """Why the stream go2rtc has cannot take a new connection now, or None.
+
+        Only a tag boundary takes one: stopped inside a tag (or the first
+        connection's file header), the next bytes go2rtc reads would be
+        another tag's.
+        """
+        if self.broken is not None:
+            return f"its FLV could not be followed ({self.broken})"
+        if self._seam_open or (self._state == _PREFIX
+                               and (self.rewriting or len(self._buf) <= 4)):
+            return None
+        return "it stopped inside a tag"
+
+    def restart(self) -> None:
+        """Expect a new connection's FLV, from its file header, and splice it
+        on. Only valid when `splice_blocker()` is None."""
+        if not self._seam_open:
+            # On the first connection the buffered prefix bytes already went
+            # out; on a reopened one they are held until the prefix completes.
+            self._seam_sent = 0 if self.rewriting else len(self._buf)
+            self._seam_size = 0 if self._last_size is None else 11 + self._last_size
+            self._seam_open = True
+        self.rewriting = True
+        self.offset = None
+        self.tags = 0
+        self._state = _HEADER
+        self._buf.clear()
+        self._left = 0
+
+    def feed(self, data: bytes) -> bytes:
+        """The bytes to send go2rtc for `data` the device sent."""
+        if self.broken is not None:
+            return b"" if self.rewriting else data
+        out = bytearray() if self.rewriting else None
+        view = memoryview(data)
+        i, n = 0, len(data)
+        while i < n and self.broken is None:
+            if self._state in (_DATA, _SKIP):
+                take = min(self._left, n - i)
+                if out is not None and self._state == _DATA:
+                    out += view[i:i + take]
+                self._left -= take
+                i += take
+                if not self._left:
+                    self._state = _PREFIX
+                continue
+            unit = _FLV_HEADER if self._state == _HEADER else _TAG_PREFIX
+            take = min(unit - len(self._buf), n - i)
+            self._buf += view[i:i + take]
+            i += take
+            if len(self._buf) < unit:
+                break
+            if self._state == _HEADER:
+                self._file_header()
+            else:
+                self._tag(out)
+            self._buf.clear()
+        if out is None:
+            return data
+        return b"" if self.broken is not None else bytes(out)
+
+    def _file_header(self) -> None:
+        head = self._buf
+        size = int.from_bytes(head[5:9], "big")
+        if head[:3] != b"FLV" or not _FLV_HEADER <= size <= _FLV_HEADER + _MAX_HEADER_EXTRA:
+            self.broken = f"no FLV file header: {bytes(head[:9])!r}"
+            return
+        self._left = size - _FLV_HEADER
+        self._state = _SKIP if self._left else _PREFIX
+
+    def _tag(self, out: bytearray | None) -> None:
+        prefix = self._buf
+        kind, size = prefix[4], int.from_bytes(prefix[5:8], "big")
+        if kind not in _TAG_TYPES:
+            self.broken = f"tag type {kind} after {self.tags} tags"
+            return
+        ts = int.from_bytes(prefix[8:11], "big") | prefix[11] << 24
+        if out is not None:
+            if self.offset is None:
+                target = ts if self.last_ts is None else self.last_ts + self.frame_ms
+                self.offset = target - ts
+            ts = min(max(ts + self.offset, 0), 0xFFFFFFFF)
+            prefix[8:11] = (ts & 0xFFFFFF).to_bytes(3, "big")
+            prefix[11] = ts >> 24
+            if self._seam_open:
+                out += self._seam_size.to_bytes(4, "big")[self._seam_sent:]
+                out += prefix[4:]
+                self._seam_open = False
+            else:
+                out += prefix
+        self.last_ts = ts if self.last_ts is None else max(self.last_ts, ts)
+        self.tags += 1
+        self._last_size = size
+        self._left = size
+        self._state = _DATA if size else _PREFIX
+
+
+class _StreamEnd(Exception):
+    """The relay ends go2rtc's stream; the message says why."""
+
+
 def _reply(code: int, reason: str, text: str) -> bytes:
     body = text.encode()
     return (f"HTTP/1.1 {code} {reason}\r\nContent-Type: text/plain\r\n"
@@ -236,7 +422,9 @@ class TserverRelay:
     def __init__(self, registry: DeviceRegistry, *, host: str = RELAY_HOST,
                  port: int = RELAY_PORT, device_port: int = DEVICE_STREAM_PORT,
                  header_timeout: float = HEADER_TIMEOUT, attempts: int = ATTEMPTS,
-                 retry_delay: float = RETRY_DELAY, claim_wait: float = CLAIM_WAIT) -> None:
+                 retry_delay: float = RETRY_DELAY, claim_wait: float = CLAIM_WAIT,
+                 stall_seconds: float = STALL_SECONDS, max_resumes: int = MAX_RESUMES,
+                 resume_window: float = RESUME_WINDOW) -> None:
         self._registry = registry
         self.host = host
         self.port = port
@@ -245,6 +433,9 @@ class TserverRelay:
         self.attempts = attempts
         self.retry_delay = retry_delay
         self.claim_wait = claim_wait
+        self.stall_seconds = stall_seconds
+        self.max_resumes = max_resumes
+        self.resume_window = resume_window
         self._server: asyncio.Server | None = None
         self._handlers: set[asyncio.Task[Any]] = set()
         #: petkit_id -> "live" or "probe": who holds the device's one connection.
@@ -379,11 +570,12 @@ class TserverRelay:
             writer.write(_reply(503, "Service Unavailable", "the camera is already streaming"))
             return
         try:
-            opened = await self._open_device(pid, ip, main_stream_path(device))
+            path = main_stream_path(device)
+            opened = await self._open_device(pid, ip, path)
             if opened is None:
                 writer.write(_reply(503, "Service Unavailable", "the camera did not answer"))
                 return
-            await self._pump(pid, *opened, reader, writer)
+            await self._pump(pid, ip, path, *opened, reader, writer)
         finally:
             self._release(pid)
 
@@ -407,24 +599,87 @@ class TserverRelay:
         log.info("tserver relay: device %s gave no response in %d attempts", pid, self.attempts)
         return None
 
-    async def _pump(self, pid: int, sock: socket.socket, head: bytes,
+    async def _pump(self, pid: int, ip: str, path: str, sock: socket.socket, head: bytes,
                     reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
-        """Device -> go2rtc until either side ends; then reset the device."""
+        """Device -> go2rtc until either side ends; then reset the device.
+
+        A device silent for `stall_seconds` while go2rtc still reads is reset
+        and reopened, and its new FLV spliced on (`FlvSplicer`, issue #128).
+        """
         loop = asyncio.get_running_loop()
         why = "the device closed the stream"
+        splicer = FlvSplicer()
+        resumes: deque[float] = deque()
+
+        async def reopen() -> bytes:
+            """Reset the silent connection and open a new one; its FLV body."""
+            nonlocal sock
+            blocker = splicer.splice_blocker()
+            if blocker is not None:
+                raise _StreamEnd(f"the device went silent and {blocker}")
+            now = loop.time()
+            while resumes and now - resumes[0] >= self.resume_window:
+                resumes.popleft()
+            if len(resumes) >= self.max_resumes:
+                raise _StreamEnd(f"the device went silent again after {len(resumes)} "
+                                 f"resumes in {self.resume_window:.0f} s")
+            resumes.append(now)
+            sock.close()  # linger 0: a reset
+            log.info("tserver relay: device %s sent nothing for %.1f s; reset it, reopening",
+                     pid, now - last_byte)
+            opened = await self._open_device(pid, ip, path)
+            if opened is None:
+                raise _StreamEnd("the device did not answer a reopen")
+            sock, buf = opened
+            status = response_status(buf)
+            _, sep, body = buf.partition(b"\r\n\r\n")
+            if status != 200 or not sep:
+                raise _StreamEnd(f"the device answered a reopen with status {status}")
+            splicer.restart()
+            return body
 
         async def down() -> None:
+            nonlocal last_byte
             writer.write(head)
             await writer.drain()
-            while chunk := await loop.sock_recv(sock, _CHUNK):
-                writer.write(chunk)
-                await writer.drain()
+            _, sep, body = head.partition(b"\r\n\r\n")
+            if not sep:
+                splicer.broken = "no response header"
+            splicer.feed(body)
+            resumed: float | None = None  # when the device went silent, until logged
+            while True:
+                # Before a connection's first tag it may be waiting for a keyframe.
+                allowed = (self.stall_seconds if splicer.tags
+                           else max(self.stall_seconds, self.header_timeout))
+                try:
+                    chunk = await asyncio.wait_for(loop.sock_recv(sock, _CHUNK), allowed)
+                except TimeoutError:
+                    resumed = resumed if resumed is not None else last_byte
+                    chunk = await reopen()
+                else:
+                    if not chunk:
+                        return
+                last_byte = loop.time()
+                out = splicer.feed(chunk)
+                if splicer.rewriting and splicer.broken is not None:
+                    raise _StreamEnd(f"the reopened stream could not be followed "
+                                     f"({splicer.broken})")
+                if out:
+                    writer.write(out)
+                    await writer.drain()
+                if resumed is not None and splicer.offset is not None:
+                    log.info("tserver relay: device %s resumed after a %.1f s gap; timestamps "
+                             "shifted by %+d ms (resume %d in %.0f s)", pid,
+                             last_byte - resumed, splicer.offset, len(resumes),
+                             self.resume_window)
+                    resumed = None
 
         async def up() -> None:
             # go2rtc sends nothing after its request; EOF means it left.
             while await reader.read(_CHUNK):
                 pass
 
+        last_byte = loop.time()
         tasks = {asyncio.create_task(down()): "device", asyncio.create_task(up()): "go2rtc"}
         try:
             done, _ = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
