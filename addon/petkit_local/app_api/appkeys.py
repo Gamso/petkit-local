@@ -40,6 +40,10 @@ key                     what it holds                                set by
 `TALKS`                 `Talks` — the talks in progress, one per     create_app_api
                         device, shared with the panel
                         (`media/talk.py`)
+`LIVE_CONFIG`           the live settings dict the device API reads  create_app_api
+                        per request — the panel's own — or None
+`SETTINGS_PATH`         the overrides file a live change is          create_app_api
+                        persisted to ("" persists nothing)
 ======================  ===========================================  ==========
 
 `SESSION` is set on each request by the auth middleware once a bearer token
@@ -82,6 +86,8 @@ GO2RTC: web.AppKey[Go2rtc | None] = web.AppKey("app_go2rtc")
 VIDEO_SESSIONS: web.AppKey[VideoSessions] = web.AppKey("app_video_sessions")
 NOTIFY_CHANNEL: web.AppKey[NotifyChannel] = web.AppKey("app_notify_channel")
 TALKS: web.AppKey[Talks] = web.AppKey("app_talks")
+LIVE_CONFIG: web.AppKey[dict[str, Any] | None] = web.AppKey("app_live_config")
+SETTINGS_PATH: web.AppKey[str] = web.AppKey("app_settings_path")
 
 #: The session the bearer token belongs to.
 SESSION: web.RequestKey[AppSession] = web.RequestKey("app_session")

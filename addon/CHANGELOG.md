@@ -20,6 +20,21 @@
 
 ### New
 
+- **In proxy mode, a camera can recognise this app's pets instead of PetKit's**
+  (issue #130). Until now proxy mode always handed a camera PetKit's answer to
+  `dev_discern_pic`, the pets and photos of PetKit's app, so the pets managed
+  in the panel took effect only with proxy mode off. **Setup → Settings** now
+  has **Pets for recognition**, shown while proxy mode is on: **PetKit** (the
+  default, as before) or **petkit-local**, which answers that request with the
+  Pets tab's pets and does not forward it to PetKit. `dev_discern_config`, the
+  detection thresholds, is relayed as before. The camera replaces the faces it
+  extracted from the old set (`/system/feature.bin`) at its next request, at
+  boot or within about an hour. A pet brought across with *Import from PetKit*
+  answers to PetKit's id and ours alike, so visits keep their pet across the
+  switch. The setting is kept with the other proxy settings in
+  `/data/settings_overrides.json` (`proxy_pets_source`: `petkit` or `local`),
+  and the app API reads and changes it at `GET`/`PATCH
+  /app/v1/settings/pets-source`.
 - **A Bluetooth accessory is named by its generation too: a CTW3 can be an
   EverSweet Max 2** (issue #115). PetKit sells the EverSweet Max Cordless and
   the EverSweet Max 2 under the one codename `ctw3`, so every one showed as a

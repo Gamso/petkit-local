@@ -36,12 +36,12 @@ from aiohttp import web
 
 from petkit_local.app_api.appkeys import (
     AUTH, BLE_REGISTRY, COMMAND_SINK, DATA_DIR, EVENT_STORE, GO2RTC, HA_PUBLISHER, HUB,
-    MEDIA_ROOT, NOTIFY_CHANNEL, PET_REGISTRY, REGISTRY, TALKS, THROTTLE, UPDATE_FEED,
-    VIDEO_SESSIONS,
+    LIVE_CONFIG, MEDIA_ROOT, NOTIFY_CHANNEL, PET_REGISTRY, REGISTRY, SETTINGS_PATH, TALKS,
+    THROTTLE, UPDATE_FEED, VIDEO_SESSIONS,
 )
 from petkit_local.app_api.handlers import (
-    auth, controls, devices, feeding, media, meta, notifications, pets, push, talk, timeline,
-    updates, video,
+    auth, controls, devices, feeding, media, meta, notifications, pets, push, settings, talk,
+    timeline, updates, video,
 )
 from petkit_local.app_api.middleware import app_api_middleware
 from petkit_local.app_api.notify.channel import NotifyChannel
@@ -96,6 +96,8 @@ ROUTES: tuple[tuple[str, str, Handler], ...] = (
     ("GET", "/pets", pets.list_pets),
     ("GET", "/pets/{id}", pets.pet_detail),
     ("GET", "/pets/{id}/photo", pets.pet_photo),
+    ("GET", "/settings/pets-source", settings.get_pets_source),
+    ("PATCH", "/settings/pets-source", settings.patch_pets_source),
     ("GET", "/ws", updates.updates),
     ("PUT", "/push", push.register_push),
     ("DELETE", "/push", push.unregister_push),
@@ -117,7 +119,9 @@ def create_app_api(app_auth: AppAuth, registry: DeviceRegistry, *,
                    go2rtc: Go2rtc | None = None,
                    video_sessions: VideoSessions | None = None,
                    notify_channel: NotifyChannel | None = None,
-                   talks: Talks | None = None) -> web.Application:
+                   talks: Talks | None = None,
+                   live_config: dict[str, Any] | None = None,
+                   settings_path: str = "") -> web.Application:
     """Build the app API application.
 
     Everything after `registry` is optional so a test can build one without
@@ -129,7 +133,10 @@ def create_app_api(app_auth: AppAuth, registry: DeviceRegistry, *,
     is what feeds it) the notification socket opens and stays silent.
     `talks` defaults to the process's one `media/talk.py::TALKS`, which the
     panel uses too, so a phone and the panel never talk through one device
-    at once.
+    at once. `live_config` is the shared settings dict the device API and the
+    panel read (`main/` hands in the same one), and `settings_path` the
+    overrides file a change to it is persisted to; without `live_config` the
+    `/settings` routes answer 503.
     """
     app = web.Application(client_max_size=MAX_BODY, middlewares=[app_api_middleware])
     app[AUTH] = app_auth
@@ -155,6 +162,8 @@ def create_app_api(app_auth: AppAuth, registry: DeviceRegistry, *,
                            else NotifyChannel(app_auth))
     app.on_shutdown.append(_close_notify_sockets)
     app[TALKS] = talks if talks is not None else DEFAULT_TALKS
+    app[LIVE_CONFIG] = live_config
+    app[SETTINGS_PATH] = settings_path
     # Ends every talk as shutdown begins: ffmpeg killed, the device's sink let go.
     app.on_shutdown.append(app[TALKS].close_all)
     for method, path, handler in ROUTES:

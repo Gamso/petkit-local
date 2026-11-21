@@ -99,6 +99,10 @@ async def handle_discern_pic(request: web.Request) -> web.Response:
     on/off field on the wire, so "recognise nobody" can only be said by serving
     an empty list here.
 
+    In proxy mode this answer reaches the device only when the panel's "Pets
+    for recognition" is petkit-local; otherwise the cloud's replaces it
+    (`http/middleware/proxy.py::LOCAL_PETS_ENDPOINTS`).
+
     Returns:
         `PetRegistry.discern_pic_payload()`'s dict, or ``{"result": {"list": []}}``
         for an unknown device, a device without NPU support, one with AI turned
