@@ -24,7 +24,8 @@ from petkit_local.events.normalize import (CATEGORY_CLOUD_DOUBLE, CATEGORY_HEALT
                                            apply_state_snapshot, capability_for_category,
                                            classify_event_kind, cleaning_label,
                                            entity_for_event, event_type_label,
-                                           from_event_report, from_file_info, from_mqtt,
+                                           from_ble_drink_record, from_event_report,
+                                           from_file_info, from_mqtt,
                                            is_detail_event, parse_event_report_form,
                                            telemetry_only)
 from petkit_local.events.sessions import (CYCLE_TAIL_WINDOW_SEC, SUB_EVENT_WINDOW_SEC,
@@ -62,6 +63,7 @@ __all__ = [
     "entity_for_event",
     "event_type_label",
     "filter_counts",
+    "from_ble_drink_record",
     "from_event_report",
     "from_file_info",
     "from_mqtt",

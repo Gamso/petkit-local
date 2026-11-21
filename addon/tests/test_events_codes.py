@@ -23,7 +23,8 @@ def _all_rows():
     for name, table in (("litter", codes.LITTER_HTTP_CODES),
                         ("feeder", codes.FEEDER_HTTP_CODES),
                         ("fountain", codes.FOUNTAIN_HTTP_CODES),
-                        ("mqtt", codes.MQTT_EVENT_TOPICS)):
+                        ("mqtt", codes.MQTT_EVENT_TOPICS),
+                        ("ble_record", codes.BLE_RECORD_EVENTS)):
         for key, code in table.items():
             yield name, key, code
 
@@ -410,10 +411,39 @@ def test_what_we_send_an_accessory_is_derived_from_the_table():
     from petkit_local.devices.ble import BLE_READABLE, BLE_SENDABLE
 
     assert BLE_SENDABLE == {220, 221, 222}
-    assert BLE_READABLE == {210, 211}
+    assert BLE_READABLE == {210, 211, 212}
     assert set(codes.BLE_LINK_UP_READS) <= BLE_READABLE
+    assert codes.BLE_HISTORY_SYNC_CMD in BLE_READABLE
     # The link-up read is a working assumption until a reply to it is seen.
     assert codes.BLE_LINK_UP_READS_GRADE == codes.INFERRED
+    assert codes.BLE_HISTORY_SYNC_GRADE == codes.INFERRED
+
+
+def test_the_history_stream_is_named_and_none_of_it_is_sent():
+    """67-82 carry what PetKit's app sends after a 212 over a DIRECT link: the
+    GATT MTU of that link and sequence bytes a relayed frame does not carry.
+    Their rows exist to name what arrives, never to build a frame."""
+    for cmd in (67, 68, 69, 80, 82):
+        op = codes.BLE_OPCODES[cmd]
+        assert op.grade == codes.INFERRED and not op.send, cmd
+        assert "13.8.1" in op.source, cmd
+    assert codes.BLE_HISTORY_DATA == {68, 82}
+    assert codes.BLE_HISTORY_SYNC_TYPES == {"ctw3"}
+
+
+def test_a_ctw3_drink_record_is_its_own_namespace():
+    """Our name for a row no device sent: resolvable, a timed drinking end,
+    and in no wire namespace."""
+    code = codes.lookup(codes.BLE_DRINK_EVENT, "ctw3")
+    assert code is codes.BLE_RECORD_EVENTS[codes.BLE_DRINK_EVENT]
+    assert code.kind == codes.KIND_DRINKING and code.role == codes.ROLE_DONE
+    assert code.done_word in codes.TIMED_DONE_WORDS and code.anchor
+    assert code.grade == codes.INFERRED
+    assert codes.BLE_DRINK_EVENT not in codes.MQTT_EVENT_TOPICS
+    assert codes.BLE_DRINK_EVENT in codes.ANCHOR_CODES
+    assert codes.BLE_DRINK_EVENT in codes.codes_for("ctw3")
+    assert codes.BLE_DRINK_EVENT not in codes.codes_for("w7h")
+    assert ingest.classify_event_kind(codes.BLE_DRINK_EVENT, {}, "ctw3") == codes.KIND_DRINKING
 
 
 def test_the_link_up_notices_are_documented_as_unknown():

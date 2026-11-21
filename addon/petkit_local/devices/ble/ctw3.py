@@ -9,14 +9,18 @@ separation exists to prevent (`w5.py` holds the other half).
 from __future__ import annotations
 
 import logging
+import time
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 from petkit_local.devices.base import Refused
 from petkit_local.devices.ble.framing import (
     CMD_DEVICE_STATUS, CMD_GET_CONFIG, CMD_GET_STATE, CMD_SET_CONFIG, CMD_SET_MODE,
+    CMD_STREAM_CHECK, CMD_STREAM_END, CMD_STREAM_SETTING, CMD_SYNC_HISTORY,
     _iter_ble_frames,
 )
-from petkit_local.events.codes import CTW3_BATTERY_MODE, CTW3_MODES
+from petkit_local.events.codes import BLE_HISTORY_DATA, CTW3_BATTERY_MODE, CTW3_MODES
+from petkit_local.utils.coerce import to_int
 
 if TYPE_CHECKING:
     from petkit_local.devices.ble.registry import BLEDevice
@@ -330,3 +334,149 @@ def _ctw3_command_for(ble_dev: BLEDevice, key: str, value: int) -> tuple[int, by
         raise Refused("no full status reported yet - the settings block is "
                       "written whole, and the rest of it is not known")
     return CMD_SET_CONFIG, payload
+
+
+# --- the drink history ---------------------------------------------------------
+#
+# What a CTW3 sends back for a 212 (`codes.BLE_OPCODES`, graded there). Two
+# shapes, both from PetKit's app 13.8.1 and neither yet seen from a real
+# fountain:
+#
+# * the 212 reply: DATA byte 0 unread, bytes 1-4 a big-endian count of the
+#   history bytes waiting (`CTW3BleClient.onReceiveCustomData` @0x0054-0x006c,
+#   `ByteUtil.bytes2Int`, which is big-endian);
+# * each history packet (68, or 82): whole 6-byte records, read per packet with
+#   no carry-over between packets (`CTW3DataConvertor.processStreamData`
+#   @0x0022-0x0032 hands each packet's data to `parseWorkData` on its own).
+#
+# A record is `workTime` (4 bytes, `bytes2Int`) then `stayTime` (2 bytes,
+# `bytes2Short` -- a SIGNED Java short), big-endian like everything else here
+# (`CTW3DataConvertor.parseWorkData` @0x0006-0x002c, into
+# `CTW3WorkData(short stayTime, long workTime)`). The app shows `stayTime` as
+# seconds (`CTW3Utils.calcStayTimeStr` divides by 3600 and 60).
+
+#: Bytes per record.
+CTW3_RECORD_LEN = 6
+
+#: The accessory's clock counts seconds from 2000-01-01 UTC. INFERRED from how
+#: PetKit's app SETS it: cmd 84 carries `(now_ms - BASE_TIME_2000_MS) / 1000`,
+#: shifted to local time only for an "AQ" device
+#: (`BaseDataConvertor.securityCheckAndSyncData` @0x0035-0x0051), and
+#: `CTW3BleClient.isAqDevice` returns false. Over a relay the parent sets that
+#: clock, and with what is not known -- so `ctw3_record_time` also accepts a
+#: plain Unix count, which no plausible date can be confused with until 2050.
+CTW3_CLOCK_EPOCH = 946684800
+
+#: No record is believed from before 2020: a fountain whose clock was never set
+#: counts from 2000, and storing its drinks in 2000 would put them on no day
+#: anybody looks at while hiding that the clock is wrong.
+_RECORD_EARLIEST = 1577836800.0
+#: Nor from more than a day ahead -- the slack is for a clock set in a
+#: timezone rather than in UTC.
+_RECORD_FUTURE_SLACK = 86400.0
+
+
+@dataclass(frozen=True)
+class DrinkRecord:
+    """One CTW3 history record, decoded.
+
+    `raw_time` is the fountain's own value, kept because it is the record's only
+    identity: two records with the same one are the same visit.
+    """
+
+    raw_time: int
+    start: float
+    seconds: int
+
+
+@dataclass
+class HistoryFrames:
+    """What one `ble_response` carried of the history exchange."""
+
+    #: The 212 reply's byte count, or None when this content held none.
+    pending: int | None = None
+    records: list[DrinkRecord] = field(default_factory=list)
+    #: Records dropped as implausible (a clock never set, a stay that
+    #: overflowed the signed short), and bytes that were not a whole record.
+    rejected: int = 0
+    #: History bytes received -- what `pending` counts down against.
+    data_bytes: int = 0
+    #: Stream control frames the accessory sent (67, 69, 80): proof it is
+    #: waiting on a step of the stream nothing here takes.
+    control: list[int] = field(default_factory=list)
+
+    def __bool__(self) -> bool:
+        return (self.pending is not None or bool(self.records) or bool(self.rejected)
+                or bool(self.data_bytes) or bool(self.control))
+
+
+def ctw3_record_time(raw: int, now: float | None = None) -> float | None:
+    """The Unix time of a record's `workTime`, or None if it is not plausible.
+
+    Seconds from 2000 first (`CTW3_CLOCK_EPOCH`), then a plain Unix count; the
+    two ranges cannot overlap while either is a plausible date, so this is a
+    choice the value makes, not a guess.
+    """
+    now = time.time() if now is None else now
+    latest = now + _RECORD_FUTURE_SLACK
+    for candidate in (raw + CTW3_CLOCK_EPOCH, raw):
+        if _RECORD_EARLIEST <= candidate <= latest:
+            return float(candidate)
+    return None
+
+
+def decode_ctw3_sync_reply(data: bytes) -> int | None:
+    """The byte count a 212 reply announces, or None for a reply too short."""
+    if len(data) < 5:
+        return None
+    return int.from_bytes(data[1:5], "big")
+
+
+def decode_ctw3_records(data: bytes, now: float | None = None) -> tuple[list[DrinkRecord], int]:
+    """Every plausible record in one history packet, and how many were not.
+
+    A trailing part-record counts as one rejected, never as a record: the app
+    reads `len // 6` and would drop it in silence, which is the same thing but
+    without saying so.
+    """
+    now = time.time() if now is None else now
+    records: list[DrinkRecord] = []
+    rejected = 1 if len(data) % CTW3_RECORD_LEN else 0
+    for off in range(0, len(data) - CTW3_RECORD_LEN + 1, CTW3_RECORD_LEN):
+        raw = int.from_bytes(data[off:off + 4], "big")
+        stay = int.from_bytes(data[off + 4:off + 6], "big", signed=True)
+        start = ctw3_record_time(raw, now)
+        if start is None or stay < 0:
+            rejected += 1
+            continue
+        records.append(DrinkRecord(raw_time=raw, start=start, seconds=stay))
+    return records, rejected
+
+
+def parse_ctw3_history(content: Any, now: float | None = None) -> HistoryFrames:
+    """The history half of a CTW3 `ble_response`: falsy when it held none.
+
+    Device input: anything malformed is skipped, never raised on -- a 212
+    reply too short to carry its count is reported as "no count", a packet that
+    is not whole records loses only its broken tail.
+    """
+    out = HistoryFrames()
+    for raw_cmd, data in _iter_ble_frames(content):
+        # The JSON `cmd` is device input: a list there must not reach a set
+        # lookup, where it would raise instead of being skipped.
+        cmd = to_int(raw_cmd, None)
+        if cmd == CMD_SYNC_HISTORY:
+            count = decode_ctw3_sync_reply(data)
+            if count is not None:
+                out.pending = count
+            else:
+                log.info("CTW3 212 reply too short to carry a count: %s",
+                         bytes(data).hex() or "(empty)")
+        elif cmd in BLE_HISTORY_DATA:
+            records, rejected = decode_ctw3_records(data, now)
+            out.records.extend(records)
+            out.rejected += rejected
+            out.data_bytes += len(data)
+        elif cmd in (CMD_STREAM_CHECK, CMD_STREAM_END, CMD_STREAM_SETTING):
+            out.control.append(cmd)
+    return out

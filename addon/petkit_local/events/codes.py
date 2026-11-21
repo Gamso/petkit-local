@@ -6,8 +6,8 @@ here. Keeping it separate is what lets the panel's Debug view show *why* a
 label says what it says: the confidence grade and the firmware provenance are
 fields, not comments.
 
-Eight namespaces, deliberately never merged
--------------------------------------------
+Nine namespaces, deliberately never merged
+------------------------------------------
 NS1 `HTTP_EVENT_CODES`  -- numeric `event_type` on `POST /dev_event_report`.
 NS2 `CLOUD_RECORD_TYPES`-- the PetKit *cloud*'s `LitterRecord.subContent[]
                            .eventType`. QUARANTINED: it overlaps NS1 on 5/8/10
@@ -23,6 +23,10 @@ NS7 `ERROR_FLAGS`       -- the named bits inside a state report's `err{}`
 NS8 `BLE_OPCODES`       -- the `cmd` of a frame relayed to or from a BLE
                            fountain. Not an event code at all; listed here
                            because what we send an accessory is protocol too.
+NS9 `BLE_RECORD_EVENTS` -- the `event_type` WE give a row built from an
+                           accessory's own history records (a CTW3's drinks).
+                           Never on any wire: the record carries no code, so
+                           the name is ours, and `ble_` keeps it clear of NS3.
 
 Where the two evidence sources disagree
 ---------------------------------------
@@ -1862,6 +1866,21 @@ BLE_OPCODES: dict[int, BleOpcode] = {
              "CTW3 (`03 03 00 78 04 b0 01 03 00 00 01 00` off a live one), "
              "13-14 on the W5 family. A CTW3 is silent to it over direct GATT "
              "on firmware 111, which is why aavdberg/ha-petkit never asks."),
+    212: BleOpcode(
+        name="sync_history", label="Sync drink history", direction=BLE_BOTH_WAYS,
+        grade=INFERRED, send=BLE_SEND_READ,
+        source="PetKit app 13.8.1: CTW3DataConvertor.startSyncHistoryRecord "
+               "@0x0007 (PetkitBleMsg(212, new byte[0])); reply read by "
+               "CTW3BleClient.onReceiveCustomData @0x0054-0x006c",
+        note="CTW3 only (the W5 family's convertor has no such command). An "
+             "empty request: nothing in it says where to resume, so what is "
+             "sent back is the fountain's choice. The reply's DATA bytes 1-4 "
+             "are a big-endian count of history BYTES waiting "
+             "(ByteUtil.bytes2Int -> PetkitBleClient.maxDataLength); byte 0 "
+             "is never read. Over a parent's relay PetKit's app sends this "
+             "one frame and nothing after it (CTW3BleApiUtils.bleControlDevice "
+             "@0x0027-0x009a posts getBleMsgList().get(0) to ble/controlDevice), "
+             "so that is all we send too. Never yet seen answered."),
     220: BleOpcode(
         name="set_mode", label="Set power / mode", direction=BLE_TO_ACCESSORY,
         grade=INFERRED, send=BLE_SEND_WRITE,
@@ -1888,6 +1907,66 @@ BLE_OPCODES: dict[int, BleOpcode] = {
         source="issue #4 (a real CTW3 frame); mr-ransel W5 protocol notes",
         note="The status the accessory pushes: 42 bytes on a CTW3, the 30 of a "
              "210 plus the 12-byte settings block."),
+    # -- the history stream. Everything below a 212 reply, as PetKit's app
+    # runs it over a DIRECT link (`PetkitBleClient.onReceiveCustomData`,
+    # `BaseDataConvertor`, app 13.8.1). None of it is sent from here: the
+    # stream setting carries the GATT MTU of a link we are not party to, and
+    # both acknowledgements echo a sequence byte a relayed frame has never
+    # been seen to carry (the parent strips the header -- see 252). The rows
+    # exist so a frame that DOES arrive is named, and so a capture can finish
+    # what is graded here.
+    67: BleOpcode(
+        name="stream_check", label="History check", direction=BLE_BOTH_WAYS,
+        grade=INFERRED,
+        source="PetKit app 13.8.1: PetkitBleClient.onReceiveCustomData "
+               "@0x03df-0x04a2; BaseDataConvertor.checkStreamData @0x0000-0x0049",
+        note="The accessory asks (type 1) which packets of a batch arrived. "
+             "The app answers cmd 67, type 2, the same sequence byte, with a "
+             "4-byte big-endian bitmap: bit 31-i set for each packet index i "
+             "(0-31) it holds. A batch with none missing below its "
+             "`totalNumber` is parsed then; otherwise the bitmap asks for the "
+             "rest. Not answered here."),
+    68: BleOpcode(
+        name="stream_data", label="History data", direction=BLE_FROM_ACCESSORY,
+        grade=INFERRED,
+        source="PetKit app 13.8.1: PetkitBleClient.onReceiveCustomData "
+               "@0x030d-0x0327; PetkitBleMsg.<init>([B) @0x007b-0x00b7; "
+               "CTW3DataConvertor.parseWorkData @0x0006-0x002c",
+        note="Type 3, in the STREAM header `FA FC FE | cmd | type | index | "
+             "total | len_lo | len_hi | data` (no sequence byte). Its data is "
+             "whole 6-byte drink records, parsed per packet "
+             "(`devices/ble/ctw3.py`)."),
+    69: BleOpcode(
+        name="stream_end", label="History end", direction=BLE_BOTH_WAYS,
+        grade=INFERRED,
+        source="PetKit app 13.8.1: PetkitBleClient.onReceiveCustomData "
+               "@0x03c5-0x03cd; BaseDataConvertor.getStreamEndResponse @0x0008; "
+               "CTW3BleClient.onReceiveCustomData @0x01f6",
+        note="The accessory (type 1) says the stream is over; the app answers "
+             "cmd 69, type 2, empty, same sequence byte, then logs \"ctw3 work "
+             "sync data end\" and uploads the records (ctw3/saveWorkRecord). "
+             "Whether the fountain forgets what it sent only after that answer "
+             "is unknown. Not answered here."),
+    80: BleOpcode(
+        name="stream_setting", label="History stream setting",
+        direction=BLE_BOTH_WAYS, grade=INFERRED,
+        source="PetKit app 13.8.1: BaseDataConvertor.setStreamSetting "
+               "@0x0000-0x001b, sent by CTW3BleClient.onReceiveCustomData "
+               "@0x0070; reply PetkitBleClient.onReceiveCustomData @0x02a1",
+        note="What starts the stream after a 212 reply: two 4-byte big-endian "
+             "ints, packets per batch (32) and `maxPackageLength`, which is "
+             "the phone's negotiated GATT MTU (PetkitBleClient."
+             "onMtuChangeResult). A reply with data[0] == 1 is \"sync data "
+             "start\". NOT sent here: the MTU between a parent and its "
+             "accessory is not ours to know, and inventing it is the guess "
+             "this table exists to refuse."),
+    82: BleOpcode(
+        name="stream_data_82", label="History data (82)",
+        direction=BLE_FROM_ACCESSORY, grade=INFERRED,
+        source="PetKit app 13.8.1: PetkitBleClient.onReceiveCustomData @0x0315",
+        note="Stored exactly as a 68 is, by the same branch; what tells the "
+             "two apart is unknown (a resend is a plausible reading, not a "
+             "sourced one). Decoded as 68."),
     251: BleOpcode(
         name="link_notice_251", label="Unknown (seen on link-up)",
         direction=BLE_FROM_ACCESSORY, grade=INFERRED,
@@ -1922,6 +2001,21 @@ BLE_LINK_UP_READS_GRADE = INFERRED
 #: link comes up. Read as a link-up in its own right, because it can arrive
 #: without the parent's `ble_relay_over` ahead of it.
 BLE_LINK_NOTICES = frozenset({251, 252})
+
+#: What is asked of a CTW3 once its link-up reads are answered: its drink
+#: history, one empty 212 per relay session (`mqtt/ble_relay.py` bounds it).
+#:
+#: INFERRED, and the order is PetKit's: its app asks 210, 211, 215, 216 and
+#: only then 212 (`CTW3BleClient.onReceiveCustomData` @0x0116, after
+#: `onConnectSuccess`), so a fountain that never answered the reads is never
+#: asked for its history either. Only the request is sent -- see the stream
+#: rows above for what is not, and why.
+BLE_HISTORY_SYNC_CMD = 212
+BLE_HISTORY_SYNC_TYPES = frozenset({"ctw3"})
+BLE_HISTORY_SYNC_GRADE = INFERRED
+
+#: The opcodes whose data is drink records: 68 and the 82 the app stores alike.
+BLE_HISTORY_DATA = frozenset({68, 82})
 
 
 def ble_opcode_label(cmd: object) -> str:
@@ -2008,6 +2102,34 @@ CTW3_BATTERY_SLEEP_RANGE = (60, 10800)
 CTW3_BATTERY_RANGES_GRADE = INFERRED
 
 
+# --- NS9: rows built from an accessory's own history records -----------------
+#
+# A BLE fountain keeps its own log of visits and hands it over on request (the
+# 212 exchange above). A record has a time and a length and nothing else -- no
+# code, no event id, no pet -- so the `event_type` stored for it is OURS, and a
+# separate namespace keeps it from passing for something a device sent. The
+# `ble_` prefix cannot collide with an HTTP code (those are numeric) and no MQTT
+# topic seen from any device uses it.
+
+#: The name a CTW3 drink record is stored under.
+BLE_DRINK_EVENT = "ble_drink"
+
+BLE_RECORD_EVENTS: dict[str, EventCode] = {
+    BLE_DRINK_EVENT: EventCode(
+        kind=KIND_DRINKING, label="Drinking done", grade=INFERRED, anchor=True,
+        role=ROLE_DONE, done_word="drinking", families=frozenset({"ctw3"}),
+        firmware="PetKit app 13.8.1 CTW3DataConvertor.parseWorkData "
+                 "(CTW3WorkData stayTime, workTime)",
+        note="One 6-byte record of a CTW3's history stream: when, and for how "
+             "many seconds. PetKit's app calls it a work record and uploads it "
+             "verbatim (ctw3/saveWorkRecord), formatting stayTime as seconds "
+             "(CTW3Utils.calcStayTimeStr) -- the cloud does the rest, so its "
+             "meaning as a DRINK is the app's drink-record screen's, not a "
+             "firmware's. Not yet seen from a real fountain. Timed from its "
+             "own content (event_start/event_end), so no start row opens it."),
+}
+
+
 # --- derived views ---------------------------------------------------------
 # Computed once at import so hot paths do set membership rather than dataclass
 # attribute walks. Only the four below have readers; a set nothing asks for is
@@ -2030,6 +2152,7 @@ def _codes_where(table: dict[str, EventCode], **match: object) -> frozenset[str]
 #: `DEFAULT_HTTP_CATEGORY`. Anything that needs a code's meaning must go
 #: through `lookup(event_type, device_type)` instead of reading this.
 ALL_EVENT_CODES: dict[str, EventCode] = {
+    **BLE_RECORD_EVENTS,
     **MQTT_EVENT_TOPICS,
     **FEEDER_HTTP_CODES,
     **FOUNTAIN_HTTP_CODES,
@@ -2076,7 +2199,11 @@ def lookup(event_type: str | None,
         return code
     # A category with a sparse table (the feeder's, mostly unrecovered) still
     # gets MQTT names, which ARE global.
-    return MQTT_EVENT_TOPICS.get(key.lower())
+    code = MQTT_EVENT_TOPICS.get(key.lower())
+    if code is not None:
+        return code
+    # Our own names for rows built from an accessory's history (NS9).
+    return BLE_RECORD_EVENTS.get(key)
 
 
 def is_transport(event_type: str | None, device_type: str | None = None) -> bool:
@@ -2103,7 +2230,8 @@ def codes_for(device_type: str | None) -> dict[str, EventCode]:
         return dict(ALL_EVENT_CODES)
     codename = device_type.lower()
     category = category_of(codename) or DEFAULT_HTTP_CATEGORY
-    table = {**MQTT_EVENT_TOPICS, **HTTP_CODES_BY_CATEGORY.get(category, {})}
+    table = {**BLE_RECORD_EVENTS, **MQTT_EVENT_TOPICS,
+             **HTTP_CODES_BY_CATEGORY.get(category, {})}
     if codename == "t4":
         table[T4_LITTER_CALIBRATION_EVENT] = T4_LITTER_CALIBRATION_DONE
     return {key: code for key, code in table.items()

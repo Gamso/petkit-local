@@ -209,7 +209,8 @@ class MQTTBridge:
         self._pet_registry = pet_registry
         self._upstream = upstream
         self._client = None
-        self._ble_relay = BLERelay(self, registry, ble_registry, ha_publisher)
+        self._ble_relay = BLERelay(self, registry, ble_registry, ha_publisher,
+                                   event_store=event_store, hub=hub)
 
     @property
     def connected(self) -> bool:
