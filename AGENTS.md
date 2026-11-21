@@ -110,7 +110,10 @@ Two rules about placement that the map does not make obvious:
   `mqtt/auth.py::on_mqtt_packet_received`, i.e. paced by that device's own packets (PINGREQ
   included), at most once per `MIN_INTERVAL_SECONDS`, gated on proxy mode, a live local MQTT
   session and an adopted real `api_secret`. PetKit's reply is recorded and never applied: no
-  command, setting or address from it reaches the device. Nothing may be added beside it. A pet imports under a NEW local id with PetKit's id bound as a `device_pet_ids_json` alias,
+  command, setting or address from it reaches the device. Nothing may be added beside it. Proxy
+  mode's face photos are inside the rule, not beside it: `ai/cloud_faces.py` fetches one only within
+  a device's own proxied `dev_discern_pic` or its GET of the `/faces/cloud_*` URL that reply was
+  rewritten to — the request it would otherwise send PetKit's storage itself. A pet imports under a NEW local id with PetKit's id bound as a `device_pet_ids_json` alias,
   because that foreign id is what a box matching against cloud-cached faces actually reports
   (`resolve_pet_ref`); `bind_pet_ref` then names the history retroactively.
 - **An ESP32 is offered firmware only while a job armed in the panel says so.** `dev_ota_check`

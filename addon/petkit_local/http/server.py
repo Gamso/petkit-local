@@ -28,7 +28,8 @@ from typing import TYPE_CHECKING
 
 from aiohttp import web
 
-from petkit_local.http.appkeys import CONFIG, REGISTRY
+from petkit_local.ai.cloud_faces import CLOUD_FACES_DIR, CloudFaces
+from petkit_local.http.appkeys import CLOUD_FACES, CONFIG, REGISTRY
 from petkit_local.http.middleware import (
     device_middleware, logging_middleware, never_fail_middleware, proxy_middleware,
 )
@@ -99,6 +100,10 @@ def create_app(registry: DeviceRegistry, config: dict) -> web.Application:
         never_fail_middleware, logging_middleware, device_middleware, proxy_middleware])
     app[REGISTRY] = registry
     app[CONFIG] = config
+    # Touches nothing on disk until proxy mode first rewrites a face photo.
+    app[CLOUD_FACES] = CloudFaces(
+        os.path.join(config.get("data_dir") or "/data", CLOUD_FACES_DIR))
+    app.on_cleanup.append(app[CLOUD_FACES].close)
 
     for ver in ("6",):
         p = f"/{ver}/{{device_type}}"

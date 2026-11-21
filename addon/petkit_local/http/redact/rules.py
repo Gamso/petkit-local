@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from petkit_local.ai.cloud_faces import cloud_face_filename
 from petkit_local.devices import payloads
 from petkit_local.http.redact import Redaction, RedactionPolicy, RedactionResult
 from petkit_local.patchers import esp32_ota
@@ -22,6 +23,7 @@ RULE_MQTT = "mqtt"
 RULE_OSS_STS = "oss_sts"
 RULE_LOG_UPLOAD = "log_upload"
 RULE_LOCALE = "locale"
+RULE_FACES = "faces"
 
 #: Rules whose firing means the upstream tried something, as opposed to us
 #: routinely substituting our own address into its answer. Only these are
@@ -470,4 +472,57 @@ def _match_locale(node: dict, path: str, policy: RedactionPolicy,
             note="upstream would overwrite the device's local time settings",
         ))
         patched[key] = value
+    return patched
+
+
+def _match_faces(node: dict, path: str, policy: RedactionPolicy,
+                 out: RedactionResult) -> dict:
+    """`discern[].url` — a face photo the device's camera process decodes.
+
+    `dev_discern_pic` names the account's reference photos, and the device
+    `wget`s each into `/tmp` for its recogniser. PetKit's are normally 224x224
+    crops, but one raw 4096x3072 photo was enough to run a D4SH's `media` out of
+    memory on every start, restarting it every ~82 s (issue #129). So each URL
+    becomes one on OUR `/faces/` route, which serves the same photo normalised
+    (`ai/cloud_faces.py`); the device never fetches from PetKit's store again.
+
+    Only the `url` changes. Ids, any other key, and the order of both lists are
+    the cloud's, because the device reports those ids back
+    (`content.score_info[].id`, `discernPic`). The cloud URL each name stands
+    for is CAPTURED, for the caller to remember and prefetch, and a photo that
+    cannot be fetched or normalised is then dropped from the reply there
+    (`http/middleware/proxy.py`) — never passed through raw.
+
+    Off unless `policy.faces_base` is set: rewriting a URL nothing serves would
+    trade a big photo for a missing one.
+    """
+    faces = node.get("discern")
+    if not policy.faces_base or policy.device is None or not isinstance(faces, list):
+        return node
+
+    ours_prefix = f"{policy.faces_base}/faces/"
+    rewritten = []
+    changed = False
+    for i, face in enumerate(faces):
+        url = face.get("url") if isinstance(face, dict) else None
+        if not _is_http_url(url) or url.startswith(ours_prefix):
+            rewritten.append(face)
+            continue
+        filename = cloud_face_filename(face.get("id"), url)
+        ours = f"{ours_prefix}{filename}"
+        out.captured.setdefault("cloud_faces", {})[filename] = url
+        out.records.append(Redaction(
+            rule=RULE_FACES,
+            path=f"{path}.discern[{i}].url" if path else f"discern[{i}].url",
+            original=url, replacement=ours,
+            note="cloud face photo served normalised from our /faces/",
+        ))
+        # Unpacked in place, so `url` keeps its position among the keys.
+        rewritten.append({**face, "url": ours})
+        changed = True
+
+    if not changed:
+        return node
+    patched = dict(node)
+    patched["discern"] = rewritten
     return patched

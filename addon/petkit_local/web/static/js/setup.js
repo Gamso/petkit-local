@@ -326,6 +326,7 @@ const REDACT_LABELS = {
   mqtt: 'broker address',
   oss_sts: 'media upload',
   locale: 'timezone',
+  faces: 'face photo',
 };
 async function loadBlocked(counts) {
   const v = document.getElementById('blockedView');
