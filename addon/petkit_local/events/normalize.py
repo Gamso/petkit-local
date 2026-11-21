@@ -1006,3 +1006,47 @@ def from_file_info(device: Device, info: dict) -> dict:
         "pet_event": str(info["petEvent"]) if info.get("petEvent") is not None else None,
         "status": "pending",
     }
+
+
+# --- a BLE accessory's own history records ---------------------------------
+
+
+def from_ble_drink_record(accessory_id: int, device_type: str, raw_time: int,
+                          start: float, seconds: int) -> dict:
+    """One CTW3 history record as an `events` row (`codes.BLE_RECORD_EVENTS`).
+
+    Filed under the ACCESSORY's id, not the parent's that relayed it: the drink
+    happened at the fountain, and its timeline is the fountain's. `ts` is when
+    the pet drank, not when the record arrived -- a history can be hours old,
+    and a day is cut by `ts`.
+
+    The record has no event id, so its episode is built from the only identity
+    it has, the fountain's own timestamp. The dedup key is that episode plus
+    the event type, the same rule as every other row: a record sent twice (a
+    resent packet, a fountain that never forgets) is one drink.
+
+    `content` carries the span as `event_start`/`event_end`, which is what
+    `sessions._episode_duration` times a drinking card by, and `start_time` for
+    the time the card shows.
+    """
+    episode = f"ble{accessory_id}_{raw_time}"
+    content = {
+        "event_start": int(start),
+        "event_end": int(start) + int(seconds),
+        "start_time": int(start),
+        "stay_time": int(seconds),
+        "work_time": int(raw_time),
+    }
+    event_type = codes.BLE_DRINK_EVENT
+    return {
+        "event_uid": f"{episode}:{event_type}",
+        "related_event": episode,
+        "parent_event": None,
+        "device_id": accessory_id,
+        "device_type": device_type,
+        "event_type": event_type,
+        "event_kind": classify_event_kind(event_type, content, device_type),
+        "ts": float(start),
+        "source": "ble",
+        "content_json": json.dumps(content),
+    }

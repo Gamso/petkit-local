@@ -153,6 +153,12 @@ class BLEDevice:
     #: `ctw3` row of `MODEL_GENERATIONS`). It is here so that a value found
     #: later lands under the same precedence (`record_generation`).
     generation_learned: dict[str, Any] = field(default_factory=dict)
+    #: Where a CTW3's drink-history sync stands (`mqtt/ble_relay.py`):
+    #: `cursor`, the start of the newest record stored; `asked_at`, when a 212
+    #: last went out; `pending_bytes`, what the last reply said was waiting.
+    #: Persisted because the cursor is what keeps a restart from re-reading,
+    #: and `asked_at` what keeps it from asking again at once.
+    history: dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         """Canonicalise the MAC at the point it is stored, not at each caller.
@@ -284,6 +290,7 @@ class BLEDevice:
             "settings": self.settings,
             "generation_choice": self.generation_choice,
             "generation_learned": self.generation_learned,
+            "history": self.history,
         }
 
     @classmethod

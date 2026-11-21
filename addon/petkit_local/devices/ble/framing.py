@@ -36,6 +36,19 @@ BLE_FRAME_HEADER = bytes([0xFA, 0xFC, 0xFD])
 BLE_FRAME_TRAILER = 0xFB
 BLE_FRAME_HEADER_LEN = 8
 
+# The OTHER header, for the packets of a history stream (`codes.BLE_OPCODES`
+# 67-82). PetKit's app parses both in one constructor (`PetkitBleMsg.<init>([B)`,
+# app 13.8.1, STREAM_HEADER at @0x00c0, parsed @0x007b-0x00b7):
+#
+#     FA FC FE | cmd | type | index | total | len_lo | len_hi | data ...
+#
+# A packet has an index within its batch and the batch's size where a command
+# frame has its sequence byte, so the header is one byte longer. The length is
+# little-endian like the command frame's, and the data is read by it, not by
+# the trailer.
+BLE_STREAM_HEADER = bytes([0xFA, 0xFC, 0xFE])
+BLE_STREAM_HEADER_LEN = 9
+
 #: The `type` byte: 1 request, 2 response, 3 request wanting no answer. We only
 #: ever send the first.
 BLE_TYPE_REQUEST = 0x01
@@ -54,6 +67,12 @@ CMD_SET_MODE = 220          # power / mode. CTW3 adds a suspend byte.
 CMD_SET_CONFIG = 221        # the settings block, written whole
 CMD_RESET_FILTER = 222      # filter life back to 100%
 CMD_DEVICE_STATUS = 230     # status the accessory pushes unasked
+CMD_SYNC_HISTORY = 212      # CTW3: "send me your drink history"
+CMD_STREAM_SETTING = 80     # starts the history stream; never sent here
+CMD_STREAM_CHECK = 67       # "which packets arrived?"; never answered here
+CMD_STREAM_DATA = 68        # history records, in a stream frame
+CMD_STREAM_DATA_82 = 82     # the same, by a branch the app does not tell apart
+CMD_STREAM_END = 69         # "that was all"; never answered here
 
 #: The WRITES we know how to build a frame for. Anything else is refused
 #: rather than sent as a frame whose length or payload we would be inventing.
@@ -111,9 +130,18 @@ def _ble_unframe(raw: bytes) -> tuple[int | None, bytes]:
     Handles both a full `FA FC FD` frame and the pre-split case where `data`
     already IS the DATA payload; in the latter case the command is None and the
     caller falls back to the `cmd` the JSON carried alongside it.
+
+    A history-stream packet (`FA FC FE`, `BLE_STREAM_HEADER`) is split too, by
+    its own header and length; its index and batch size are dropped, because
+    every packet's records stand on their own. A relayed frame has so far
+    always arrived with the header already stripped, so this is the case for
+    a parent that passes one through whole.
     """
     if len(raw) >= BLE_FRAME_HEADER_LEN + 1 and raw[:3] == BLE_FRAME_HEADER:
         return raw[3], raw[BLE_FRAME_HEADER_LEN:-1]
+    if len(raw) >= BLE_STREAM_HEADER_LEN and raw[:3] == BLE_STREAM_HEADER:
+        length = raw[7] | (raw[8] << 8)
+        return raw[3], raw[BLE_STREAM_HEADER_LEN:BLE_STREAM_HEADER_LEN + length]
     return None, raw
 
 

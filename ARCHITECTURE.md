@@ -237,7 +237,7 @@ reading its FLV directly.
 
 Two files carry almost all of the reverse-engineered protocol, and both are deliberately large:
 
-- **`events/codes.py`** — every event code and BLE opcode, in eight namespaces that must never be
+- **`events/codes.py`** — every event code and BLE opcode, in nine namespaces that must never be
   merged, each row graded by the evidence behind it and naming the firmware function it came from.
   It is one file
   because the namespaces collide, and the collisions are only visible when they sit together.
