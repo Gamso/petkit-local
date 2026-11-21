@@ -38,7 +38,7 @@ from petkit_local.app_api.middleware import ApiError
 from petkit_local.app_api.server import PREFIX, create_app_api
 from petkit_local.app_api.video import (
     CLIENT_BACKLOG_BYTES, CLOSE_REPLACED, CLOSE_SESSION_ENDED, CLOSE_SHUTDOWN, CLOSE_TOO_SLOW,
-    MAX_LIVE_PER_DEVICE, MAX_LIVE_TOTAL, STREAM_ERROR, VideoSessions, _Backlog, device_stream,
+    MAX_LIVE_PER_DEVICE, MAX_LIVE_TOTAL, RELAYED_OPEN_TIMEOUT, STREAM_ERROR, UPSTREAM_TIMEOUT, VideoSessions, _Backlog, device_stream,
     master_playlist, mse_request, rewrite_playlist,
 )
 from petkit_local.devices.registry import DeviceRegistry
@@ -515,7 +515,7 @@ def test_lifecycle_closes_live_relays_before_stopping_go2rtc():
     source = (Path(__file__).resolve().parent.parent / "petkit_local" / "main"
               / "lifecycle.py").read_text(encoding="utf-8")
     body = source.split("async def cleanup_background(", 1)[1].split('"""')[2]
-    assert body.index("close_all()") < body.index("await go2rtc.stop()")
+    assert body.index("close_all()") < body.index("await go2rtc.shutdown()")
     assert "go2rtc=services.go2rtc" in source
 
 
@@ -547,6 +547,26 @@ async def test_hls_is_rewritten_to_stay_under_the_route(setup):
     assert r.status == 200 and await r.read() == FRAGMENT
     assert r.headers["Content-Type"] == "video/iso.segment"
     assert env.video.viewers(100) == 1
+
+
+async def test_a_relayed_camera_gets_longer_to_open_its_first_playlist(setup):
+    """A D4SH's first playlist waits on the relay's retries (#122), so go2rtc
+    gets `RELAYED_OPEN_TIMEOUT` for it; every other camera keeps 5 s."""
+    env, _ = setup
+    token = await env.login()
+    seen: list[float] = []
+    real = env.video.hls_open
+
+    async def spy(http, name, timeout=UPSTREAM_TIMEOUT):
+        seen.append(timeout)
+        return await real(http, name, timeout)
+
+    env.video.hls_open = spy
+    assert (await env.hls(token, "playlist.m3u8")).status == 200
+    env.cams[1].device_type = "d4sh"
+    assert (await env.hls(token, "playlist.m3u8", device=101)).status == 200
+    assert seen == [UPSTREAM_TIMEOUT, RELAYED_OPEN_TIMEOUT]
+    assert RELAYED_OPEN_TIMEOUT > 28  # three 8 s attempts plus their pauses
 
 
 async def test_an_hls_id_is_good_for_one_phone_and_one_camera(setup):

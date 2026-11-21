@@ -56,6 +56,7 @@ petkit_local/
 ├── media/         pipeline.py decrypt -> remux -> path -> row · stitch.py joins ~4s chunks
 │                  serving.py what a media path resolves to, thumbnails, role -> slot
 │                  crypto · transcode · layout · retention · go2rtc
+│                  tserver_relay.py go2rtc's source for a camera a FIN locks (D4SH)
 │                  talk.py two-way talk: ffmpeg -> the talk patcher's sink, one per device
 ├── web/           panel.py the application + the whole route table · api/ the JSON handlers
 │                  appkeys.py the app[...] contract · hub.py event ring/WS · static/ · templates/
@@ -231,7 +232,10 @@ it, gives it a path a human can read, and records a row. Recordings arrive as ma
 `media/stitch.py` joins each episode into one file and deletes the sources only after verifying the
 result. `media/go2rtc.py` runs go2rtc in front of the device's own stream, because the device
 refuses a second connection for several seconds and because Home Assistant's camera stack segfaults
-reading its FLV directly.
+reading its FLV directly. A model whose tserver a normally-closed connection locks for
+minutes (`patchers/camera.py::RELAYED_MODELS`, the D4SH) is read through
+`media/tserver_relay.py` on loopback instead: it holds the device's one connection and always
+leaves it with a TCP reset.
 
 ## Where the knowledge lives
 

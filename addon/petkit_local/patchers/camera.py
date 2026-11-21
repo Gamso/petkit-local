@@ -44,7 +44,8 @@ log = logging.getLogger(__name__)
 #: refuses the second, the same pair six seconds apart both succeed, and three
 #: concurrent opens serve one and refuse two. So one long-lived reader in front
 #: of it is not a nicety — it is what makes the camera usable for more than one
-#: viewer.
+#: viewer. A Dual-Hopper 2's tserver is worse: one client at a time, and a
+#: client that leaves with a FIN locks it for minutes (`RELAYED_MODELS`).
 #:
 #: These are paths rather than one URL because tserver answers the same stream on
 #: every path it is given: `/snapshot.jpg`, `/jpeg` and `/cgi-bin/snapshot.cgi`
@@ -71,6 +72,27 @@ MODEL_STREAM_PATHS = {
     },
 }
 
+#: Models whose tserver must only ever be reached through the relay in
+#: `media/tserver_relay.py`, and whose every connection is closed with a TCP
+#: reset rather than a FIN. Measured on a YumShare Dual-Hopper 2 (`d4sh`, fw
+#: 916, this patcher applied) on 2026-11-21, issue #122:
+#:
+#: * tserver serves ONE client at a time, and when that client closes normally
+#:   (FIN) it never closes its own side: the socket sits in CLOSE_WAIT and
+#:   every later connection waits in the accept queue or is closed empty, for
+#:   ~15-20 minutes. So live view worked after a boot and then died — the
+#:   availability probe and go2rtc dropping its producer each closed with a FIN.
+#: * Closed with a reset (SO_LINGER on, linger 0) it is freed: connections
+#:   opened 6-15 s apart and reset succeeded 5 of 7 times, each failure being
+#:   one that got no response within 8-10 s, and the very next attempt after
+#:   each failure succeeded. With FIN: one success, then a timeout, then an
+#:   accepted-but-empty response.
+#: * `main.flv` works on it (238-244 KB segments, no D4H buffer crash), so it
+#:   keeps the default `STREAM_PATHS`.
+#:
+#: Every model not listed here is dialled by go2rtc directly, as before.
+RELAYED_MODELS = frozenset({"d4sh"})
+
 #: What `media/go2rtc.py::probe_stream` reads. It tests for the FLV signature,
 #: so it has to be an FLV path, and `sub` is the one every model serves
 #: without falling over.
@@ -80,6 +102,11 @@ PROBE_PATH = STREAM_PATHS["sub_flv"]
 def stream_paths(device: Device) -> dict[str, str]:
     """`STREAM_PATHS`, or this model's replacement for them."""
     return MODEL_STREAM_PATHS.get(device.device_type.lower(), STREAM_PATHS)
+
+
+def is_relayed(device: Device) -> bool:
+    """Whether this model's tserver is reached only through the relay (`RELAYED_MODELS`)."""
+    return device.device_type.lower() in RELAYED_MODELS
 
 
 def main_stream_path(device: Device) -> str:

@@ -497,8 +497,9 @@ async def cleanup_background(services: Services, app_instance: web.Application) 
     # Belt and braces: `supervise()` kills the child on its own cancellation,
     # but a supervisor that died earlier would have left it running, and an
     # orphaned go2rtc would hold both the RTSP port and the device's one
-    # connection past our exit.
-    await go2rtc.stop()
+    # connection past our exit. `shutdown` also stops the tserver relay, which
+    # resets any device connection it still holds (media/tserver_relay.py).
+    await go2rtc.shutdown()
 
     if device_keys.MQTT_BROKER in app_instance:
         await app_instance[device_keys.MQTT_BROKER].shutdown()
