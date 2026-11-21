@@ -9,7 +9,8 @@ delivers ALL real-time control over MQTT `thing/service/*` topics, not heartbeat
 
 - **button**  -> a named action (litter start/end, feed, …).
 - **switch/number/select** -> a settings write via `property.set`, with an
-  optimistic local update so the HA entity reflects it immediately.
+  optimistic local update so the HA entity reflects it immediately. The
+  exception is an `ACTION_SWITCHES` entry, whose ON and OFF are two services.
 - **text** (schedules) -> raw JSON written to device config, served by
   dev_schedule_get / dev_feed_get.
 
@@ -243,6 +244,33 @@ def _reset_bagbox(_device: Device) -> Command:
         "reset_bagbox",
         _envelope("thing.service.reset_bagbox", {}, ms_id=True),
     )
+
+
+def _t4_k3_light(device: Device, on: bool) -> Command:
+    """Switch the light of the K3 linked to a T4 on or off (issue #133).
+
+    ON is `start_action` 7 and OFF `end_action` 7, exactly what PetKit's cloud
+    sent for the owner's toggles (`codes.T4_K3_LIGHT_COMMANDS`): one switch,
+    two services. The T4's next report carries `k3LightSwitch`; until then the
+    state is set here, optimistically, as a settings write would be -- and for
+    OFF it is the only confirmation there may be, since no property echo of
+    an OFF has been captured.
+    """
+    if device.device_type.lower() != "t4":
+        raise Refused("The K3 light is driven through a T4 only")
+    device.state["k3LightSwitch"] = int(on)
+    builder = _litter_start if on else _litter_end
+    return builder(codes.T4_K3_LIGHT_ACTION)
+
+
+#: Switches that start and end a device ACTION instead of writing a setting:
+#: entity key -> `(device, on) -> Command`. Routed ahead of every settings
+#: path in `handle_ha_command`, because their `value_path` is the device's own
+#: report (`state.`) and the generic path would otherwise park the value in
+#: `settings`, which `to_device_info` serves back to the device.
+ACTION_SWITCHES = {
+    "k3_light": _t4_k3_light,
+}
 
 
 def _litter_ctrl(action_key: str, code: int) -> Command:
@@ -866,6 +894,12 @@ def handle_ha_command(device: Device, entity: EntityDef, payload: str) -> Comman
         return None
 
     comp = entity.component
+
+    if comp == "switch" and entity.key in ACTION_SWITCHES:
+        on = bool(_coerce_switch(payload))
+        log.info("Switch '%s' %s for device %d", entity.key, "on" if on else "off",
+                 device.petkit_id)
+        return ACTION_SWITCHES[entity.key](device, on)
 
     if comp == "switch" and entity.value_path.startswith(CAPABILITY_VALUE_PREFIX):
         cap = entity.value_path[len(CAPABILITY_VALUE_PREFIX):]

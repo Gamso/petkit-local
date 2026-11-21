@@ -32,7 +32,8 @@ from petkit_local.ha.categories import get_entities_for_device, get_retired_enti
 from petkit_local.ha.command_router import CommandRouter
 from petkit_local.ha.entities.ble import get_ble_entities
 from petkit_local.ha.entities.pet import PET_SENSORS
-from petkit_local.ha.discovery import STATUS_TOPIC, build_discovery_payload, discovery_topic
+from petkit_local.ha.discovery import (STATUS_TOPIC, EntityDef, build_discovery_payload,
+                                       discovery_topic)
 from petkit_local.devices.state_parsers import apply_consumable_state
 from petkit_local.events.normalize import MQTT_ENVELOPE_KEYS, apply_feed_plan_state
 from petkit_local.ha.commands import LOCAL_DEFAULTS, multi_config_texts
@@ -121,6 +122,13 @@ class HAPublisher:
         #: the discovery configs, so `publish_state` compares against this and
         #: re-announces, rather than every place that can learn one having to.
         self._announced_model: dict[int, str] = {}
+        #: Device id -> the entities its last discovery announced, by
+        #: `(component, key)`. Most of a device's set is fixed by its model,
+        #: but not all of it: a T4's `k3_light` exists only while a K3 is
+        #: linked (`categories.has_linked_k3`), which a state report can change
+        #: at any time. `publish_state` re-announces when the set moved, and
+        #: `publish_discovery` clears what dropped out of it.
+        self._announced_entities: dict[int, dict[tuple[str, str], EntityDef]] = {}
 
     @property
     def connected(self) -> bool:
@@ -291,10 +299,16 @@ class HAPublisher:
             )
             await self._emit(topic, json.dumps(payload), retain=True)
         self._announced_model[device.petkit_id] = model
+        now = {(e.component, e.key): e for e in entities}
+        before = self._announced_entities.get(device.petkit_id, {})
+        self._announced_entities[device.petkit_id] = now
 
         # An empty retained config is how HA is told an entity is gone; leaving
-        # an entity out of the list above only stops announcing it.
-        retired = get_retired_entities_for_device(device)
+        # an entity out of the list above only stops announcing it. Both the
+        # ones this model retired for good and the ones that were announced a
+        # moment ago and no longer apply (an unlinked K3's light).
+        dropped = [e for ident, e in before.items() if ident not in now]
+        retired = get_retired_entities_for_device(device) + dropped
         for entity in retired:
             await self._emit(discovery_topic(entity, device.petkit_id, self._prefix),
                              "", retain=True)
@@ -310,6 +324,7 @@ class HAPublisher:
         entities = get_entities_for_device(device)
         self._commands.clear_entities(device.petkit_id)
         self._announced_model.pop(device.petkit_id, None)
+        self._announced_entities.pop(device.petkit_id, None)
 
         for entity in entities:
             topic = discovery_topic(entity, device.petkit_id, self._prefix)
@@ -360,12 +375,22 @@ class HAPublisher:
             return
 
         announced = self._announced_model.get(device.petkit_id)
-        if announced is not None and announced != ha_model(device):
+        if announced is not None and (
+                announced != ha_model(device)
+                or self._entity_set_changed(device)):
             await self.publish_discovery(device)
 
         state_topic = f"petkit-local/{device.petkit_id}/state"
         state_data = self._build_state(device)
         await self._emit(state_topic, json.dumps(state_data), retain=True)
+
+    def _entity_set_changed(self, device: Device) -> bool:
+        """Whether `device` now publishes other entities than were announced."""
+        announced = self._announced_entities.get(device.petkit_id)
+        if announced is None:
+            return False
+        return {(e.component, e.key)
+                for e in get_entities_for_device(device)} != set(announced)
 
     async def publish_availability(self, device: Device) -> None:
         """Publish `online`/`offline` for every entity of the device.
