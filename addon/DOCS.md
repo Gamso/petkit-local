@@ -268,6 +268,13 @@ Two things worth knowing:
 - **It wants a few seconds between connections.** Reopening the stream the
   instant it was closed can fail once; waiting a moment and retrying works. That
   is the device, not go2rtc — it behaves the same when opened directly.
+- **A YumShare Dual-Hopper 2 is read through petkit-local itself.** Its camera
+  serves one client at a time, and a client that hangs up normally locks it for
+  15–20 minutes. petkit-local holds that one connection for go2rtc, resets it
+  when the last viewer leaves (which does not lock it), and retries a camera
+  that does not answer at once, so the first viewer can wait up to half a
+  minute. Avoid opening that device's own `http://…` addresses in VLC or
+  anything else: hanging up from there locks it all the same.
 
 There is no snapshot URL: the device answers every path with the same video
 stream, so the MQTT camera entity stays empty and the sensor carries the URL

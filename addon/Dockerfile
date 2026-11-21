@@ -97,7 +97,8 @@ RUN set -eux; \
 # a device camera to Home Assistant — HA opens a stream URL with PyAV, and the
 # device's own FLV segfaults libav and restarts the whole of HA, while tserver
 # additionally refuses every second connection. go2rtc holds one connection and
-# republishes RTSP, which HA reads happily.
+# republishes RTSP, which HA reads happily. (A D4SH's tserver is read through
+# media/tserver_relay.py, because a FIN locks it for minutes; issue #122.)
 #
 # Pinned and checksummed rather than :latest, because this is a binary we hand a
 # device's video to and the build must be reproducible. Upstream ships static

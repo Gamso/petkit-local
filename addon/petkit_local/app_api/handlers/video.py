@@ -15,10 +15,12 @@ from aiohttp import web
 from petkit_local.app_api.appkeys import AUTH, GO2RTC, REGISTRY, SESSION, VIDEO_SESSIONS
 from petkit_local.app_api.handlers._common import path_int
 from petkit_local.app_api.video import (
-    CLIENT_HEARTBEAT_SECONDS, CLIENT_MAX_MESSAGE, HLS_FILES, UPSTREAM_MAX_MESSAGE,
-    UPSTREAM_TIMEOUT, device_stream, master_playlist, valid_hls_id, valid_segment_number,
+    CLIENT_HEARTBEAT_SECONDS, CLIENT_MAX_MESSAGE, HLS_FILES, RELAYED_OPEN_TIMEOUT,
+    UPSTREAM_MAX_MESSAGE, UPSTREAM_TIMEOUT, device_stream, master_playlist, valid_hls_id,
+    valid_segment_number,
 )
 from petkit_local.app_api.middleware import ApiError
+from petkit_local.patchers.camera import is_relayed
 
 
 def _stream(request: web.Request) -> tuple[int, str]:
@@ -97,7 +99,10 @@ async def video_hls(request: web.Request) -> web.StreamResponse:
         if file == "playlist.m3u8" and hls_id is None:
             slot = sessions.admit(session_id, device_id, "hls")
             try:
-                slot.hls_id, upstream = await sessions.hls_open(http, name)
+                device = request.app[REGISTRY].get(device_id)
+                relayed = device is not None and is_relayed(device)
+                timeout = RELAYED_OPEN_TIMEOUT if relayed else UPSTREAM_TIMEOUT
+                slot.hls_id, upstream = await sessions.hls_open(http, name, timeout)
             except BaseException:
                 sessions.release(slot)
                 raise

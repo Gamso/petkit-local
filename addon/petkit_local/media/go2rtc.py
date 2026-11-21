@@ -26,6 +26,14 @@ fail, six seconds apart all succeed. Normal viewing does not look like that, and
 the alternative is holding the device streaming 24/7, which is the thing this
 design exists to avoid.
 
+A Dual-Hopper 2's tserver is worse than a cooldown (issue #122): it serves one
+client at a time and is locked for ~15-20 minutes by a client that leaves with a
+FIN, which is how both go2rtc and `aiohttp` leave. For those models
+(`patchers/camera.py::RELAYED_MODELS`) go2rtc reads the stream from
+`media/tserver_relay.py` on loopback instead, which holds the device's one
+connection and always leaves it with a reset; the probe resets too, and goes
+through the same one-connection guard.
+
 It is deliberately a child process rather than a library. go2rtc is Go, it is
 already the thing Home Assistant itself ships for WebRTC, and re-implementing an
 RTSP server in Python to avoid one `exec` would be the worse trade.
@@ -48,12 +56,11 @@ import socket
 import time
 from typing import TYPE_CHECKING, Any
 
-from urllib.parse import urlparse
-
 import aiohttp
 
+from petkit_local.media.tserver_relay import TserverRelay, probe_with_reset
 from petkit_local.media.turn import STUN_URL
-from petkit_local.patchers.camera import PROBE_PATH, main_stream_path, stream_urls
+from petkit_local.patchers.camera import PROBE_PATH, is_relayed, main_stream_path, stream_urls
 from petkit_local.patchers.common import TALK_TCP_PORT
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
@@ -241,7 +248,7 @@ def advertised_host() -> str:
     return name
 
 
-async def probe_stream(ip: str, timeout: float = PROBE_TIMEOUT) -> bool:
+async def probe_stream(ip: str, timeout: float = PROBE_TIMEOUT, *, reset: bool = False) -> bool:
     """Whether `ip` is actually serving the camera stream right now.
 
     This exists because `config["active_patchers"]` is OUR bookkeeping, not the
@@ -255,9 +262,15 @@ async def probe_stream(ip: str, timeout: float = PROBE_TIMEOUT) -> bool:
     the sub stream (`PROBE_PATH`), never the main one: a D4H's `main.flv`
     crashes tserver for good, and this runs on a timer. Never raises: every
     failure is "no stream", which is the safe answer.
+
+    With `reset` (a relayed model, `RELAYED_MODELS`) the connection is a raw
+    socket closed with RST rather than aiohttp's FIN, which would lock that
+    tserver for minutes; `ip` must then be an IPv4 `host[:port]`.
     """
     if not ip:
         return False
+    if reset:
+        return await probe_with_reset(ip, PROBE_PATH, FLV_SIGNATURE, timeout)
     url = f"http://{ip}/{PROBE_PATH}"
     try:
         async with aiohttp.ClientSession() as session:
@@ -395,7 +408,8 @@ class Go2rtc:
     def __init__(self, registry: DeviceRegistry, *, data_dir: str,
                  on_change: Any | None = None, host_candidate: str = "",
                  api_password: str = "", api_public: bool = False,
-                 extra_candidates: list[str] | None = None) -> None:
+                 extra_candidates: list[str] | None = None,
+                 relay: TserverRelay | None = None) -> None:
         """
         Args:
             on_change: Awaited after the child starts or stops, so whatever
@@ -403,6 +417,11 @@ class Go2rtc:
                 in Home Assistant stays empty until the device happens to report
                 something — measured: the sidecar came up 21 seconds after the
                 last state publish, and nothing republished for minutes.
+            relay: go2rtc's source for the relayed models; one on
+                `tserver_relay.RELAY_PORT` when not given. Started by
+                `supervise` once such a camera exists and stopped by
+                `shutdown` -- never by a go2rtc restart, so its URLs and the
+                rendered config stay the same across one.
         """
         self._registry = registry
         self._on_change = on_change
@@ -424,6 +443,12 @@ class Go2rtc:
         #: nothing about another, and the address seeded from `last_ip` at
         #: startup may be stale.
         self._probes: dict[int, tuple[float, bool, str]] = {}
+        self._relay = relay if relay is not None else TserverRelay(registry)
+
+    @property
+    def relay(self) -> TserverRelay:
+        """The loopback relay in front of the relayed models' tserver."""
+        return self._relay
 
     @property
     def running(self) -> bool:
@@ -438,12 +463,21 @@ class Go2rtc:
         return rtsp_url(device, host) if host else ""
 
     def desired_streams(self) -> dict[str, str]:
-        """`{stream name: device stream url}` for every confirmed camera."""
+        """`{stream name: source url}` for every confirmed camera.
+
+        The device's own URL, except for a relayed model while the relay
+        listens: then the relay's, which names the device by id rather than
+        by address, so a new IP does not even restart go2rtc. A relay that
+        could not bind falls back to the device, i.e. the old behaviour.
+        """
         streams = {}
         for device in self._registry.all():
             ip = (device.state or {}).get("ip", "")
             if ip and device.state.get(STREAM_AVAILABLE):
-                streams[stream_name(device)] = f"http://{ip}/{main_stream_path(device)}"
+                if is_relayed(device) and self._relay.running:
+                    streams[stream_name(device)] = self._relay.url_for(device)
+                else:
+                    streams[stream_name(device)] = f"http://{ip}/{main_stream_path(device)}"
         return streams
 
     def desired_backchannels(self) -> dict[str, str]:
@@ -511,7 +545,15 @@ class Go2rtc:
             deadline, _, probed_ip = self._probes.get(device.petkit_id, (0.0, False, ""))
             if deadline > now and probed_ip == ip:
                 continue
-            available = await probe_stream(ip)
+            if is_relayed(device):
+                # Through the relay's guard: the relay holding the device's one
+                # connection for a viewer means skip, as a watched stream does.
+                with self._relay.probing(device) as free:
+                    if not free:
+                        continue
+                    available = await probe_stream(ip, reset=True)
+            else:
+                available = await probe_stream(ip)
             ttl = PROBE_TTL_SECONDS if available else PROBE_RETRY_SECONDS
             self._probes[device.petkit_id] = (now + ttl, available, ip)
             if available:
@@ -531,6 +573,7 @@ class Go2rtc:
         try:
             while True:
                 try:
+                    await self._ensure_relay()
                     await self.refresh_probes()
                     await self.reconcile()
                 except asyncio.CancelledError:
@@ -539,8 +582,24 @@ class Go2rtc:
                     log.exception("go2rtc supervisor pass failed")
                 await asyncio.sleep(SUPERVISE_INTERVAL_SECONDS)
         except asyncio.CancelledError:
-            await self.stop()
+            await self.shutdown()
             raise
+
+    async def _ensure_relay(self) -> None:
+        """Start the relay once a relayed camera exists, before anything probes
+        it, so the first go2rtc config already names the relay. Retried every
+        pass while its port cannot be bound."""
+        if not self._relay.running and any(
+                d.is_camera and is_relayed(d) for d in self._registry.all()):
+            await self._relay.start()
+
+    def _any_device_ip(self) -> str:
+        """A served camera's IPv4 address, to find our own route to the LAN."""
+        for device in self._registry.all():
+            ip = (device.state or {}).get("ip", "")
+            if is_ipv4(ip) and device.state.get(STREAM_AVAILABLE):
+                return ip
+        return ""
 
     async def reconcile(self) -> None:
         """Start, restart or stop the child to match what the devices need."""
@@ -557,12 +616,9 @@ class Go2rtc:
             # (see lan_ip). Any device IP does — they share the LAN. Only when
             # asked: WebRTC is a listener on every interface, and a container
             # that happens to sit on the LAN must not open one by itself.
-            device_ip = ""
-            for url in streams.values():
-                device_ip = urlparse(url).hostname or ""
-                if device_ip:
-                    break
-            candidate = lan_ip(device_ip)
+            # Read from the devices, not the stream URLs: a relayed camera's
+            # URL is the loopback relay's.
+            candidate = lan_ip(self._any_device_ip())
         config = render_config(streams, self._log_path,
                                webrtc_candidate=candidate,
                                backchannels=self.desired_backchannels(),
@@ -617,6 +673,14 @@ class Go2rtc:
         with contextlib.suppress(asyncio.TimeoutError, Exception):
             await asyncio.wait_for(proc.wait(), 10)
         await self._notify()
+
+    async def shutdown(self) -> None:
+        """Stop go2rtc, then the relay, resetting whatever it still holds.
+
+        `stop` is also what a go2rtc restart calls and leaves the relay
+        alone; this is the add-on going away."""
+        await self.stop()
+        await self._relay.stop()
 
     async def _notify(self) -> None:
         """Tell the caller the URLs just changed. Never fatal: this is a courtesy

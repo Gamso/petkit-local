@@ -92,6 +92,13 @@ CLIENT_MAX_MESSAGE = 4096
 HLS_IDLE_SECONDS = 10.0
 #: How long go2rtc gets to accept the socket or answer an HLS request.
 UPSTREAM_TIMEOUT = 5.0
+#: How long go2rtc gets to answer the FIRST playlist of a camera reached through
+#: `media/tserver_relay.py` (a D4SH). go2rtc answers it only once its producer
+#: is up, and the relay may spend up to ~28 s retrying a tserver that is slow to
+#: accept (three 8 s attempts plus pauses, #122). Five seconds there answered
+#: 503 while the relay was about to succeed, and the viewer leaving then reset
+#: the connection the relay had just opened.
+RELAYED_OPEN_TIMEOUT = 35.0
 #: A playlist is a few hundred bytes; this is a ceiling, not an estimate.
 MAX_PLAYLIST_BYTES = 256 * 1024
 #: One fMP4 fragment from go2rtc; a keyframe of a 1080p stream is well below.
@@ -405,8 +412,12 @@ class VideoSessions:
 
     # --- go2rtc HTTP (HLS) ---------------------------------------------
 
-    async def hls_open(self, session: aiohttp.ClientSession, name: str) -> tuple[str, str]:
+    async def hls_open(self, session: aiohttp.ClientSession, name: str,
+                       timeout: float = UPSTREAM_TIMEOUT) -> tuple[str, str]:
         """Open a go2rtc HLS session on `name`: `(its id, its master playlist)`.
+
+        `timeout` is `RELAYED_OPEN_TIMEOUT` for a relayed camera, whose first
+        answer waits on the relay's retries.
 
         Raises:
             ApiError: 503 when go2rtc does not answer, 502 when its answer
@@ -415,7 +426,8 @@ class VideoSessions:
         text = await self._get_playlist(
             session, f"/api/stream.m3u8?src={name}&mp4",
             missing=ApiError(503, "live_unavailable",
-                             "go2rtc could not open this stream; try again in a few seconds"))
+                             "go2rtc could not open this stream; try again in a few seconds"),
+            timeout=timeout)
         hls_id = ""
         for uri in playlist_uris(text):
             parts = urlsplit(urljoin("/api/", uri))
@@ -428,10 +440,11 @@ class VideoSessions:
         return hls_id, text
 
     async def _get_playlist(self, session: aiohttp.ClientSession, path: str,
-                            missing: ApiError | None = None) -> str:
+                            missing: ApiError | None = None,
+                            timeout: float = UPSTREAM_TIMEOUT) -> str:
         try:
             async with session.get(f"http://{self.go2rtc_api}{path}",
-                                   timeout=aiohttp.ClientTimeout(total=UPSTREAM_TIMEOUT)) as r:
+                                   timeout=aiohttp.ClientTimeout(total=timeout)) as r:
                 if r.status == 404:
                     raise missing or ApiError(
                         404, "hls_session_expired",

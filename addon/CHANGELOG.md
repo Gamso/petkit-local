@@ -68,6 +68,24 @@
 
 ### Fixed
 
+- **A Dual-Hopper 2's live view no longer dies after the first viewer**
+  (issue #122). Its camera (the camera patcher's tserver, fw 916) serves one
+  client at a time and never closes its side when a client hangs up normally:
+  every later connection then waited 15–20 minutes, so live view worked after a
+  boot and stopped at the first availability probe or the first viewer leaving.
+  A connection closed with a TCP reset frees it (measured 2026-11-21). For that
+  model only (`d4sh`, `patchers/camera.py::RELAYED_MODELS`), go2rtc now reads
+  the stream from a relay inside the add-on, on `127.0.0.1:1985`
+  (`media/tserver_relay.py`), instead of from the device: the relay holds the
+  device's one connection, passes its FLV through byte for byte, resets it
+  when go2rtc lets go or the add-on stops, retries a camera that gives no
+  response within 8 s (resetting each attempt, three in all), and refuses a
+  second connection to the same camera with 503. The availability probe on it
+  resets too, retries a silent camera the same way, and is skipped while a
+  viewer holds the connection rather than racing it. The
+  stream stays `main.flv`. Every other model is read exactly as before. Not yet
+  confirmed on the device itself: that go2rtc's own reconnects through the
+  relay keep the camera usable over days.
 - **A CTW3's battery working and sleep times take PetKit's ranges**: 15–300 s
   and 60–10800 s, in steps of 15 and 60, as PetKit's battery-mode window
   offers them. They were 15–3600 and 60–7200. An accessory's number write —
