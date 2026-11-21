@@ -24,7 +24,7 @@ from contextvars import ContextVar
 from pathlib import Path
 from typing import Any
 
-from sqlalchemy import URL, delete, event as sa_event, func, insert, select, text, update
+from sqlalchemy import URL, delete, event as sa_event, func, insert, or_, select, text, update
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import (
     AsyncConnection,
@@ -760,6 +760,15 @@ class EventStore:
         grouping - visit plus its sub-events - is NOT done here but by
         `events/sessions.py::group_sessions` on top of this result, keeping the
         grouping heuristic out of SQL where it stays readable and testable.
+
+        Transport rows (`codes.KIND_SYSTEM`) are left out unless asked for by
+        kind. Neither transport stores one any more (`codes.MQTT_TRANSPORT_TOPICS`),
+        but an HTTP parent relaying a BLE accessory stored codes 51/52/53 for as
+        long as that path did not ask, and those rows are still in owners'
+        databases. Hidden rather than deleted: they carry the relayed frames,
+        which is protocol evidence, and `backfill_event_rows` has regraded the
+        ones stored under another kind (52, `connect_start`) before the first
+        query runs. In SQL rather than after it, so they cannot use up `limit`.
         """
         stmt = select(Event)
         if device_id is not None:
@@ -770,6 +779,9 @@ class EventStore:
             stmt = stmt.where(Event.ts < end_ts)
         if event_kind is not None:
             stmt = stmt.where(Event.event_kind == event_kind)
+        else:
+            stmt = stmt.where(or_(Event.event_kind.is_(None),
+                                  Event.event_kind != codes.KIND_SYSTEM))
         stmt = stmt.order_by(Event.ts.desc()).limit(limit)
 
         media_by_related: dict[str, list[dict[str, Any]]] = {}

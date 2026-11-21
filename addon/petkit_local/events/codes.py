@@ -135,6 +135,12 @@ LITTER_WITHOUT_N50 = frozenset({"t6"})
 LITTER_T6_PLUS = frozenset({"t6", "t7"})
 #: Feeders with a camera; the eat/move/pet detection topics are theirs alone.
 FEEDER_CAMERA = frozenset({"d4h", "d4sh"})
+#: Litter boxes seen relaying a BLE accessory over HTTP, i.e. sending the
+#: `dev_event_report` twins (51/52/53) of the `ble_relay_*` MQTT topics: the
+#: T5 generation, and a T4 on firmware 1.652 relaying a CTW3 (2026-11). The
+#: T4 is the ESP32 model; reading the Ingenic generation's set as the whole
+#: list is what left its 52 classified by nothing.
+LITTER_BLE_RELAY = LITTER_NEXT_GEN | frozenset({"t4"})
 
 # --- grades ----------------------------------------------------------------
 
@@ -463,19 +469,45 @@ LITTER_HTTP_CODES: dict[str, EventCode] = {
              "related_event value is an unquoted bare token) -- see "
              "ingest._repair_bare_values.",
     ),
+    # 51/52/53 are BLE relay TRANSPORT (KIND_SYSTEM): stored by neither
+    # transport, never a Timeline row -- see `is_transport`.
     "51": EventCode(
         kind=KIND_SYSTEM, label="BLE relay started", detail=True,
-        families=LITTER_NEXT_GEN,
+        families=LITTER_BLE_RELAY,
         note="Confirmed on a T5 (fw 943, HTTP capture). Content "
              "{start_time, start_reason, action, device: {mac, type}}. "
-             "The MQTT equivalent is ble_relay_start/post.",
+             "The MQTT equivalent is ble_relay_start/post. Also sent by a "
+             "T4 (fw 1.652) on HTTP while relaying a CTW3: 4 reports in 7 "
+             "days (2026-11); none of the T4's payloads is captured here, "
+             "so the content shape is the T5's.",
+    ),
+    "52": EventCode(
+        kind=KIND_SYSTEM, label="BLE relay finished", grade=INFERRED,
+        detail=True, families=LITTER_BLE_RELAY,
+        note="Read as the HTTP twin of ble_relay_over/post. Seen only from a "
+             "T4 (fw 1.652) on HTTP relaying a CTW3: 11 reports in 7 days "
+             "(2026-11), beside 4 of code 51 and 15 of code 53, and no "
+             "payload of it is captured here. The reading rests on two "
+             "things, neither a firmware name: it sits between relay start "
+             "(51) and relay data (53), the order the same T4 posts "
+             "ble_relay_start, ble_relay_over and ble_response in over MQTT "
+             "(tests/fixtures/t4_ble_relay_and_data_get.json); and it "
+             "outnumbers 51, as ble_relay_over outnumbers ble_relay_start -- "
+             "the parent reports one when the link comes up (action 1), "
+             "another when it closes (action 0) and one for a failed connect "
+             "(result 6). Listed for the T5 generation because that firmware "
+             "sends 51 and 53 over HTTP; a T5 sending 52 has not been seen.",
     ),
     "53": EventCode(
         kind=KIND_SYSTEM, label="BLE relay data", detail=True,
-        families=LITTER_NEXT_GEN,
+        families=LITTER_BLE_RELAY,
         note="Confirmed on a T5 (fw 943, HTTP capture). Content "
              "{payload: [{cmd, data}], device: {type, mac}}. "
-             "The MQTT equivalent is ble_response/post.",
+             "The MQTT equivalent is ble_response/post. Also sent by a T4 "
+             "(fw 1.652) on HTTP while relaying a CTW3: 15 reports in 7 days "
+             "(2026-11), content not captured here. Over HTTP nothing decodes "
+             "the frames it carries: the accessory's readings are read only "
+             "from ble_response, i.e. only while the parent is on MQTT.",
     ),
 }
 
@@ -969,14 +1001,37 @@ MQTT_EVENT_TOPICS: dict[str, EventCode] = {
     "ble_relay_over": EventCode(
         kind=KIND_SYSTEM, label="BLE relay finished", grade=CONFIRMED,
         detail=True),
+    "connect_start": EventCode(
+        kind=KIND_SYSTEM, label="BLE connect started", grade=INFERRED,
+        detail=True, families=frozenset({"t4"}),
+        note="Seen only from a T4 (fw 1.652) on MQTT, 3 times in 7 days "
+             "(2026-11), on a box relaying a CTW3; no payload of it is "
+             "captured here and no firmware "
+             "name is recovered. Read from its name as the parent opening a "
+             "Bluetooth link -- the counterpart of the thing.service.connect "
+             "we send, beside ble_relay_start -- which accessory it is for "
+             "is not known. Nothing handles it, so it is transport like the "
+             "rest of this group and is not stored."),
 }
 
-#: Topics the bridge handles purely for their side effects; they never become
-#: timeline rows. `mqtt/bridge.py` owns this exclusion, listed here so the two
-#: stay in sync.
-MQTT_TRANSPORT_TOPICS = frozenset({"property", "property_post", "data_get",
-                                   "ble_response", "ble_relay_start",
-                                   "ble_relay_over"})
+#: THE TRANSPORT RULE, for both transports at once: an event whose code is
+#: `KIND_SYSTEM` is plumbing -- state pushes, config requests, the BLE relay's
+#: start/finish/data -- and is handled only for its side effects. It is never
+#: stored as an event row, so it never reaches the Timeline (panel or app
+#: API), its day counts, the phone's notifications or an HA event entity.
+#: The kind is the rule, rather than a list, because a list is what drifted:
+#: the bridge once skipped three of six topics, and the HTTP twins 51/52/53 of
+#: `ble_relay_*` were stored by `dev_event_report` as Timeline rows because
+#: nothing on that path asked at all.
+#:
+#: Who applies it: `mqtt/bridge.py` through `MQTT_TRANSPORT_TOPICS`, the HTTP
+#: `dev_event_report` handler through `is_transport` (per device category --
+#: a numeric code means something else on a feeder), and
+#: `EventStore.query_timeline`, which hides `KIND_SYSTEM` rows stored before
+#: this rule reached the HTTP path (`backfill_event_rows` regrades them first).
+#: The live log still shows each one as the raw HTTP request or MQTT frame.
+MQTT_TRANSPORT_TOPICS = frozenset(
+    name for name, code in MQTT_EVENT_TOPICS.items() if code.kind == KIND_SYSTEM)
 
 
 def mqtt_event_names(kind: str, families: frozenset[str]) -> list[str]:
@@ -2022,6 +2077,18 @@ def lookup(event_type: str | None,
     # A category with a sparse table (the feeder's, mostly unrecovered) still
     # gets MQTT names, which ARE global.
     return MQTT_EVENT_TOPICS.get(key.lower())
+
+
+def is_transport(event_type: str | None, device_type: str | None = None) -> bool:
+    """Whether a report is transport plumbing that is never stored as an event.
+
+    The rule documented at `MQTT_TRANSPORT_TOPICS`, for either namespace.
+    Per device category like `lookup`: HTTP 52 is a BLE relay report on a
+    litter box, and on a feeder, whose table does not have it, it is an
+    unknown code and is kept, so it can still be noticed.
+    """
+    code = lookup(event_type, device_type)
+    return code is not None and code.kind == KIND_SYSTEM
 
 
 def codes_for(device_type: str | None) -> dict[str, EventCode]:
