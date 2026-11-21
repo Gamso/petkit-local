@@ -14,7 +14,7 @@ dependencies = [
     "aiohttp>=3.14,<4",
     "amqtt>=0.12.1,<1",
     "aiomqtt>=2.5.1,<3",
-    "cryptography>=42",
+    "cryptography>=50.0.2",
     "pyelftools>=0.33",
     # [asyncio] pulls in greenlet, which SQLAlchemy's async engine needs to
     # bridge its synchronous internals — without it every await raises.

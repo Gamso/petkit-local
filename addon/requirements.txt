@@ -1,7 +1,7 @@
 aiohttp>=3.14,<4
 amqtt>=0.12.1,<1
 aiomqtt>=2.5.1,<3
-cryptography>=42
+cryptography>=50.0.2
 pyelftools>=0.33
 SQLAlchemy[asyncio]>=2.1.8,<3
 aiosqlite>=0.19
