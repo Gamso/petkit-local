@@ -698,7 +698,11 @@ class BLERelay:
             if fragment:
                 pending -= answered
                 if CMD_DEVICE_STATUS in answered:
-                    pending.clear()
+                    # A 230 answers the status and settings reads, never the
+                    # 212: a CTW3 pushes one unasked right after the history
+                    # request, and clearing everything hung up 0.3 s after
+                    # asking, before the reply could come (#126).
+                    pending &= {BLE_HISTORY_SYNC_CMD}
             if history.pending is not None:
                 pending.discard(BLE_HISTORY_SYNC_CMD)
         # History progress ends a session only once a 212 reply has said how

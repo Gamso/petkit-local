@@ -200,6 +200,30 @@ async def test_a_ctw3_that_answered_its_reads_is_asked_for_its_history(event_sto
     assert ble.get(700).history["asked_at"] > 0
 
 
+async def test_a_status_push_after_the_request_does_not_hang_up_on_it(event_store):
+    """The owner's CTW3 on 2026-11-21 (#126): right after the 212 it sent two
+    252s and an unasked 230, and that 230 cleared the pending 212 -- the relay
+    hung up 0.3 s after asking, before any history could come back."""
+    bridge, reg, ble = _relay(event_store)
+    await _link_up_and_answer(bridge, reg)
+    assert [cmd for cmd, _ in _ble_frames(bridge)] == [210, 211, 212]
+
+    await bridge._handle_event(reg.get(10), "ble_response", _response((252, b"\x00\x01")))
+    await bridge._handle_event(reg.get(10), "ble_response", _response((252, b"\x00\x01")))
+    await bridge._handle_event(reg.get(10), "ble_response",
+                               _response((230, base64.b64decode(CTW3_CMD230))))
+    assert _connects(bridge) == [], "hung up before the 212 was answered"
+
+    # The reply still ends it the normal way.
+    await bridge._handle_event(reg.get(10), "ble_response",
+                               _response((212, bytes([0, 0, 0, 0, 6]))))
+    assert _connects(bridge) == []
+    await bridge._handle_event(reg.get(10), "ble_response",
+                               _response((68, _record(START, 42))))
+    assert len(await _stored(event_store)) == 1
+    assert _connects(bridge) == [0]
+
+
 async def test_records_land_on_the_accessory_and_the_session_ends_when_all_are_in(event_store):
     bridge, reg, ble = _relay(event_store)
     await _link_up_and_answer(bridge, reg)

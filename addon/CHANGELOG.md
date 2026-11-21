@@ -68,6 +68,13 @@
 
 ### Fixed
 
+- **A CTW3's drink history now gets the time to arrive** (issue #126). Right
+  after the history request (212) the fountain pushes its status by itself,
+  and that status reply cleared every read the relay was waiting on, the 212
+  included: the relay hung up 0.3 s after asking, so no drink ever came back.
+  A status reply now settles the status and settings reads only, and the
+  session stays open until the 212 is answered.
+
 - **A Dual-Hopper 2's live view no longer dies after the first viewer**
   (issue #122). Its camera (the camera patcher's tserver, fw 916) serves one
   client at a time and never closes its side when a client hangs up normally:
