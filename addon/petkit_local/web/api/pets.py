@@ -20,10 +20,12 @@ from typing import Any
 import aiohttp
 from aiohttp import web
 
-from petkit_local.ai.pets import cloud_pets, pet_weight_grams
+from petkit_local.ai.pets import (
+    FACE_EMPTY, FACE_LIMIT, FACE_NOT_JPEG, cloud_pets, entered_weight,
+)
 from petkit_local.events.store import MAX_FACES_PER_PET
 from petkit_local.http.cloud_fetch import CLOUD_TIMEOUT, CloudRefused, fetch_as_device
-from petkit_local.utils.coerce import to_float, to_int
+from petkit_local.utils.coerce import to_int
 from petkit_local.utils.paths import UnsafePathError, safe_join
 from petkit_local.web.api._common import (
     _cloud_upstream, _face_summaries, _json_body, _path_id, _pets_by_id,
@@ -32,18 +34,12 @@ from petkit_local.web.appkeys import CFG, EVENT_STORE, HA_PUBLISHER, PET_REGISTR
 
 log = logging.getLogger(__name__)
 
-
-def _entered_weight(value: Any) -> float | None:
-    """A typed pet weight as the number to store, or None for "no weight".
-
-    Kilograms, as PetKit's app shows it (`ai/pets.py::pet_weight_grams` reads a
-    value above 100 as grams). Anything that is not a positive number clears
-    the weight rather than reaching a REAL column as text.
-    """
-    weight = to_float(value, None)
-    if isinstance(value, bool) or weight is None or weight <= 0:
-        return None
-    return weight
+#: `PetRegistry.face_refusal`'s reasons, as the panel words them.
+_FACE_REFUSALS = {
+    FACE_EMPTY: "empty body",
+    FACE_NOT_JPEG: "not a valid JPEG",
+    FACE_LIMIT: f"at most {MAX_FACES_PER_PET} photos per pet",
+}
 
 
 async def api_pets_list_create(request: web.Request) -> web.Response:
@@ -72,7 +68,7 @@ async def api_pets_list_create(request: web.Request) -> web.Response:
         device_ids = []
 
     pet = await pet_registry.create(name, device_ids=device_ids,
-                                    weight=_entered_weight(body.get("weight")))
+                                    weight=entered_weight(body.get("weight")))
     ha_publisher = request.app.get(HA_PUBLISHER)
     if ha_publisher is not None:
         await ha_publisher.publish_pet_discovery(pet)
@@ -132,17 +128,13 @@ async def api_pet_detail(request: web.Request) -> web.Response:
                 [int(x) for x in body["device_pet_ids"]])
         except (TypeError, ValueError):
             pass
-    reset_learned = bool(body.get("reset_learned_weight"))
     if "weight" in body:
-        fields["weight"] = _entered_weight(body["weight"])
-        if pet_weight_grams(fields["weight"]) != pet_weight_grams(before.get("weight")):
-            reset_learned = True
+        fields["weight"] = entered_weight(body["weight"])
 
-    pet = await pet_registry.update(pid, **fields)
+    pet = await pet_registry.edit(
+        pid, reset_learned=bool(body.get("reset_learned_weight")), **fields)
     if pet is None:
         return web.json_response({"error": "not found"}, status=404)
-    if reset_learned:
-        pet = await pet_registry.reset_learned_weight(pid) or pet
 
     # Binding a foreign identity is retroactive: the events already carry it in
     # `pet_ref`, so attributing them is a single UPDATE and the user sees their
@@ -208,13 +200,9 @@ async def api_pet_faces(request: web.Request) -> web.Response:
         return web.json_response({"faces": await _face_summaries(pet_registry, pid)})
 
     data = await request.read()
-    if not data:
-        return web.json_response({"error": "empty body"}, status=400)
-    if data[:3] != b"\xff\xd8\xff":
-        return web.json_response({"error": "not a valid JPEG"}, status=400)
-    if len(await pet_registry.faces(pid)) >= MAX_FACES_PER_PET:
-        return web.json_response(
-            {"error": f"at most {MAX_FACES_PER_PET} photos per pet"}, status=400)
+    refusal = await pet_registry.face_refusal(pid, data)
+    if refusal is not None:
+        return web.json_response({"error": _FACE_REFUSALS[refusal]}, status=400)
 
     face = await pet_registry.add_face(pid, data)
     if face is None:
@@ -240,8 +228,7 @@ async def _owned_face(request: web.Request) -> dict[str, Any] | None:
         face_id = int(request.match_info["face_id"])
     except ValueError:
         return None
-    face = await pet_registry.face(face_id)
-    return face if face and face.get("pet_id") == pid else None
+    return await pet_registry.owned_face(pid, face_id)
 
 
 async def api_pet_face_detail(request: web.Request) -> web.Response:

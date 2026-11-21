@@ -128,6 +128,11 @@ def device_summary(d: Device, accessories: list[BLEDevice] | tuple = ()) -> dict
     reaching the device, so it is cheap enough for every summary — and in the
     summary rather than only the detail so that `/ws` announces the change
     when the patcher is applied or the address arrives.
+
+    `supports_ai` is whether the device's own NPU recognises pets
+    (`Device.supports_ai`): the devices a pet's face photos are worth assigning
+    to. In the summary for the same reason as `talk` -- it can turn on once the
+    device first asks for its recognition config, and `/ws` should say so.
     """
     last = max(d.last_seen or 0, d.last_mqtt or 0, d.last_heartbeat or 0,
                d.last_state_report or 0)
@@ -144,6 +149,7 @@ def device_summary(d: Device, accessories: list[BLEDevice] | tuple = ()) -> dict
         "firmware": str(d.firmware) if d.firmware else None,
         "is_camera": bool(d.is_camera),
         "talk": talk.availability(d),
+        "supports_ai": bool(d.supports_ai),
         "connection": "wifi",
         "parent_id": None,
         "accessories": [accessory_ref(a) for a in accessories],
@@ -176,6 +182,7 @@ def accessory_summary(a: BLEDevice, parent: Device | None) -> dict[str, Any]:
         "firmware": None,
         "is_camera": False,
         "talk": talk.UNSUPPORTED,
+        "supports_ai": False,
         "connection": "ble",
         "parent_id": parent.petkit_id if parent else None,
         "accessories": [],
@@ -438,8 +445,17 @@ def event_detail(row: dict[str, Any], pets: dict[int, dict[str, Any]],
 
 # --- pets ----------------------------------------------------------------------
 
-def pet_summary(pet: dict[str, Any], has_photo: bool) -> dict[str, Any]:
-    """One pet. `weight_g` is what a visit is compared with (`ai/pets.py`)."""
+def pet_face(pet_id: int, face: dict[str, Any]) -> dict[str, Any]:
+    """One reference photo of a pet. Its stored path stays private."""
+    return {"id": face["id"], "photo": f"{API_PREFIX}/pets/{pet_id}/faces/{face['id']}/photo"}
+
+
+def pet_summary(pet: dict[str, Any], faces: list[dict[str, Any]]) -> dict[str, Any]:
+    """One pet. `weight_g` is what a visit is compared with (`ai/pets.py`).
+
+    `faces` are its reference photos (`PetRegistry.faces`), oldest first;
+    `photo` is the first of them.
+    """
     return {
         "id": pet["id"],
         "name": pet.get("name") or "",
@@ -447,7 +463,8 @@ def pet_summary(pet: dict[str, Any], has_photo: bool) -> dict[str, Any]:
         "entered_weight_g": pet_weight_grams(pet.get("weight")),
         "weight_g": reference_weight_grams(pet),
         "weight_learned": learned_weight_in_use(pet),
-        "photo": f"{API_PREFIX}/pets/{pet['id']}/photo" if has_photo else None,
+        "photo": f"{API_PREFIX}/pets/{pet['id']}/photo" if faces else None,
+        "faces": [pet_face(pet["id"], f) for f in faces],
     }
 
 

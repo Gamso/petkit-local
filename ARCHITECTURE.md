@@ -103,6 +103,7 @@ phone --HTTPS--> your tunnel / reverse proxy --HTTP--> app_api/server.py (port 8
                                                              └─> handlers/ -> serializers.py
 writes:  handlers/controls.py, feeding.py -> ha/commands.py, ha/schedules.py
                                           -> ha/command_router.deliver_command (MQTT, else queue)
+         handlers/pets.py -> ai/pets.py PetRegistry (the panel's rules) -> UpdateFeed.pets_changed
 /ws:     EventHub --(device id marked dirty)--> updates.UpdateFeed: re-read, diff, fan out per socket
 /notifications/ws:  EventHub -> notify/notifier.py gates (kind, dedupe, rate limit)
                     -> notify/push.py endpoints, notify/channel.py: log + sockets

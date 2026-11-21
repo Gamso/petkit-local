@@ -14,7 +14,10 @@ what one does:
 * `timeline` — a timeline card that is new or changed (its media arrived, its
   cleaning cycle attached), with the ids of cards it `replaces`: an episode
   still in progress is anchored on its newest report until the summary that
-  closes it arrives, so its id can move on (`events/sessions.py`).
+  closes it arrives, so its id can move on (`events/sessions.py`);
+* `pet` — a pet as `Pet`, when it is new or anything about it changed (its
+  name, weight, devices, a face photo added or removed);
+* `pet_removed`.
 
 What drives it is the panel's `EventHub`: every HTTP request, MQTT frame,
 stored event and finished media file is published there with its device id,
@@ -26,6 +29,12 @@ per `COALESCE_SEC` however many frames it sent, and if nothing a phone can see
 changed, nothing is sent. A sweep every `SWEEP_SEC` re-reads every device
 regardless, because the hub drops events for a slow reader and a few state
 changes (the offline watchdog's) are not narrated at all.
+
+Pets are not devices and the hub says nothing about them. They are re-read
+when a write through this API says they changed (`pets_changed`, the app's
+own pet routes) and on the same sweep, which is what carries an edit made in
+the panel; and diffed the same way, so a re-read that finds nothing new sends
+nothing.
 
 A `Subscriber`'s queue is bounded. A phone that stops reading is DISCONNECTED
 (`CLOSE_TOO_SLOW`) when it fills, never allowed to grow memory — it reconnects
@@ -151,6 +160,10 @@ class UpdateFeed:
         self._cards: dict[int, tuple[str, float]] = {}
         self._dirty: set[int] = set()
         self._dirty_timeline: set[int] = set()
+        # Pet id -> the `Pet` last sent, encoded.
+        self._pet_cards: dict[int, str] = {}
+        self._pets_dirty = False
+        self._pet_read: asyncio.Task | None = None
 
     @property
     def subscribers(self) -> int:
@@ -184,6 +197,14 @@ class UpdateFeed:
             if not self._subs and self._tasks:
                 await self._stop()
 
+    def pets_changed(self) -> None:
+        """A pet or its photos changed: re-read and diff them at the next pass.
+
+        Cheap and safe with no socket open: nothing runs then, and the first
+        socket's start takes its own baseline.
+        """
+        self._pets_dirty = True
+
     async def shutdown(self) -> None:
         """Close every socket (`1001`) and stop. The app's `on_shutdown` hook."""
         for sub in list(self._subs):
@@ -200,6 +221,7 @@ class UpdateFeed:
         # Every card already there is known, not new: the app fetched those
         # with `GET /timeline`, and a burst of them on connect is noise.
         await self._scan_timeline({d.petkit_id for d in self._registry.all()}, announce=False)
+        await self._scan_pets(announce=False)
         self._tasks = [asyncio.create_task(self._run(), name="app-updates-flush")]
         if self._hub_queue is not None:
             self._tasks.append(asyncio.create_task(self._pump(), name="app-updates-hub"))
@@ -211,6 +233,10 @@ class UpdateFeed:
         for task in tasks:
             with contextlib.suppress(asyncio.CancelledError):
                 await task
+        if self._pet_read is not None:
+            with contextlib.suppress(Exception):
+                await self._pet_read
+            self._pet_read = None
         if self._hub is not None and self._hub_queue is not None:
             self._hub.unsubscribe(self._hub_queue)
         self._hub_queue = None
@@ -219,6 +245,8 @@ class UpdateFeed:
         self._cards.clear()
         self._dirty.clear()
         self._dirty_timeline.clear()
+        self._pet_cards.clear()
+        self._pets_dirty = False
 
     async def _pump(self) -> None:
         """Mark the device each hub event names; cheap, so the hub never waits."""
@@ -243,10 +271,14 @@ class UpdateFeed:
                     last_sweep = loop.time()
                     self._dirty.update(inventory.ids(self._registry, self._ble))
                     self._dirty.update(self._summaries)
+                    self._pets_dirty = True
                 self._flush_states()
                 if self._dirty_timeline:
                     ids, self._dirty_timeline = self._dirty_timeline, set()
                     await self._scan_timeline(ids, announce=True)
+                if self._pets_dirty:
+                    self._pets_dirty = False
+                    await self._scan_pets(announce=True)
             except asyncio.CancelledError:
                 raise
             except Exception:
@@ -332,6 +364,33 @@ class UpdateFeed:
         horizon = since - TIMELINE_WINDOW_SEC
         for card_id in [i for i, (_, ts) in self._cards.items() if ts < horizon]:
             del self._cards[card_id]
+
+    async def _read_pets(self) -> list[dict[str, Any]]:
+        assert self._pets is not None
+        return [serializers.pet_summary(pet, await self._pets.faces(pet["id"]))
+                for pet in await self._pets.all()]
+
+    async def _scan_pets(self, *, announce: bool) -> None:
+        """Send each pet that is new or changed, and say which ones are gone.
+
+        The read runs as its own task, shielded: this pass runs on every sweep,
+        so the last socket closing often cancels it mid-read, and a database
+        session cancelled mid-query leaves the store unable to close. `_stop`
+        waits for the read instead.
+        """
+        if self._pets is None:
+            return
+        self._pet_read = asyncio.create_task(self._read_pets(), name="app-updates-pets")
+        summaries = await asyncio.shield(self._pet_read)
+        cards: dict[int, str] = {}
+        for summary in summaries:
+            cards[summary["id"]] = fingerprint = _encode(summary)
+            if announce and self._pet_cards.get(summary["id"]) != fingerprint:
+                self._broadcast({"type": "pet", "pet": summary})
+        if announce:
+            for pet_id in sorted(set(self._pet_cards) - set(cards)):
+                self._broadcast({"type": "pet_removed", "pet_id": pet_id})
+        self._pet_cards = cards
 
 
 def _encode(message: dict[str, Any]) -> str:

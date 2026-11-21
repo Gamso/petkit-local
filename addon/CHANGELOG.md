@@ -98,6 +98,21 @@
   answers that records are waiting and none arrive, the log says so when the
   session ends; a capture of that session (Setup → Settings) is what would
   finish it.
+- **The phone app can create, edit and delete pets, and add their face
+  photos** (issue #131). Until now the app API could only read pets. New
+  routes: `POST /app/v1/pets`, `PATCH` and `DELETE /app/v1/pets/{id}`, and
+  `/app/v1/pets/{id}/faces` to list and add reference photos (the body is the
+  JPEG itself, at most 16 MiB, cropped and scaled to 224x224 as in the panel)
+  with `DELETE` and `/photo` on each face. The rules are the panel's, moved
+  into `PetRegistry` so both use them: a changed weight forgets the learned
+  one, a pet holds at most 6 photos, a face is only ever reached through the
+  pet that owns it, and a new or edited pet is announced to Home Assistant.
+  The app sends weights in grams and is refused (400 `invalid_pet`, 415
+  `not_jpeg`, 409 `too_many_faces`, 413 `photo_too_large`) where the panel
+  would quietly drop a bad value. Each pet now lists its `faces`, every
+  device says whether it recognises pets (`supports_ai`), and `/app/v1/ws`
+  sends a `pet` message when one is created or changed — from the app at
+  once, from the panel within 30 s — and `pet_removed` when one is deleted.
 
 ### Fixed
 

@@ -27,7 +27,9 @@ from typing import TYPE_CHECKING, Any
 from urllib.parse import urlparse
 
 from petkit_local.events import codes
-from petkit_local.events.store import WEIGHT_MEDIAN_SAMPLES, visit_weight_grams
+from petkit_local.events.store import (
+    MAX_FACES_PER_PET, WEIGHT_MEDIAN_SAMPLES, visit_weight_grams,
+)
 from petkit_local.media.transcode import normalize_face_photo
 from petkit_local.utils.coerce import to_float, to_int
 from petkit_local.utils.paths import UnsafePathError, safe_join, sanitize_filename
@@ -150,6 +152,29 @@ def pet_weight_grams(value: Any) -> float | None:
     if weight is None or weight <= 0:
         return None
     return weight if weight > 100 else weight * 1000
+
+
+def entered_weight(value: Any) -> float | None:
+    """A typed pet weight as the number to store, or None for "no weight".
+
+    Kilograms, as PetKit's app shows it (`pet_weight_grams` reads a value above
+    100 as grams). Anything that is not a positive number clears the weight
+    rather than reaching a REAL column as text. The panel's rule and the app
+    API's, which converts its grams to kilograms first.
+    """
+    weight = to_float(value, None)
+    if isinstance(value, bool) or weight is None or weight <= 0:
+        return None
+    return weight
+
+
+#: Why `PetRegistry.face_refusal` turns an upload down, before anything is stored.
+FACE_EMPTY = "empty"
+FACE_NOT_JPEG = "not_jpeg"
+FACE_LIMIT = "too_many_faces"
+
+#: A JPEG's first three bytes. `dev_discern_pic` only ever serves JPEGs.
+JPEG_MAGIC = b"\xff\xd8\xff"
 
 
 def learned_weight_in_use(pet: dict) -> bool:
@@ -277,6 +302,28 @@ class PetRegistry:
             await self._store.upsert_pet(fields, pet_id=pet_id)
         return await self._store.get_pet(pet_id)
 
+    async def edit(self, pet_id: int, *, reset_learned: bool = False,
+                   **fields: Any) -> dict | None:
+        """`update` as the owner makes it, from the panel or the app.
+
+        A `weight` that changes the pet's weight also resets the learned one,
+        as does `reset_learned` on its own: a new number is a correction, and a
+        correction the learned value went on overriding would be one the owner
+        could not make. Returns the row after both, or None if the pet is gone.
+        """
+        before = await self._store.get_pet(pet_id)
+        if before is None:
+            return None
+        if "weight" in fields and (pet_weight_grams(fields["weight"])
+                                   != pet_weight_grams(before.get("weight"))):
+            reset_learned = True
+        pet = await self.update(pet_id, **fields)
+        if pet is None:
+            return None
+        if reset_learned:
+            pet = await self.reset_learned_weight(pet_id) or pet
+        return pet
+
     async def delete(self, pet_id: int) -> bool:
         """Delete a pet and every face photo it owns. False if it didn't exist.
 
@@ -331,6 +378,33 @@ class PetRegistry:
         """One face row by id, or None."""
         return await self._store.get_pet_face(face_id)
 
+    async def owned_face(self, pet_id: int, face_id: int) -> dict | None:
+        """The face `face_id`, or None unless it belongs to pet `pet_id`.
+
+        A route naming both ids has to check both: matching only `face_id`
+        once let `DELETE .../pets/999/faces/3` delete face 3 whoever owned it.
+        """
+        face = await self._store.get_pet_face(face_id)
+        return face if face and face.get("pet_id") == pet_id else None
+
+    async def face_refusal(self, pet_id: int, data: bytes) -> str | None:
+        """Why an upload for `pet_id` would be turned down, or None if it would not.
+
+        `FACE_EMPTY`, `FACE_NOT_JPEG` (only a real JPEG is kept, since
+        `dev_discern_pic` only ever serves JPEGs), or `FACE_LIMIT` once the pet
+        holds `MAX_FACES_PER_PET` -- the firmware has its own "Too many face
+        picture" guard whose limit we could not recover, so we stop at the
+        largest count the real cloud was seen to serve. Checked before
+        `add_face`, which refuses the same things but can only say None.
+        """
+        if not data:
+            return FACE_EMPTY
+        if data[:3] != JPEG_MAGIC:
+            return FACE_NOT_JPEG
+        if len(await self.faces(pet_id)) >= MAX_FACES_PER_PET:
+            return FACE_LIMIT
+        return None
+
     async def add_face(self, pet_id: int, data: bytes) -> dict | None:
         """Validate via JPEG magic bytes, store under `{faces_dir}/`, register.
 
@@ -349,7 +423,7 @@ class PetRegistry:
         """
         if await self._store.get_pet(pet_id) is None:
             return None
-        if data[:3] != b"\xff\xd8\xff":
+        if data[:3] != JPEG_MAGIC:
             return None
         data = await normalize_face_photo(data)
 

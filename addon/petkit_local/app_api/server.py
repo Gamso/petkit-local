@@ -63,7 +63,9 @@ if TYPE_CHECKING:
 
 PREFIX = "/app/v1"
 
-#: The largest thing the app sends is a feeding plan, a few kilobytes at most.
+#: The largest JSON the app sends is a feeding plan, a few kilobytes at most.
+#: A pet's face photo is the one bigger body, and its route reads the stream
+#: under its own cap (`handlers/pets.py::MAX_FACE_BYTES`), not this one.
 MAX_BODY = 64 * 1024
 
 Handler = Callable[[web.Request], Awaitable[web.StreamResponse]]
@@ -94,8 +96,15 @@ ROUTES: tuple[tuple[str, str, Handler], ...] = (
     ("GET", "/media/thumb/{path:.*}", media.media_thumbnail),
     ("GET", "/media/{path:.*}", media.media_file),
     ("GET", "/pets", pets.list_pets),
+    ("POST", "/pets", pets.create_pet),
     ("GET", "/pets/{id}", pets.pet_detail),
+    ("PATCH", "/pets/{id}", pets.update_pet),
+    ("DELETE", "/pets/{id}", pets.delete_pet),
     ("GET", "/pets/{id}/photo", pets.pet_photo),
+    ("GET", "/pets/{id}/faces", pets.list_faces),
+    ("POST", "/pets/{id}/faces", pets.add_face),
+    ("DELETE", "/pets/{id}/faces/{face_id}", pets.delete_face),
+    ("GET", "/pets/{id}/faces/{face_id}/photo", pets.face_photo),
     ("GET", "/settings/pets-source", settings.get_pets_source),
     ("PATCH", "/settings/pets-source", settings.patch_pets_source),
     ("GET", "/ws", updates.updates),
