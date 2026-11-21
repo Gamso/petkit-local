@@ -18,7 +18,7 @@ from typing import Any
 from aiohttp import web
 
 from petkit_local.ai.pets import (
-    learned_weight_in_use, pet_weight_grams, reference_weight_grams,
+    face_acceptance, learned_weight_in_use, pet_weight_grams, reference_weight_grams,
 )
 from petkit_local.devices.base import QUEUED_AT_KEY, Device, split_bucket_authority
 from petkit_local.http.proxy import resolve_upstream
@@ -148,7 +148,7 @@ async def _pets_by_id(request: web.Request) -> dict[int, dict[str, Any]]:
         return {}
     pets = await pet_registry.all()
     for pet in pets:
-        pet["faces"] = await _face_summaries(pet_registry, pet["id"])
+        pet["faces"] = await _face_summaries(pet_registry, pet, request.app.get(REGISTRY))
         # What a visit is actually compared with, and which of the two weights
         # that is -- so the panel shows the decision rather than re-deriving it.
         pet["entered_weight_g"] = pet_weight_grams(pet.get("weight"))
@@ -174,14 +174,22 @@ def _pet_fields(pets: dict[int, dict[str, Any]], pet_id: Any) -> dict[str, Any]:
     }
 
 
-async def _face_summaries(pet_registry: Any, pet_id: int) -> list[dict[str, Any]]:
-    """One pet's faces as the panel wants them: `[{id, url}]`.
+async def _face_summaries(pet_registry: Any, pet: dict[str, Any],
+                          devices: Any) -> list[dict[str, Any]]:
+    """One pet's faces as the panel wants them: `[{id, url, accepted_by, waiting_for}]`.
 
     `photo_path` is an absolute filesystem path and is deliberately not sent —
-    the panel renders the image from its own route instead.
+    the panel renders the image from its own route instead. The two device
+    lists are `ai/pets.py::face_acceptance`, read from each device's
+    `discernPic`.
     """
-    return [{"id": f["id"], "url": f"api/pets/{pet_id}/faces/{f['id']}/photo"}
-            for f in await pet_registry.faces(pet_id)]
+    return [_face_summary(pet, f, devices) for f in await pet_registry.faces(pet["id"])]
+
+
+def _face_summary(pet: dict[str, Any], face: dict[str, Any], devices: Any) -> dict[str, Any]:
+    """One face of `pet`, as `_face_summaries` lists it."""
+    return {"id": face["id"], "url": f"api/pets/{pet['id']}/faces/{face['id']}/photo",
+            **face_acceptance(face["id"], pet, devices)}
 
 
 def _cloud_upstream(request: web.Request) -> str:

@@ -929,6 +929,7 @@ a:hover {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(96px, 1fr));
   gap: 10px;
+  align-items: start;
   margin-top: 12px;
 }
 .tile {
@@ -1904,4 +1905,21 @@ button.help[aria-expanded='true'] {
    repaint instead of being wiped by it. */
 .cn input.dirty {
   border-color: var(--warn);
+}
+/* One mugshot and, under it, which devices hold it. The add-tile beside it
+   stays square: the grid aligns to the top rather than stretching it. */
+.face-cell {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+.face-devs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 3px;
+}
+.face-devs .badge {
+  font-size: 10px;
+  padding: 1px 5px;
 }

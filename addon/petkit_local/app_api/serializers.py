@@ -25,7 +25,9 @@ import json
 from typing import Any
 from urllib.parse import quote
 
-from petkit_local.ai.pets import learned_weight_in_use, pet_weight_grams, reference_weight_grams
+from petkit_local.ai.pets import (
+    face_acceptance, learned_weight_in_use, pet_weight_grams, reference_weight_grams,
+)
 from petkit_local.devices.base import Device
 from petkit_local.devices.ble import BLEDevice
 from petkit_local.events import decode
@@ -445,12 +447,20 @@ def event_detail(row: dict[str, Any], pets: dict[int, dict[str, Any]],
 
 # --- pets ----------------------------------------------------------------------
 
-def pet_face(pet_id: int, face: dict[str, Any]) -> dict[str, Any]:
-    """One reference photo of a pet. Its stored path stays private."""
-    return {"id": face["id"], "photo": f"{API_PREFIX}/pets/{pet_id}/faces/{face['id']}/photo"}
+def pet_face(pet: dict[str, Any], face: dict[str, Any], devices: Any) -> dict[str, Any]:
+    """One reference photo of a pet. Its stored path stays private.
+
+    `accepted_by` / `waiting_for` are the pet's devices that hold the photo and
+    that have yet to (`ai/pets.py::face_acceptance`, from each device's
+    `discernPic`); `devices` is the `DeviceRegistry`.
+    """
+    return {"id": face["id"],
+            "photo": f"{API_PREFIX}/pets/{pet['id']}/faces/{face['id']}/photo",
+            **face_acceptance(face["id"], pet, devices)}
 
 
-def pet_summary(pet: dict[str, Any], faces: list[dict[str, Any]]) -> dict[str, Any]:
+def pet_summary(pet: dict[str, Any], faces: list[dict[str, Any]],
+                devices: Any) -> dict[str, Any]:
     """One pet. `weight_g` is what a visit is compared with (`ai/pets.py`).
 
     `faces` are its reference photos (`PetRegistry.faces`), oldest first;
@@ -464,7 +474,7 @@ def pet_summary(pet: dict[str, Any], faces: list[dict[str, Any]]) -> dict[str, A
         "weight_g": reference_weight_grams(pet),
         "weight_learned": learned_weight_in_use(pet),
         "photo": f"{API_PREFIX}/pets/{pet['id']}/photo" if faces else None,
-        "faces": [pet_face(pet["id"], f) for f in faces],
+        "faces": [pet_face(pet, f, devices) for f in faces],
     }
 
 

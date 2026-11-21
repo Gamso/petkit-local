@@ -26,12 +26,13 @@ from typing import Any
 
 from aiohttp import web
 
+from petkit_local.ai.face_quality import MIN_FACE_SIDE, assess_face_photo
 from petkit_local.ai.pets import (
-    FACE_EMPTY, FACE_LIMIT, FACE_NOT_JPEG, entered_weight,
+    FACE_EMPTY, FACE_LIMIT, FACE_NOT_JPEG, FACE_SMALL, entered_weight,
 )
 from petkit_local.app_api import serializers
 from petkit_local.app_api.appkeys import (
-    DATA_DIR, EVENT_STORE, HA_PUBLISHER, PET_REGISTRY, SESSION, UPDATE_FEED,
+    DATA_DIR, EVENT_STORE, HA_PUBLISHER, PET_REGISTRY, REGISTRY, SESSION, UPDATE_FEED,
 )
 from petkit_local.app_api.handlers._common import json_body, path_int
 from petkit_local.app_api.handlers.timeline import recent_visits
@@ -74,8 +75,9 @@ async def _face(request: web.Request) -> tuple[Any, dict[str, Any], dict[str, An
     return registry, pet, face
 
 
-async def _summary(registry: Any, pet: dict[str, Any]) -> dict[str, Any]:
-    return serializers.pet_summary(pet, await registry.faces(pet["id"]))
+async def _summary(request: web.Request, registry: Any, pet: dict[str, Any]) -> dict[str, Any]:
+    return serializers.pet_summary(pet, await registry.faces(pet["id"]),
+                                   request.app.get(REGISTRY))
 
 
 def _photo_file(request: web.Request, face: dict[str, Any] | None) -> str:
@@ -148,7 +150,8 @@ def _pet_fields(body: dict[str, Any]) -> dict[str, Any]:
 async def list_pets(request: web.Request) -> web.Response:
     """`GET /app/v1/pets` -> `{"pets": [Pet]}`, ordered by id."""
     registry = _registry(request)
-    return web.json_response({"pets": [await _summary(registry, p) for p in await registry.all()]})
+    return web.json_response(
+        {"pets": [await _summary(request, registry, p) for p in await registry.all()]})
 
 
 async def create_pet(request: web.Request) -> web.Response:
@@ -164,7 +167,7 @@ async def create_pet(request: web.Request) -> web.Response:
     pet = await registry.create(fields["name"], device_ids=fields.get("device_ids_json"),
                                 weight=fields.get("weight"))
     await _changed(request, f"pet {pet['id']} created", pet)
-    return web.json_response({"pet": await _summary(registry, pet)}, status=201)
+    return web.json_response({"pet": await _summary(request, registry, pet)}, status=201)
 
 
 async def pet_detail(request: web.Request) -> web.Response:
@@ -173,7 +176,7 @@ async def pet_detail(request: web.Request) -> web.Response:
     store = request.app.get(EVENT_STORE)
     stats = await store.pet_visit_stats(pet["id"]) if store is not None else {}
     return web.json_response({"pet": {
-        **await _summary(registry, pet),
+        **await _summary(request, registry, pet),
         "stats": serializers.pet_stats(stats),
         "recent_visits": await recent_visits(request, pet["id"]),
     }})
@@ -203,7 +206,7 @@ async def update_pet(request: web.Request) -> web.Response:
     if pet is None:  # deleted in between
         raise ApiError(404, "pet_not_found", "no such pet")
     await _changed(request, f"pet {pet['id']} edited", pet)
-    return web.json_response({"pet": await _summary(registry, pet)})
+    return web.json_response({"pet": await _summary(request, registry, pet)})
 
 
 async def delete_pet(request: web.Request) -> web.Response:
@@ -229,8 +232,9 @@ async def pet_photo(request: web.Request) -> web.StreamResponse:
 async def list_faces(request: web.Request) -> web.Response:
     """`GET /app/v1/pets/{id}/faces` -> `{"faces": [PetFace], "max_faces": int}`."""
     registry, pet = await _pet(request)
+    devices = request.app.get(REGISTRY)
     return web.json_response({
-        "faces": [serializers.pet_face(pet["id"], f) for f in await registry.faces(pet["id"])],
+        "faces": [serializers.pet_face(pet, f, devices) for f in await registry.faces(pet["id"])],
         "max_faces": MAX_FACES_PER_PET,
     })
 
@@ -258,14 +262,17 @@ async def _read_photo(request: web.Request) -> bytes:
 
 
 async def add_face(request: web.Request) -> web.Response:
-    """`POST /app/v1/pets/{id}/faces`, the body a raw JPEG -> 201 `{"face": PetFace}`.
+    """`POST /app/v1/pets/{id}/faces`, the body a raw JPEG -> 201 `{"face", "quality"}`.
 
     Not a multipart form, as in the panel. The photo is cropped to a centred
     square and scaled to 224x224 before it is stored (`PetRegistry.add_face`).
+    `quality` is `ai/face_quality.py`'s verdict on it AS UPLOADED, the panel's
+    own: `{checked, warnings}`, warnings that never block.
 
     Raises:
         ApiError: 400 `bad_request` for an empty body, 413 `photo_too_large`,
-            415 `not_jpeg`, 409 `too_many_faces` once the pet holds
+            415 `not_jpeg`, 422 `photo_too_small` under `MIN_FACE_SIDE` px on
+            the short side, 409 `too_many_faces` once the pet holds
             `MAX_FACES_PER_PET`, 500 `photo_not_stored` when it could not be
             written.
     """
@@ -277,8 +284,13 @@ async def add_face(request: web.Request) -> web.Response:
     if refusal == FACE_NOT_JPEG:
         raise ApiError(415, "not_jpeg",
                        "the body must be the bytes of a JPEG photo (image/jpeg), not a form")
+    if refusal == FACE_SMALL:
+        raise ApiError(422, "photo_too_small",
+                       f"the photo must be at least {MIN_FACE_SIDE} px on its short side")
     if refusal == FACE_LIMIT:
         raise ApiError(409, "too_many_faces", f"a pet has at most {MAX_FACES_PER_PET} photos")
+    # On the bytes as uploaded: normalising first would judge our own resize.
+    quality = await assess_face_photo(data)
     face = await registry.add_face(pet["id"], data)
     if face is None:
         # Another upload may have taken the last place while this one was read.
@@ -286,7 +298,8 @@ async def add_face(request: web.Request) -> web.Response:
             raise ApiError(409, "too_many_faces", f"a pet has at most {MAX_FACES_PER_PET} photos")
         raise ApiError(500, "photo_not_stored", "the photo could not be stored")
     await _changed(request, f"photo {face['id']} added to pet {pet['id']}")
-    return web.json_response({"face": serializers.pet_face(pet["id"], face)}, status=201)
+    return web.json_response({"face": serializers.pet_face(pet, face, request.app.get(REGISTRY)),
+                               "quality": quality.as_json()}, status=201)
 
 
 async def delete_face(request: web.Request) -> web.Response:

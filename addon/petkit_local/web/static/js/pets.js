@@ -23,6 +23,47 @@ async function setAiEnabled(id, on) {
 // events/store.py::MAX_FACES_PER_PET, and a test asserts the two agree.
 const MAX_FACES = 6;
 
+// ai/face_quality.py's warning codes, as the panel words them. A code missing
+// here is shown as itself rather than dropped.
+const QUALITY_WORDS = {
+  blurry: 'looks blurry',
+  too_dark: 'looks too dark',
+  overexposed: 'looks overexposed',
+  not_square: 'was not cropped to the head',
+};
+const qualityWords = code => QUALITY_WORDS[code] || code;
+
+// What the server said about each photo uploaded since the page loaded, by
+// face id. Kept here because the card is redrawn wholesale right after an
+// upload, and a toast alone is gone before anyone has read it.
+const FACE_WARNINGS = new Map();
+function noteFaceQuality(faceId, quality) {
+  const warnings = (quality && quality.warnings) || [];
+  if (warnings.length) FACE_WARNINGS.set(Number(faceId), warnings);
+}
+
+// Per assigned device, whether it holds this mugshot: its `discernPic`
+// readback lists it (accepted_by) or it is yet to fetch it (waiting_for).
+function faceDeviceBadges(f, ds) {
+  const name = id => {
+    const d = ds.find(x => x.id === id);
+    return esc(d ? d.name : '#' + id);
+  };
+  return [
+    ...(f.accepted_by || []).map(
+      id =>
+        `<span class="badge ok" title="The device reports holding this photo">Accepted by ${name(id)}</span>`,
+    ),
+    ...(f.waiting_for || []).map(
+      id =>
+        `<span class="badge warn" title="Not in the device's readback yet. It re-reads its mugshots at boot and about once an hour.">Waiting for ${name(id)}</span>`,
+    ),
+    ...(FACE_WARNINGS.get(f.id) || []).map(
+      code => `<span class="badge bad">${esc(qualityWords(code))}</span>`,
+    ),
+  ].join(' ');
+}
+
 // ---- the tab ---------------------------------------------------------------
 async function loadPets() {
   const v = document.getElementById('petsView');
@@ -279,11 +320,11 @@ function petCard(p, ds, recognisingIds, learning) {
     <div class="tiles">
       ${faces
         .map(
-          f => `<div class="tile">
+          f => `<div class="face-cell"><div class="tile">
         <img src="${BASE}${esc(f.url)}" alt="Mugshot ${esc(f.id)}">
         <button class="tile-x" title="Remove this photo"
                 data-action="delete-face" data-id="${esc(p.id)}" data-face="${esc(f.id)}">✕</button>
-      </div>`,
+      </div><div class="face-devs">${faceDeviceBadges(f, ds)}</div></div>`,
         )
         .join('')}
       ${
@@ -297,6 +338,7 @@ function petCard(p, ds, recognisingIds, learning) {
     </div>
     <div class="pet-foot mut">
       ${faces.length} of ${MAX_FACES} mugshots${full ? ' · full' : ''}
+      · Best: one pet, head facing the camera, close-up, in good light.
     </div>
   </div>`;
 }
@@ -524,4 +566,4 @@ async function bindPetRef(ref, petId) {
   loadPets();
 }
 
-export { loadPets };
+export { loadPets, noteFaceQuality, qualityWords };

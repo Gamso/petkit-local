@@ -20,15 +20,16 @@ from typing import Any
 import aiohttp
 from aiohttp import web
 
+from petkit_local.ai.face_quality import MIN_FACE_SIDE, assess_face_photo
 from petkit_local.ai.pets import (
-    FACE_EMPTY, FACE_LIMIT, FACE_NOT_JPEG, cloud_pets, entered_weight,
+    FACE_EMPTY, FACE_LIMIT, FACE_NOT_JPEG, FACE_SMALL, cloud_pets, entered_weight,
 )
 from petkit_local.events.store import MAX_FACES_PER_PET
 from petkit_local.http.cloud_fetch import CLOUD_TIMEOUT, CloudRefused, fetch_as_device
 from petkit_local.utils.coerce import to_int
 from petkit_local.utils.paths import UnsafePathError, safe_join
 from petkit_local.web.api._common import (
-    _cloud_upstream, _face_summaries, _json_body, _path_id, _pets_by_id,
+    _cloud_upstream, _face_summaries, _face_summary, _json_body, _path_id, _pets_by_id,
 )
 from petkit_local.web.appkeys import CFG, EVENT_STORE, HA_PUBLISHER, PET_REGISTRY, REGISTRY
 
@@ -38,6 +39,7 @@ log = logging.getLogger(__name__)
 _FACE_REFUSALS = {
     FACE_EMPTY: "empty body",
     FACE_NOT_JPEG: "not a valid JPEG",
+    FACE_SMALL: f"too small: at least {MIN_FACE_SIDE} px on the short side",
     FACE_LIMIT: f"at most {MAX_FACES_PER_PET} photos per pet",
 }
 
@@ -181,9 +183,13 @@ async def api_pet_detail(request: web.Request) -> web.Response:
 async def api_pet_faces(request: web.Request) -> web.Response:
     """List a pet's reference photos, or add one.
 
-    GET answers `{"faces": [{id, url}]}`. POST takes the raw image bytes (not a
-    multipart form) and answers `{"face": {id, url}}`; only a real JPEG is
-    accepted, since `dev_discern_pic` only ever serves JPEGs to the device.
+    GET answers `{"faces": [{id, url, accepted_by, waiting_for}]}`. POST takes
+    the raw image bytes (not a multipart form) and answers
+    `{"face": {...}, "quality": {checked, warnings}}`; only a real JPEG of at
+    least `MIN_FACE_SIDE` px on the short side is accepted, since
+    `dev_discern_pic` only ever serves JPEGs to the device. `quality` is
+    `ai/face_quality.py`'s verdict on the photo as uploaded: warnings, never a
+    refusal.
 
     A pet holds at most `MAX_FACES_PER_PET` photos — the firmware has its own
     "Too many face picture" guard whose limit we could not recover, so we stop
@@ -193,22 +199,26 @@ async def api_pet_faces(request: web.Request) -> web.Response:
     if pet_registry is None:
         return web.json_response({"error": "pet registry not available"}, status=400)
     pid = _path_id(request)
-    if await pet_registry.get(pid) is None:
+    pet = await pet_registry.get(pid)
+    if pet is None:
         return web.json_response({"error": "not found"}, status=404)
+    devices = request.app.get(REGISTRY)
 
     if request.method == "GET":
-        return web.json_response({"faces": await _face_summaries(pet_registry, pid)})
+        return web.json_response({"faces": await _face_summaries(pet_registry, pet, devices)})
 
     data = await request.read()
     refusal = await pet_registry.face_refusal(pid, data)
     if refusal is not None:
         return web.json_response({"error": _FACE_REFUSALS[refusal]}, status=400)
 
+    # On the bytes as uploaded: normalising first would judge our own resize.
+    quality = await assess_face_photo(data)
     face = await pet_registry.add_face(pid, data)
     if face is None:
         return web.json_response({"error": "could not store photo"}, status=400)
-    return web.json_response(
-        {"face": {"id": face["id"], "url": f"api/pets/{pid}/faces/{face['id']}/photo"}})
+    return web.json_response({"face": _face_summary(pet, face, devices),
+                              "quality": quality.as_json()})
 
 
 async def _owned_face(request: web.Request) -> dict[str, Any] | None:
