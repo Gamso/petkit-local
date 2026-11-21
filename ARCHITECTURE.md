@@ -41,7 +41,7 @@ petkit_local/
 │                  defaults.py per-category seed data · registry.py (atomic JSON)
 │                  state_parsers.py + state_tables.py + consumables.py
 │                  liveness.py the stale check + offline watchdog (HA or not)
-│                  ble/ (framing, W5, CTW3, registry)
+│                  ble/ (framing, W5, CTW3, registry, history: drink records, relay or phone)
 ├── ha/            categories.py device category -> entities · discovery.py EntityDef -> payload
 │                  publisher.py (the one HA-broker connection, outbound)
 │                  command_router.py + commands.py (inbound: HA write -> device command)
@@ -104,6 +104,8 @@ phone --HTTPS--> your tunnel / reverse proxy --HTTP--> app_api/server.py (port 8
 writes:  handlers/controls.py, feeding.py -> ha/commands.py, ha/schedules.py
                                           -> ha/command_router.deliver_command (MQTT, else queue)
          handlers/pets.py -> ai/pets.py PetRegistry (the panel's rules) -> UpdateFeed.pets_changed
+         handlers/accessories.py (a CTW3 synced over the phone's own Bluetooth, #141)
+                                 -> devices/ble/history.py, the relay's own store path
 /ws:     EventHub --(device id marked dirty)--> updates.UpdateFeed: re-read, diff, fan out per socket
 /notifications/ws:  EventHub -> notify/notifier.py gates (kind, dedupe, rate limit)
                     -> notify/push.py endpoints, notify/channel.py: log + sockets

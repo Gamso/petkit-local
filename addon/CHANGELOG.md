@@ -128,6 +128,24 @@
   Pets tab, which shows them as badges under each mugshot, keeps an upload's
   warnings on its tile, and says what makes a good one: one pet, head facing
   the camera, close-up, good light.
+- **The phone app can sync an EverSweet Max 2's (CTW3) drink history over
+  its own Bluetooth** (issue #141). The fountain hands its history only to a
+  phone connected to it directly: through the litter box or feeder relaying
+  it, it answers reads and nothing else (#140), which is why no drink ever
+  reached the timeline. Two new app API routes serve that sync.
+  `GET /app/v1/accessories/{id}/ble-sync` gives the app the fountain's
+  Bluetooth address, its pairing secret (8 bytes of hex, as the fountain's
+  security check takes it) and the time of the newest drink already held; it
+  answers 409 `secret_unknown` while no secret is held, and the fix is
+  **Import from PetKit** in the panel, on the device the fountain is paired
+  to. Nothing asks PetKit for it otherwise. The secret is a credential: only
+  a signed-in phone gets it, the answer is marked `no-store`, and it is never
+  logged. `POST /app/v1/accessories/{id}/drinks` takes the records the phone
+  read, up to 5000 per upload, and stores each one exactly as a relayed
+  record is stored, through the same code: a drink that ever arrives both
+  ways is one card, and implausible records are counted in `skipped` rather
+  than refused. A drink card on a fountain now also reaches `/app/v1/ws` as a
+  `timeline` message, which it never did for an accessory.
 
 ### Fixed
 

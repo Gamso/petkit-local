@@ -24,8 +24,8 @@ from petkit_local.devices.ble.ctw3 import (
     _CTW3_MODE_FIELDS, _ctw3_command_for, _decode_ctw3_status, CTW3_CLOCK_EPOCH,
     CTW3_CONFIG_LEN, CTW3_CONFIG_OFFSET, CTW3_RECORD_LEN, CTW3_WRITABLE, DrinkRecord,
     HistoryFrames, ON_BATTERY_REASON, OnBattery, ctw3_config_payload, ctw3_mode_payload,
-    ctw3_record_time, decode_ctw3_config, decode_ctw3_records, decode_ctw3_sync_reply,
-    parse_ctw3_ble_response, parse_ctw3_history,
+    ctw3_record_time, ctw3_secret_hex, decode_ctw3_config, decode_ctw3_records,
+    decode_ctw3_sync_reply, parse_ctw3_ble_response, parse_ctw3_history,
 )
 from petkit_local.devices.ble.framing import (
     _ble_decode_data, _ble_unframe, _iter_ble_frames, BLE_FRAME_HEADER,
@@ -35,6 +35,9 @@ from petkit_local.devices.ble.framing import (
     CMD_SET_CONFIG, CMD_SET_MODE, CMD_STREAM_CHECK, CMD_STREAM_DATA, CMD_STREAM_DATA_82,
     CMD_STREAM_END, CMD_STREAM_SETTING, CMD_SYNC_HISTORY, FOUNTAIN_MODES,
     ble_command_frame, ble_read_frame, build_ble_frame,
+)
+from petkit_local.devices.ble.history import (
+    StoredDrinks, announce_drinks, drink_record, history_cursor, store_drink_records,
 )
 from petkit_local.devices.ble.registry import (
     _cloud_binding, BLE_TYPE_CONFIRMED, BLE_TYPE_MAP, BLE_TYPES, BLEDevice,
@@ -154,6 +157,7 @@ __all__ = [
     "ON_BATTERY_REASON",
     "OnBattery",
     "Refused",
+    "StoredDrinks",
     "W5_CONFIG_LEN",
     "W5_CONFIG_LOCK_OFFSET",
     "W5_PROTOCOL",
@@ -180,6 +184,7 @@ __all__ = [
     "_decode_w5_status",
     "_iter_ble_frames",
     "_w5_command_for",
+    "announce_drinks",
     "ble_command_for",
     "ble_command_frame",
     "ble_read_frame",
@@ -188,15 +193,19 @@ __all__ = [
     "ctw3_config_payload",
     "ctw3_mode_payload",
     "ctw3_record_time",
+    "ctw3_secret_hex",
     "decode_ctw3_config",
     "decode_ctw3_records",
     "decode_ctw3_sync_reply",
+    "drink_record",
+    "history_cursor",
     "normalize_mac",
     "parse_ctw3_ble_response",
     "parse_ctw3_history",
     "parse_w5_ble_response",
     "parser_for",
     "relay_blocker",
+    "store_drink_records",
     "w5_config_payload",
     "w5_mode_payload",
 ]

@@ -341,14 +341,19 @@ class UpdateFeed:
         since = time.time() - TIMELINE_WINDOW_SEC
         pets = {p["id"]: p for p in await self._pets.all()} if self._pets is not None else {}
         for device_id in sorted(device_ids):
+            # An accessory has a timeline of its own too: a CTW3's drinks are
+            # filed under its id (`devices/ble/history.py`).
             device = self._registry.get(device_id)
-            if device is None:
+            acc = (inventory.accessory(self._registry, self._ble, device_id)
+                   if device is None else None)
+            if device is None and acc is None:
                 continue
+            default_type = device.device_type if device is not None else acc.ble_type
             rows = await self._store.query_timeline(device_id=device_id, start_ts=since,
                                                     limit=TIMELINE_ROW_LIMIT)
             for session in sorted(ingest.group_sessions(rows), key=lambda s: s.get("ts") or 0):
                 item = serializers.timeline_item(
-                    session, session.get("device_type") or device.device_type,
+                    session, session.get("device_type") or default_type,
                     pets, self._media_root)
                 fingerprint = _encode(item)
                 if self._cards.get(item["id"], ("",))[0] == fingerprint:

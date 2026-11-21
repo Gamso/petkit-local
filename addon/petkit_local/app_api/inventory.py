@@ -8,8 +8,9 @@ registries share one id space: the command router and the panel resolve an id
 the device registry does not hold as an accessory's, and so does this module.
 A real device wins a clash, as it does there.
 
-Only `/devices`, `/devices/{id}`, its actions and entities, and `/ws` know about
-accessories. Every other `/devices/{id}/...` route (feeding, live video) is about
+Only `/devices`, `/devices/{id}`, its actions and entities, `/ws`, and the
+`/accessories/{id}/...` routes a phone syncs a fountain with
+(`handlers/accessories.py`) know about accessories. Every other `/devices/{id}/...` route (feeding, live video) is about
 hardware an accessory does not have and keeps answering 404 for one.
 
 The link is stated from both ends, so neither screen needs the whole list: an

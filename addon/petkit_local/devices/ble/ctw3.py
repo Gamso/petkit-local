@@ -19,7 +19,9 @@ from petkit_local.devices.ble.framing import (
     CMD_STREAM_CHECK, CMD_STREAM_END, CMD_STREAM_SETTING, CMD_SYNC_HISTORY,
     _iter_ble_frames,
 )
-from petkit_local.events.codes import BLE_HISTORY_DATA, CTW3_BATTERY_MODE, CTW3_MODES
+from petkit_local.events.codes import (
+    BLE_HISTORY_DATA, BLE_SECRET_LEN, CTW3_BATTERY_MODE, CTW3_MODES,
+)
 from petkit_local.utils.coerce import to_int
 
 if TYPE_CHECKING:
@@ -480,3 +482,27 @@ def parse_ctw3_history(content: Any, now: float | None = None) -> HistoryFrames:
         elif cmd in (CMD_STREAM_CHECK, CMD_STREAM_END, CMD_STREAM_SETTING):
             out.control.append(cmd)
     return out
+
+
+def ctw3_secret_hex(secret: Any) -> str | None:
+    """The pairing secret as the 86 carries it: `BLE_SECRET_LEN` bytes, in hex.
+
+    The stored value is hex as PetKit's account hands it out, and not always
+    full width; PetKit's app hex-decodes it and left-pads it with zeros
+    (`codes.BLE_OPCODES` 86). None for no secret, for one that is not an
+    even-length hex string, and for one longer than the field -- the app
+    would send something for each, and a security check known to be wrong is
+    not worth handing anybody.
+    """
+    if not isinstance(secret, str):
+        return None
+    secret = secret.strip()
+    if not secret or len(secret) % 2:
+        return None
+    try:
+        raw = bytes.fromhex(secret)
+    except ValueError:
+        return None
+    if len(raw) > BLE_SECRET_LEN:
+        return None
+    return raw.rjust(BLE_SECRET_LEN, b"\x00").hex()
