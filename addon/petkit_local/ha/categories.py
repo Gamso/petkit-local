@@ -56,13 +56,14 @@ from petkit_local.ha.entities.switches import (
     CAPABILITY_SWITCHES,
     FEEDER_CAMERA_SWITCHES, FEEDER_SWITCHES,
     FOUNTAIN_SWITCHES, FOUNTAIN_W7H_CAMERA_SWITCHES, FOUNTAIN_W7H_SWITCHES,
-    LITTER_CAMERA_SWITCHES, LITTER_SWITCHES, LITTER_T6_SWITCHES,
+    LITTER_CAMERA_SWITCHES, LITTER_SWITCHES, LITTER_T4_K3_SWITCHES, LITTER_T6_SWITCHES,
     PURIFIER_SWITCHES,
 )
 from petkit_local.ha.entities.text import (
     FEEDER_SCHEDULE_TEXT, FOUNTAIN_W7H_RANGE_TEXT, LITTER_SCHEDULE_TEXT,
 )
 from petkit_local.ha.entities.times import FOUNTAIN_W7H_TIMES
+from petkit_local.utils.coerce import to_int
 from petkit_local.utils.const import (
     DEVICE_TYPES_FEEDER, DEVICE_TYPES_LITTER, DEVICE_TYPES_PURIFIER,
     DEVICE_TYPES_WATER_FOUNTAIN,
@@ -521,6 +522,30 @@ def spec_for_device(device: Device) -> CategorySpec | None:
     return None
 
 
+def has_linked_k3(device: Device) -> bool:
+    """Whether this device holds a Pura Air K3 in its K3 slot.
+
+    The device's own word first: a T4 reports the id of the K3 it holds as a
+    top-level `k3Id` on every report (`codes.T4_K3_STATE_FIELDS`), and it is
+    what the K3's light can actually be driven through -- a K3 linked here but
+    not yet picked up by the box is not one it can switch. Once reported,
+    that decides, 0 included.
+
+    Before the first report since a start (`device.state` is not persisted),
+    the stored `settings.k3Config`: `payloads.to_device_info` writes it only
+    when the BLE registry has a K3 linked to this device
+    (`BLERegistry.get_linked_k3`) -- the same link that puts `withK3`/`k3Device`
+    in the answer. It is not removed on an unlink, which is why it only stands
+    in until the device has spoken.
+    """
+    state = device.state or {}
+    if "k3Id" in state:
+        return to_int(state.get("k3Id"), 0) > 0
+    settings = device.config.get("settings") or {}
+    k3_config = settings.get("k3Config")
+    return isinstance(k3_config, dict) and bool(k3_config)
+
+
 def get_entities_for_device(device: Device) -> list[EntityDef]:
     """HA entity definitions this device publishes, in discovery order.
 
@@ -537,6 +562,11 @@ def get_entities_for_device(device: Device) -> list[EntityDef]:
         entities = [replace(e, options=["idle" if v == -1 else modes[v]
                                        for v in e.option_values])
                     if e.key == "device_status" else e for e in entities]
+        # Last, and only while a K3 is linked: an entity that comes and goes
+        # is appended so nothing else moves. `ha/publisher.py` re-announces
+        # when the set changes and clears the one that went.
+        if has_linked_k3(device):
+            entities.extend(LITTER_T4_K3_SWITCHES)
     return entities
 
 
@@ -548,6 +578,10 @@ def get_setting_fields(device: Device) -> set[str]:
     """
     fields: set[str] = set()
     for e in get_entities_for_device(device):
+        # A `state.` control (`k3_light`) reads the device's report, not a
+        # setting: copying its field into `settings` would serve it back.
+        if e.value_path.startswith("state."):
+            continue
         if e.component in ("switch", "number", "select") and e.setting_field:
             fields.add(e.setting_field)
     return fields

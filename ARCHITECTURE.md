@@ -246,7 +246,9 @@ refuses a second connection for several seconds and because Home Assistant's cam
 reading its FLV directly. A model whose tserver a normally-closed connection locks for
 minutes (`patchers/camera.py::RELAYED_MODELS`, the D4SH) is read through
 `media/tserver_relay.py` on loopback instead: it holds the device's one connection and always
-leaves it with a TCP reset.
+leaves it with a TCP reset. That tserver also stops sending when the camera pipeline restarts
+(every ~82 s), so a connection silent for a few seconds is reset and reopened, and the new FLV
+spliced onto the one go2rtc is reading with its timestamps rebased (`FlvSplicer`).
 
 ## Where the knowledge lives
 

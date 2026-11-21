@@ -35,6 +35,24 @@
   `/data/settings_overrides.json` (`proxy_pets_source`: `petkit` or `local`),
   and the app API reads and changes it at `GET`/`PATCH
   /app/v1/settings/pets-source`.
+- **A Pura Max 2 with a linked Pura Air switches the K3's light** (issue
+  #133). A new **K3 Light** switch (`k3_light`) on the T4, not on the K3,
+  which is Bluetooth-only and driven through its litter box: on sends
+  `thing.service.start {"start_action":7}`, off `thing.service.end
+  {"end_action":7}`, over MQTT when the box holds a session and through its
+  heartbeat otherwise, like its other commands. That is what PetKit's cloud
+  sent for the owner's toggles in a proxy capture of 2026-11-21 (T4 1.652);
+  for on, the box answered `work_start` with action 7 and its
+  `device.k3LightSwitch` went 0 -> 1, which is now read (from either
+  transport) as the switch's state. For off, the box's answer was not
+  captured, so it is graded `inferred` in `events/codes.py`. Whether the K3
+  turns its light off by itself after `singleLightTime` is not known; the
+  switch follows what the box reports. It is offered only while the box
+  holds a K3: the `k3Id` it reports, or before its first report since a
+  start, the K3 linked in the panel. Home Assistant gets it, or loses it, as
+  soon as that changes. The phone app gets it like any other switch: in the
+  device's `entities`, and `PUT /app/v1/devices/{id}/entities/k3_light
+  {"value": true}`.
 - **A Bluetooth accessory is named by its generation too: a CTW3 can be an
   EverSweet Max 2** (issue #115). PetKit sells the EverSweet Max Cordless and
   the EverSweet Max 2 under the one codename `ctw3`, so every one showed as a
@@ -110,6 +128,22 @@
   A status reply now settles the status and settings reads only, and the
   session stays open until the 212 is answered.
 
+- **A Dual-Hopper 2's live view no longer freezes after 5–20 seconds**
+  (issue #128). Its camera pipeline restarts about every 82 s, viewers or not,
+  and tserver never re-attaches an open connection afterwards: the stream
+  stopped dead (measured 2026-11-21: ~27 fps for 19 s, then nothing for over
+  a minute, with nothing waiting on the camera's side) while a new connection
+  worked. When the camera sends nothing for 3 s while go2rtc is still
+  reading, the relay (`media/tserver_relay.py`) now resets that connection,
+  opens a new one with the usual retries, and splices it onto the stream
+  go2rtc already has: the new FLV file header is dropped and every tag's
+  timestamp shifted to carry on 40 ms after the last one sent, so go2rtc
+  sees a short gap rather than a dead camera. The first connection still
+  passes through byte for byte. A reopen that fails, a stream the relay
+  cannot follow tag by tag, or a fourth stop within a minute ends the stream
+  as before. Not yet confirmed on the device: how go2rtc and the browser take
+  the seam, and that the codec parameters do not change across a restart
+  (go2rtc keeps the ones it read first).
 - **A Dual-Hopper 2's live view no longer dies after the first viewer**
   (issue #122). Its camera (the camera patcher's tserver, fw 916) serves one
   client at a time and never closes its side when a client hangs up normally:
