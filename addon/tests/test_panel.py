@@ -13,7 +13,7 @@ import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer, make_mocked_request
 
-from petkit_local.config import PANEL_LIVE_KEYS
+from petkit_local.config import OVERRIDES_FILENAME, PANEL_LIVE_KEYS, Config
 from petkit_local.devices.registry import DeviceRegistry
 from petkit_local.devices.ble import BLERegistry
 from petkit_local.ha.categories import get_entities_for_device
@@ -948,6 +948,51 @@ async def test_settings_overrides_written_atomically_and_merged():
             assert os.listdir(tmp) == ["overrides.json"]
         finally:
             await c.close()
+
+
+async def test_pets_source_is_a_live_setting_that_persists():
+    """Issue #130: `proxy_pets_source` is written live, persisted, and read back
+    by `Config` at the next start like every other proxy setting."""
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "overrides.json"
+        app, live = _proxy_settings_app(tmp)
+        c = await _mk_client(app)
+        try:
+            s = (await (await c.get("/api/settings")).json())["settings"]
+            assert s["proxy_pets_source"] == "petkit"
+
+            r = await c.post("/api/settings", json={"proxy_pets_source": "local"})
+            assert (await r.json())["settings"]["proxy_pets_source"] == "local"
+            assert live["proxy_pets_source"] == "local"
+            assert json.loads(path.read_text()) == {"proxy_pets_source": "local"}
+
+            # Anything else is refused, and nothing of the batch is applied.
+            r = await c.post("/api/settings",
+                             json={"proxy_mode": True, "proxy_pets_source": "cloud"})
+            assert r.status == 400
+            assert live["proxy_pets_source"] == "local" and live["proxy_mode"] is False
+
+            # A hand-edited stray value reads as the default, which is what the
+            # proxy acts on.
+            live["proxy_pets_source"] = "nonsense"
+            s = (await (await c.get("/api/settings")).json())["settings"]
+            assert s["proxy_pets_source"] == "petkit"
+        finally:
+            await c.close()
+
+        # What the next start reads: the same file, under the name `Config` uses.
+        (Path(tmp) / OVERRIDES_FILENAME).write_text(path.read_text())
+        config = Config(data_dir=tmp)
+        config.apply_panel_overrides()
+        assert config.proxy_pets_source == "local"
+        assert config.to_app_config()["proxy_pets_source"] == "local"
+
+
+def test_the_setup_tab_offers_the_pets_source_only_with_proxy_mode_on():
+    js = (Path(__file__).parent.parent / "petkit_local" / "web" / "static" / "js"
+          / "setup.js").read_text(encoding="utf-8")
+    assert "${on ? petsSource(s.proxy_pets_source, w) : ''}" in js
+    assert "saveSetting('proxy_pets_source', el.value)" in js
 
 
 async def test_settings_overrides_repair_a_corrupt_file():

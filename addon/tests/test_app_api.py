@@ -84,9 +84,13 @@ class Env:
         self.pets = pet_registry
         self.media_root = tmp / "media"
         self.media_root.mkdir()
+        #: The live settings dict `main/` shares with the device API and the panel.
+        self.live: dict[str, Any] = {"proxy_mode": False}
+        self.overrides = tmp / "settings_overrides.json"
         self.app = create_app_api(self.auth, self.registry, event_store=store,
                                   pet_registry=pet_registry, media_root=str(self.media_root),
-                                  data_dir=str(tmp), throttle=self.throttle)
+                                  data_dir=str(tmp), throttle=self.throttle,
+                                  live_config=self.live, settings_path=str(self.overrides))
         self.client: TestClient | None = None
 
     async def start(self) -> TestClient:
@@ -577,6 +581,72 @@ def test_the_openapi_file_marks_exactly_the_routes_that_need_no_session():
     assert spec["security"] == [{"bearer": []}]
 
 
+# --- settings: whose pets a camera recognises (issue #130) ----------------------
+
+async def test_pets_source_reads_the_live_setting_and_what_is_in_effect(ready: Env):
+    token = await ready.login()
+    r = await ready.get("/settings/pets-source", token)
+    assert r.status == 200
+    assert await r.json() == {"pets_source": "petkit", "proxy_mode": False,
+                              "effective": "local", "options": ["petkit", "local"]}
+
+    ready.live.update(proxy_mode=True)
+    body = await (await ready.get("/settings/pets-source", token)).json()
+    assert (body["pets_source"], body["effective"]) == ("petkit", "petkit")
+
+
+async def test_pets_source_is_written_live_and_persisted(ready: Env):
+    token = await ready.login()
+    ready.live.update(proxy_mode=True)
+    r = await ready.client.patch(f"{PREFIX}/settings/pets-source",
+                                 json={"pets_source": "local"},
+                                 headers={"Authorization": f"Bearer {token}"})
+    assert r.status == 200, await r.text()
+    assert (await r.json())["effective"] == "local"
+    # The very dict the device API reads, so the next dev_discern_pic sees it.
+    assert ready.live["proxy_pets_source"] == "local"
+    assert json.loads(ready.overrides.read_text()) == {"proxy_pets_source": "local"}
+    body = await (await ready.get("/settings/pets-source", token)).json()
+    assert body["pets_source"] == "local"
+
+
+@pytest.mark.parametrize("body", [{}, {"pets_source": "cloud"}, {"pets_source": None},
+                                  {"pets_source": ["local"]}])
+async def test_pets_source_refuses_anything_but_its_options(ready: Env, body):
+    token = await ready.login()
+    r = await ready.client.patch(f"{PREFIX}/settings/pets-source", json=body,
+                                 headers={"Authorization": f"Bearer {token}"})
+    assert r.status == 400
+    assert (await r.json())["error"] == "bad_parameter"
+    assert "proxy_pets_source" not in ready.live
+    assert not ready.overrides.exists()
+
+
+async def test_pets_source_needs_a_session_and_proxy_mode_stays_panel_only(ready: Env):
+    r = await ready.client.patch(f"{PREFIX}/settings/pets-source",
+                                 json={"pets_source": "local"})
+    assert r.status == 401
+    token = await ready.login()
+    r = await ready.client.patch(f"{PREFIX}/settings/pets-source",
+                                 json={"pets_source": "local", "proxy_mode": True},
+                                 headers={"Authorization": f"Bearer {token}"})
+    assert r.status == 200
+    assert ready.live["proxy_mode"] is False
+
+
+async def test_pets_source_without_live_settings_is_unavailable(ready: Env):
+    app = create_app_api(ready.auth, ready.registry)
+    client = TestClient(TestServer(app))
+    await client.start_server()
+    try:
+        token = await ready.login()
+        r = await client.get(f"{PREFIX}/settings/pets-source",
+                             headers={"Authorization": f"Bearer {token}"})
+        assert r.status == 503
+    finally:
+        await client.close()
+
+
 async def test_the_openapi_file_is_served_publicly_once_a_password_exists(ready: Env):
     r = await ready.get("/openapi.yaml")
     assert r.status == 200
@@ -879,8 +949,9 @@ async def test_a_pet_shows_its_weight_and_recent_visits(ready: Env):
 
 def _services(env: Env, port: int) -> Any:
     return SimpleNamespace(
-        config=SimpleNamespace(app_port=port, data_dir=str(env.tmp)),
-        app_auth=env.auth, registry=env.registry, event_store=env.store,
+        config=SimpleNamespace(app_port=port, data_dir=str(env.tmp),
+                               overrides_path=env.overrides),
+        app_config=env.live, app_auth=env.auth, registry=env.registry, event_store=env.store,
         pet_registry=env.pets, media_root=str(env.media_root),
         mqtt_bridge=None, ha_publisher=None, hub=EventHub(), go2rtc=None, notifier=None,
         ble_registry=None)

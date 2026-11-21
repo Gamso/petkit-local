@@ -48,6 +48,7 @@ tags:
   - name: timeline
   - name: media
   - name: pets
+  - name: settings
   - name: controls
   - name: feeding
   - name: push
@@ -993,6 +994,55 @@ paths:
               schema: { $ref: "#/components/schemas/Error" }
         "503": { $ref: "#/components/responses/Unavailable" }
 
+  /settings/pets-source:
+    get:
+      tags: [settings]
+      operationId: getPetsSource
+      summary: Whose pets a device recognises while proxy mode is on.
+      description: |
+        `petkit` (the default) relays PetKit's answer to `dev_discern_pic`: the pets
+        and reference photos of PetKit's app. `local` answers it with petkit-local's
+        own pets, the ones `/pets` lists, and does not forward it. With proxy mode off
+        every device gets petkit-local's pets whatever this says, which `effective`
+        reflects. Proxy mode itself is set in the panel only.
+      responses:
+        "200":
+          description: The setting.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PetsSource" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+    patch:
+      tags: [settings]
+      operationId: setPetsSource
+      summary: Choose whose pets a device recognises while proxy mode is on.
+      description: |
+        Applies at each device's next `dev_discern_pic` (a camera asks at boot and
+        about hourly), and survives a restart. The panel shows and changes the same
+        setting (Setup -> Settings, while proxy mode is on). The device replaces the
+        faces it learned from the other set with these; visits recorded before keep
+        their pet.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/PetsSourceRequest" }
+      responses:
+        "200":
+          description: Set.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PetsSource" }
+        "400":
+          description: "`bad_parameter` (`pets_source` missing or not one of `options`) or `bad_json`."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "415": { $ref: "#/components/responses/UnsupportedMediaType" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+
   /ws:
     get:
       tags: [updates]
@@ -1451,6 +1501,33 @@ components:
               maxItems: 32
               items: { type: string }
             - { type: "null" }
+
+    PetsSourceValue:
+      type: string
+      enum: [petkit, local]
+      description: "`petkit`: PetKit's app's pets. `local`: petkit-local's own."
+
+    PetsSource:
+      type: object
+      required: [pets_source, proxy_mode, effective, options]
+      properties:
+        pets_source: { $ref: "#/components/schemas/PetsSourceValue" }
+        proxy_mode: { type: boolean, description: Whether proxy mode is on (set in the panel). }
+        effective:
+          $ref: "#/components/schemas/PetsSourceValue"
+          description: |
+            Whose pets devices get now: `pets_source` while proxy mode is on, `local`
+            otherwise.
+        options:
+          type: array
+          description: Every value `pets_source` takes, in the order to offer them.
+          items: { $ref: "#/components/schemas/PetsSourceValue" }
+
+    PetsSourceRequest:
+      type: object
+      required: [pets_source]
+      properties:
+        pets_source: { $ref: "#/components/schemas/PetsSourceValue" }
 
     NotificationSettings:
       type: object
