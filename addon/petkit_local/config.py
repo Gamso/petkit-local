@@ -14,6 +14,7 @@ import json
 import logging
 import os
 import urllib.request
+from collections.abc import Mapping
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
@@ -46,15 +47,55 @@ PANEL_LIVE_KEYS = (
     "proxy_mqtt_bridge",
     "proxy_keep_online",
     "proxy_only",
+    "proxy_pets_source",
     "capture",
     "weight_match_tolerance_pct",
     "weight_match_margin_g",
 )
 OVERRIDES_FILENAME = "settings_overrides.json"
 
+#: `proxy_pets_source`: whose pets a device recognises while proxy mode is on.
+#: `petkit` (the default, and the behaviour before the setting existed) relays
+#: the cloud's `dev_discern_pic`, the pets and photos of PetKit's app; `local`
+#: answers it from the panel's own pets (`ai/pets.py::discern_pic_payload`) and
+#: does not forward it (`http/middleware/proxy.py::LOCAL_PETS_ENDPOINTS`). With
+#: proxy mode off every device gets ours whatever this says.
+PETS_SOURCE_PETKIT = "petkit"
+PETS_SOURCE_LOCAL = "local"
+PETS_SOURCES = (PETS_SOURCE_PETKIT, PETS_SOURCE_LOCAL)
+
 # main.py resolves the level with getattr(logging, ...), which raises on
 # anything else and takes the add-on down before it logs why.
 LOG_LEVELS = ("CRITICAL", "ERROR", "WARNING", "INFO", "DEBUG")
+
+
+def pets_source(config: Mapping[str, Any]) -> str:
+    """`proxy_pets_source` as read from a live config, never anything else.
+
+    An unknown value (a hand-edited overrides file) reads as the default, so
+    it can only ever leave things as they were before the setting existed.
+    """
+    value = config.get("proxy_pets_source")
+    return value if value in PETS_SOURCES else PETS_SOURCE_PETKIT
+
+
+def save_panel_overrides(path: str | Path, changed: Mapping[str, Any]) -> None:
+    """Merge `changed` into the overrides file, so a live change survives a restart.
+
+    Shared by the panel's Setup tab and the app API, the two places a live
+    setting is written. A damaged file is already dead weight —
+    `Config.apply_panel_overrides` ignores it wholesale on a parse error — so
+    rewriting it from what is being saved is a repair, not data loss.
+
+    Raises:
+        OSError: the file could not be written. The live value is applied
+            either way; the caller decides how loudly to say it will not last.
+    """
+    existing = read_json(path, {})
+    if not isinstance(existing, dict):
+        existing = {}
+    existing.update(changed)
+    atomic_write_json(path, existing)
 
 
 def _opt_int(opts: dict[str, Any], key: str, default: int) -> int:
@@ -394,6 +435,8 @@ class Config:
     #: PetKit without a button or a device request — paced by the device's own
     #: MQTT packets, never by a timer — and it invites PetKit to send commands.
     proxy_keep_online: bool = False
+    #: Whose pets a device recognises in proxy mode: `PETS_SOURCES`.
+    proxy_pets_source: str = PETS_SOURCE_PETKIT
 
     ha_mqtt_host: str = "localhost"
     ha_mqtt_port: int = 1883
@@ -504,6 +547,7 @@ class Config:
             "proxy_mqtt_bridge": self.proxy_mqtt_bridge,
             "proxy_keep_online": self.proxy_keep_online,
             "proxy_only": self.proxy_only,
+            "proxy_pets_source": self.proxy_pets_source,
             "capture": self.capture,
             "weight_match_tolerance_pct": self.weight_match_tolerance_pct,
             "weight_match_margin_g": self.weight_match_margin_g,

@@ -20,6 +20,21 @@
 
 ### New
 
+- **In proxy mode, a camera can recognise this app's pets instead of PetKit's**
+  (issue #130). Until now proxy mode always handed a camera PetKit's answer to
+  `dev_discern_pic`, the pets and photos of PetKit's app, so the pets managed
+  in the panel took effect only with proxy mode off. **Setup → Settings** now
+  has **Pets for recognition**, shown while proxy mode is on: **PetKit** (the
+  default, as before) or **petkit-local**, which answers that request with the
+  Pets tab's pets and does not forward it to PetKit. `dev_discern_config`, the
+  detection thresholds, is relayed as before. The camera replaces the faces it
+  extracted from the old set (`/system/feature.bin`) at its next request, at
+  boot or within about an hour. A pet brought across with *Import from PetKit*
+  answers to PetKit's id and ours alike, so visits keep their pet across the
+  switch. The setting is kept with the other proxy settings in
+  `/data/settings_overrides.json` (`proxy_pets_source`: `petkit` or `local`),
+  and the app API reads and changes it at `GET`/`PATCH
+  /app/v1/settings/pets-source`.
 - **A Pura Max 2 with a linked Pura Air switches the K3's light** (issue
   #133). A new **K3 Light** switch (`k3_light`) on the T4, not on the K3,
   which is Bluetooth-only and driven through its litter box: on sends

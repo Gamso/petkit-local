@@ -14,6 +14,7 @@ import logging
 from aiohttp import web
 
 from petkit_local.ai.cloud_faces import drop_faces
+from petkit_local.config import PETS_SOURCE_LOCAL, pets_source
 from petkit_local.ha.learn import learn_generation, learn_settings
 from petkit_local.http.appkeys import (
     CLOUD_FACES, CONFIG, EVENT_HUB, EVENT_STORE, HA_PUBLISHER, PROXY_UPSTREAM_CREDS, REGISTRY,
@@ -57,15 +58,35 @@ log = logging.getLogger(__name__)
 #: `handlers/ble_device.py`; this entry stands on the paragraph above either way.
 #:
 #: This set is for answers that would BREAK the device, not for answers that
-#: are merely inconvenient to us. `dev_discern_pic` is deliberately absent: the
-#: cloud's pets and face photos reaching the device is what proxy mode MEANS.
-#: Turn proxy off to have our own pets take effect. What reaches the device is
-#: the cloud's list with every photo URL pointing at OUR `/faces/` route, which
+#: are merely inconvenient to us. `dev_discern_pic` is deliberately absent: by
+#: default the cloud's pets and face photos reaching the device is what proxy
+#: mode MEANS. Whose pets it gets instead is the owner's choice, made in the
+#: panel — see `LOCAL_PETS_ENDPOINTS`.
+LOCAL_ONLY_ENDPOINTS = frozenset({"dev_ble_device"})
+
+#: Endpoints answered locally and NOT forwarded while the panel's "Pets for
+#: recognition" is petkit-local (`config.PETS_SOURCE_LOCAL`).
+#:
+#: `dev_discern_pic` is the device's recognition set: which pets it matches
+#: against and where their reference photos are. With the setting on `petkit`
+#: (the default) it is forwarded, and the device gets PetKit's app's pets — the
+#: cloud's list with every photo URL pointing at OUR `/faces/` route, which
 #: serves that photo normalised to 224x224 (`http/redact/rules.py::_match_faces`,
 #: `ai/cloud_faces.py`); a photo that cannot be fetched or normalised is dropped
 #: from the list (`_serve_cloud_faces`). Passed through raw, one 4096x3072 photo
 #: ran a D4SH's camera out of memory every ~82 s (issue #129).
-LOCAL_ONLY_ENDPOINTS = frozenset({"dev_ble_device"})
+#:
+#: On `local` the device gets the panel's pets, `handle_discern_pic`'s answer,
+#: exactly as with proxy mode off. Not forwarded at all, unlike
+#: `LOCAL_ONLY_ENDPOINTS`: nothing in the cloud's reply would be used, and
+#: forwarding it would still fetch the account's photos (`_serve_cloud_faces`).
+#: The device replaces what it extracted from the cloud's photos
+#: (`/system/feature.bin`) with features of ours on this answer, and reports
+#: our `pets.id` from then on; a visit recorded before still carries PetKit's
+#: id in `pet_ref`, named through the "Import from PetKit" alias
+#: (`PetRegistry.resolve_pet_ref`). `dev_discern_config` is not here: its two
+#: thresholds are the cloud's either way.
+LOCAL_PETS_ENDPOINTS = frozenset({"dev_discern_pic"})
 
 #: Endpoints whose REQUEST is the leak, withheld while the log-upload guard is
 #: on and forwarded normally when it is off.
@@ -248,6 +269,12 @@ async def proxy_middleware(request: web.Request, handler: Handler) -> web.Stream
     if (config.get("proxy_block_log_upload", True)
             and request.path.rstrip("/").rsplit("/", 1)[-1] in GUARDED_LOCAL_ENDPOINTS):
         log.debug("Not forwarding %s: the log-upload guard withholds it",
+                  request.path)
+        return local
+
+    if (pets_source(config) == PETS_SOURCE_LOCAL
+            and request.path.rstrip("/").rsplit("/", 1)[-1] in LOCAL_PETS_ENDPOINTS):
+        log.debug("Not forwarding %s: pets for recognition are petkit-local's",
                   request.path)
         return local
 
