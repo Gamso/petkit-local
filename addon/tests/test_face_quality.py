@@ -131,7 +131,9 @@ async def test_the_registry_refuses_a_small_photo(pet_registry: PetRegistry):
 def _photo(source: str, width: int, height: int, vf: str | None = None) -> bytes:
     return subprocess.run(
         [shutil.which("ffmpeg"), "-v", "error", "-f", "lavfi",
-         "-i", f"{source}=size={width}x{height}:rate=1",
+         # A source that already carries an option (`color=c=black`) takes the
+         # next one after `:`; a bare one (`testsrc`) after `=`.
+         "-i", f"{source}{':' if '=' in source else '='}size={width}x{height}:rate=1",
          *(["-vf", vf] if vf else []), "-frames:v", "1", "-q:v", "2",
          "-f", "mjpeg", "pipe:1"], capture_output=True, check=True).stdout
 
