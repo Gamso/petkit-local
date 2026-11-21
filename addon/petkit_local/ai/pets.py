@@ -26,6 +26,7 @@ import time
 from typing import TYPE_CHECKING, Any
 from urllib.parse import urlparse
 
+from petkit_local.ai.face_quality import FACE_TOO_SMALL, size_refusal
 from petkit_local.events import codes
 from petkit_local.events.store import (
     MAX_FACES_PER_PET, WEIGHT_MEDIAN_SAMPLES, visit_weight_grams,
@@ -172,9 +173,65 @@ def entered_weight(value: Any) -> float | None:
 FACE_EMPTY = "empty"
 FACE_NOT_JPEG = "not_jpeg"
 FACE_LIMIT = "too_many_faces"
+#: Under `MIN_FACE_SIDE` on the short side (`ai/face_quality.py`).
+FACE_SMALL = FACE_TOO_SMALL
 
 #: A JPEG's first three bytes. `dev_discern_pic` only ever serves JPEGs.
 JPEG_MAGIC = b"\xff\xd8\xff"
+
+
+def faces_held(device: Any) -> set[int]:
+    """The face ids a device reports holding: its state report's `discernPic`.
+
+    That array is the READBACK of `dev_discern_pic` — the `discern[].id`s whose
+    photos the device downloaded and feature-extracted — and the only proof a
+    photo was accepted. Junk entries are skipped; no report yet is no faces.
+    """
+    held = (getattr(device, "state", None) or {}).get("discernPic")
+    if not isinstance(held, list):
+        return set()
+    return {n for n in (to_int(x, None) for x in held if not isinstance(x, bool))
+            if n is not None}
+
+
+def _pet_device_ids(pet: dict) -> list[int]:
+    raw = pet.get("device_ids_json")
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except ValueError:
+            return []
+    if not isinstance(raw, list):
+        return []
+    ids = (to_int(x, None) for x in raw if not isinstance(x, bool))
+    return list(dict.fromkeys(n for n in ids if n is not None))
+
+
+def face_acceptance(face_id: int, pet: dict, devices: Any) -> dict[str, list[int]]:
+    """Which of the pet's devices hold face `face_id`, and which are yet to.
+
+    `{"accepted_by": [device id], "waiting_for": [device id]}`, both in the
+    pet's own device order. `accepted_by` is every assigned device whose
+    `discernPic` lists the face (`faces_held`); `waiting_for` is every other
+    assigned device that recognises pets (`Device.supports_ai`) — one that
+    cannot will never fetch it, so it is waited for by nobody. A device id
+    with no device behind it is in neither. `devices` is anything with the
+    registry's `get(petkit_id)`.
+
+    A device re-reads its faces at boot and about hourly, so a new photo sits
+    in `waiting_for` for up to that long; one there for longer was refused.
+    """
+    accepted: list[int] = []
+    waiting: list[int] = []
+    for device_id in _pet_device_ids(pet):
+        device = devices.get(device_id) if devices is not None else None
+        if device is None:
+            continue
+        if face_id in faces_held(device):
+            accepted.append(device_id)
+        elif getattr(device, "supports_ai", False):
+            waiting.append(device_id)
+    return {"accepted_by": accepted, "waiting_for": waiting}
 
 
 def learned_weight_in_use(pet: dict) -> bool:
@@ -391,7 +448,9 @@ class PetRegistry:
         """Why an upload for `pet_id` would be turned down, or None if it would not.
 
         `FACE_EMPTY`, `FACE_NOT_JPEG` (only a real JPEG is kept, since
-        `dev_discern_pic` only ever serves JPEGs), or `FACE_LIMIT` once the pet
+        `dev_discern_pic` only ever serves JPEGs), `FACE_SMALL` under
+        `MIN_FACE_SIDE` px on the short side (it would be upscaled to what the
+        recogniser is fed; `ai/face_quality.py`), or `FACE_LIMIT` once the pet
         holds `MAX_FACES_PER_PET` -- the firmware has its own "Too many face
         picture" guard whose limit we could not recover, so we stop at the
         largest count the real cloud was seen to serve. Checked before
@@ -401,6 +460,8 @@ class PetRegistry:
             return FACE_EMPTY
         if data[:3] != JPEG_MAGIC:
             return FACE_NOT_JPEG
+        if size_refusal(data):
+            return FACE_SMALL
         if len(await self.faces(pet_id)) >= MAX_FACES_PER_PET:
             return FACE_LIMIT
         return None
@@ -409,8 +470,9 @@ class PetRegistry:
         """Validate via JPEG magic bytes, store under `{faces_dir}/`, register.
 
         Returns the new face row, or None if `pet_id` doesn't exist, `data`
-        isn't a real JPEG (`dev_discern_pic` only ever serves JPEGs), the pet
-        already holds `MAX_FACES_PER_PET`, or the path check refuses.
+        isn't a real JPEG (`dev_discern_pic` only ever serves JPEGs), is under
+        `MIN_FACE_SIDE` on its short side, the pet already holds
+        `MAX_FACES_PER_PET`, or the path check refuses.
 
         The image is normalised to the size the NPU is fed — every reference
         photo PetKit's cloud served was a 224x224 face crop, never a plain
@@ -423,7 +485,7 @@ class PetRegistry:
         """
         if await self._store.get_pet(pet_id) is None:
             return None
-        if data[:3] != JPEG_MAGIC:
+        if data[:3] != JPEG_MAGIC or size_refusal(data):
             return None
         data = await normalize_face_photo(data)
 

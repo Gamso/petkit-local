@@ -98,6 +98,21 @@
   device says whether it recognises pets (`supports_ai`), and `/app/v1/ws`
   sends a `pet` message when one is created or changed — from the app at
   once, from the panel within 30 s — and `pet_removed` when one is deleted.
+- **Face photos are checked on upload, and each one says which devices took
+  it** (issue #132). A photo under 224 px on its short side is refused (panel:
+  400; app API: 422 `photo_too_small`), since it would have to be enlarged to
+  what the recogniser is fed. Anything else is accepted with warnings, in the
+  upload's new `quality: {checked, warnings}`: `blurry`, `too_dark`,
+  `overexposed` and `not_square`. They are judged on the photo as uploaded,
+  on the same 224x224 centre crop the device gets, decoded by ffmpeg; without
+  ffmpeg those three are not checked (`checked: false`) and the upload goes
+  ahead. The blur threshold is provisional, set on synthetic images rather
+  than real reference photos. Each face now lists `accepted_by` (the pet's
+  devices whose state report holds it in `discernPic`) and `waiting_for`
+  (those that recognise pets and do not yet), in the app API and in the
+  Pets tab, which shows them as badges under each mugshot, keeps an upload's
+  warnings on its tile, and says what makes a good one: one pet, head facing
+  the camera, close-up, good light.
 
 ### Fixed
 

@@ -896,6 +896,12 @@ paths:
         fetch the photo at their next recognition poll, and the pet's visits there are
         named from then on. A pet has at most `max_faces` photos
         (`GET /pets/{id}/faces`). Every `/ws` socket gets a `pet` message.
+
+        The photo is checked as uploaded, before it is cropped: one under 224 px on its
+        short side is refused (`photo_too_small`), and `quality` says what else may make
+        it a poor reference — warnings to show, which never block. `face.waiting_for`
+        then lists the devices that are to fetch it; each moves to `accepted_by` once
+        that device reports holding the photo.
       parameters:
         - { $ref: "#/components/parameters/PetId" }
       requestBody:
@@ -910,9 +916,10 @@ paths:
             application/json:
               schema:
                 type: object
-                required: [face]
+                required: [face, quality]
                 properties:
                   face: { $ref: "#/components/schemas/PetFace" }
+                  quality: { $ref: "#/components/schemas/PhotoQuality" }
         "400":
           description: "`bad_request`: the body was empty."
           content:
@@ -933,6 +940,12 @@ paths:
               schema: { $ref: "#/components/schemas/Error" }
         "415":
           description: "`not_jpeg`: the body is not a JPEG (a form, a PNG, a HEIC...)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "422":
+          description: "`photo_too_small`: under 224 px on the short side. It would have to
+            be enlarged to the 224x224 the device's recogniser is fed."
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
@@ -2121,12 +2134,48 @@ components:
 
     PetFace:
       type: object
-      required: [id, photo]
+      required: [id, photo, accepted_by, waiting_for]
       properties:
         id: { type: integer, description: Unique across every pet. }
         photo:
           type: string
           description: "`/app/v1/pets/{id}/faces/{face_id}/photo`, the stored 224x224 JPEG."
+        accepted_by:
+          type: array
+          description: |
+            The pet's devices that hold this photo: their state report lists it among the
+            faces they downloaded and learned (`discernPic`), the only proof a device took
+            it.
+          items: { type: integer }
+        waiting_for:
+          type: array
+          description: |
+            The pet's devices that recognise pets and do not hold it yet. A device re-reads
+            its photos at boot and about once an hour, so a new one waits up to that long;
+            one still waiting after that was not taken. A device that cannot recognise
+            pets is in neither list.
+          items: { type: integer }
+
+    PhotoQuality:
+      type: object
+      required: [checked, warnings]
+      description: |
+        What the server made of an uploaded face photo, as uploaded. Warnings never block.
+      properties:
+        checked:
+          type: boolean
+          description: |
+            Whether the checks that need the image decoded ran (`blurry`, `too_dark`,
+            `overexposed`). False when the server cannot decode it (no ffmpeg); the size
+            and `not_square` come from the JPEG header and are checked regardless.
+        warnings:
+          type: array
+          description: |
+            Stable codes, in this order when several apply: `blurry` (little fine
+            detail in the 224x224 crop the device gets), `too_dark`, `overexposed`,
+            `not_square` (over 1.6:1, so probably not cropped to the head: only the
+            centre square is kept). Ignore a code you do not know.
+          items: { type: string, enum: [blurry, too_dark, overexposed, not_square] }
 
     PetFaceList:
       type: object

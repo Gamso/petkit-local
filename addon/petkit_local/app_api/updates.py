@@ -367,7 +367,7 @@ class UpdateFeed:
 
     async def _read_pets(self) -> list[dict[str, Any]]:
         assert self._pets is not None
-        return [serializers.pet_summary(pet, await self._pets.faces(pet["id"]))
+        return [serializers.pet_summary(pet, await self._pets.faces(pet["id"]), self._registry)
                 for pet in await self._pets.all()]
 
     async def _scan_pets(self, *, announce: bool) -> None:

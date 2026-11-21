@@ -1,7 +1,7 @@
 import { BASE, esc, toast } from './core.js';
 import { onAction, onChange, onInput } from './delegate.js';
 import { closeModal } from './media.js';
-import { loadPets } from './pets.js';
+import { loadPets, noteFaceQuality, qualityWords } from './pets.js';
 
 // The size the NPU is fed. Every mugshot PetKit's own cloud served was
 // exactly this, and media/transcode.py::normalize_face_photo returns an upload
@@ -192,7 +192,17 @@ async function cropSave() {
   } catch (e) {
     r = { error: String((e && e.message) || e) };
   }
-  toast(r.face ? 'Photo added' : 'Error: ' + (r.error || 'failed'));
+  // The server's verdict on the photo: warnings, never a refusal. They stay on
+  // the mugshot's tile too, since the toast is gone in a few seconds.
+  const warnings = (r.quality && r.quality.warnings) || [];
+  if (r.face) noteFaceQuality(r.face.id, r.quality);
+  toast(
+    !r.face
+      ? 'Error: ' + (r.error || 'failed')
+      : warnings.length
+        ? 'Photo added, but it ' + warnings.map(qualityWords).join(', ')
+        : 'Photo added',
+  );
   loadPets();
 }
 
