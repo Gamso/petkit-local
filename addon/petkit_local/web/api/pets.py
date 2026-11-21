@@ -309,10 +309,10 @@ FACE_DOWNLOAD_TIMEOUT = 20
 async def _fetch_cloud_face(session: aiohttp.ClientSession, url: str) -> bytes | None:
     """Download one reference photo, or None if it could not be had.
 
-    No new trust is extended by this. These are the exact URLs we hand the
-    device in the same reply — `dev_discern_pic` is passed through untouched in
-    proxy mode — so the device is already fetching them, from the same host,
-    on its own. What is new is only that the owner asked for a copy.
+    No new trust is extended by this. These are the exact URLs PetKit names in
+    the device's own `dev_discern_pic`: the photos the device fetches itself,
+    or that proxy mode fetches for it to serve normalised
+    (`ai/cloud_faces.py`). What is new is only that the owner asked for a copy.
 
     Read in chunks against a cap rather than with `read()`: the size is
     whatever the far end claims, and a `Content-Length` is not a promise.

@@ -14,8 +14,9 @@ decoded objects would never see them.
 Two very different kinds of rule live here, and the difference is what
 `BLOCKING_RULES` encodes:
 
-* **Routine substitutions** (`server`, `mqtt`, `oss_sts`, `locale`) replace the
-  cloud's address — or the device's own local-time settings — with ours. They
+* **Routine substitutions** (`server`, `mqtt`, `oss_sts`, `locale`, `faces`)
+  replace the cloud's address — or the device's own local-time settings, or the
+  face photos its camera decodes — with ours. They
   fire constantly, on every `dev_serverinfo` and `dev_device_info` poll, and
   mean nothing except "proxy mode is on". They are logged, not persisted.
 * **Blocked attempts** (`rce`, `ota`, `secret`) mean the upstream tried to run a
@@ -135,6 +136,12 @@ class RedactionPolicy:
     #: from the product key the key that keeps it on HTTP
     #: (`patchers/esp32_ota.handed_broker`), as our own `dev_iot_device_info` does.
     esp32_http_only: bool = True
+    #: `http://<host>` a device fetches our `/faces/` route from, as
+    #: `handlers/discern.py::faces_host` builds it. Set, `discern[].url` is
+    #: rewritten to a normalised copy served there (`_match_faces`); empty,
+    #: the rule is off — which is what a caller with no `ai/cloud_faces.py`
+    #: cache to serve that copy from must leave it.
+    faces_base: str = ""
 
 
 # Below the models on purpose: both submodules import them back from here, so
@@ -152,6 +159,7 @@ from petkit_local.http.redact.rules import (
     LOG_UPLOAD_ENDPOINTS,
     OTA_CHECK_EMPTY,
     OTA_ENDPOINTS,
+    RULE_FACES,
     RULE_LOCALE,
     RULE_LOG_UPLOAD,
     RULE_MQTT,
@@ -164,6 +172,7 @@ from petkit_local.http.redact.rules import (
     _is_http_url,
     _log_upload_answer,
     _looks_like_firmware,
+    _match_faces,
     _match_locale,
     _match_mqtt,
     _match_oss_sts,
@@ -191,6 +200,7 @@ __all__ = [
     "LOG_UPLOAD_ENDPOINTS",
     "OTA_CHECK_EMPTY",
     "OTA_ENDPOINTS",
+    "RULE_FACES",
     "RULE_LOCALE",
     "RULE_LOG_UPLOAD",
     "RULE_MQTT",
@@ -216,6 +226,7 @@ __all__ = [
     "_last_segment",
     "_log_upload_answer",
     "_looks_like_firmware",
+    "_match_faces",
     "_match_locale",
     "_match_mqtt",
     "_match_oss_sts",

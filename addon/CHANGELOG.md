@@ -68,6 +68,26 @@
 
 ### Fixed
 
+- **A Dual-Hopper 2 in proxy mode no longer restarts its camera every 82 s**
+  (issue #129). Its live view froze after 5–20 s, and recognition and recording
+  ran only about 20 s out of every 82. With proxy mode on, the device is handed
+  PetKit's own `dev_discern_pic` answer, and one of the account's reference
+  photos there was a raw 4096×3072 JPEG instead of the usual 224×224 face crop:
+  the camera process (`media`, fw 916, 92 MB of RAM) fetched it on every start
+  and died in OpenCV (`Insufficient memory`, 37 748 736 bytes). Now every photo
+  URL in that answer points at the add-on's own `/faces/` route
+  (`/faces/cloud_<face id>.jpg`), which serves the cloud's photo normalised to
+  224×224, as a photo uploaded in the panel is. Ids, colours and the order of
+  the list are the cloud's. The photo is fetched only when the device asks —
+  while its `dev_discern_pic` reply waits (3 s at most, for all of them), or
+  when it downloads the URL — never on a timer, and kept in
+  `/data/faces_cloud/`, so a restart does not break a URL the device already
+  holds. A photo that cannot be fetched or normalised is dropped from the
+  answer, never passed on raw. Each rewrite and drop shows in the panel as a
+  `face photo` redaction. A device that already holds the big photo in
+  `/tmp/pet_face_pic.jpg` keeps it until it reboots (`wget -c` will not replace
+  it), so reboot it once after updating. Not yet confirmed on the device
+  itself.
 - **A CTW3's drink history now gets the time to arrive** (issue #126). Right
   after the history request (212) the fountain pushes its status by itself,
   and that status reply cleared every read the relay was waiting on, the 212
