@@ -26,6 +26,7 @@ from aiohttp import web
 
 from petkit_local.devices import payloads
 from petkit_local.devices.base import Device
+from petkit_local.events import codes
 from petkit_local.events.ingest import (
     apply_derived_state, apply_state_snapshot, entity_for_event, from_event_report,
     parse_event_report_form,
@@ -153,7 +154,9 @@ async def handle_event_report(request: web.Request) -> web.Response:
     row is persisted to the EventStore, `device.state` is refreshed from the
     report's embedded `state` payload (which keeps a device that never calls
     `dev_state_report` again in sync), the panel's live log gets an entry, and
-    the matching HA `event` entity fires.
+    the matching HA `event` entity fires. A transport report (BLE relay
+    plumbing, `codes.is_transport`) gets only the state refresh: like its MQTT
+    twin it is not persisted and not published as an event.
 
     `event_type` here is a NUMERIC code string ("9", "10", "5", ...), a
     different namespace from MQTT's semantic strings; `events/normalize.py`'s
@@ -187,16 +190,24 @@ async def handle_event_report(request: web.Request) -> web.Response:
 
     pet_registry = request.app.get(PET_REGISTRY)
     ha_publisher = request.app.get(HA_PUBLISHER)
+    # BLE relay plumbing (codes 51/52/53 on a litter box) is the HTTP twin of
+    # the `ble_relay_*` topics the bridge never stores: not a row, so not a
+    # Timeline card, a notification or a day count. Its state block is still
+    # applied below, and the live log still shows the request itself. One
+    # rule for both transports -- see `codes.MQTT_TRANSPORT_TOPICS`.
+    transport = codes.is_transport(row["event_type"], device.device_type)
+
     # `pet_ref` is what the device claimed; `pet_id` is what we could prove,
     # by that claim or, for a visit naming no pet, by its weight. Resolving
     # BEFORE the insert keeps the row consistent in one write, and leaving
     # `pet_id` None for an unknown id is what stops a stale cloud identity from
     # fabricating an HA pet device.
     pet = None
-    if pet_registry is not None:
-        pet = await pet_registry.attribute_event(device, row, content or {})
-
-    _, is_new = await store.record_event(row)
+    is_new = True
+    if not transport:
+        if pet_registry is not None:
+            pet = await pet_registry.attribute_event(device, row, content or {})
+        _, is_new = await store.record_event(row)
 
     # After the insert: the learned weight is derived from the stored visits.
     if pet:
@@ -223,9 +234,13 @@ async def handle_event_report(request: web.Request) -> web.Response:
     if hub is not None:
         if isinstance(state, dict) and state:
             hub.set_state_report(petkit_id, state)
-        hub.publish("event", petkit_id,
-                    f"{row['event_type'] or 'event'} ({row['event_kind']})",
-                    detail={**row, "is_new": is_new})
+        # Not for transport, as on MQTT: an "event" entry is what the panel
+        # and the app's live feed re-read the Timeline on, and it would name a
+        # row that was never stored.
+        if not transport:
+            hub.publish("event", petkit_id,
+                        f"{row['event_type'] or 'event'} ({row['event_kind']})",
+                        detail={**row, "is_new": is_new})
 
     if ha_publisher is not None:
         # Resolved through the code table, not by name: over HTTP `event_type`

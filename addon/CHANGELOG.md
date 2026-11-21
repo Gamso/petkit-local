@@ -56,6 +56,22 @@
   bounds rather than sent; past 65535 it used to fail mid-request. The CTW3's
   smart-mode times are named **Intermittent Run Time** and **Intermittent
   Rest Time**, PetKit's word for the mode (entity keys unchanged).
+- **A litter box relaying a Bluetooth fountain no longer fills the Timeline
+  with relay plumbing.** A T4 on HTTP relaying a CTW3 reports each relay
+  session as `dev_event_report` codes 51 (relay started), 52 (relay finished)
+  and 53 (relay data) — the HTTP twins of the `ble_relay_*` MQTT topics, which
+  were never stored — and every one of them became a Timeline card: 30 in a
+  week on one box, plus three `connect_start` over MQTT, both shown as
+  "Event 52" / "Event connect_start". One rule now covers both transports: a
+  report of the `system` kind is handled for what it carries (its state block
+  still updates the device) and never stored, so it reaches neither the
+  Timeline (panel or phone app, cards and chip counts) nor a notification.
+  The rows already stored are hidden rather than deleted, since they hold the
+  relayed frames; they stay in the database and its export. Code 52 and
+  `connect_start` are new in `events/codes.py`, both graded `inferred`: no
+  payload of either is captured, and their meaning comes from the order and
+  counts they arrive in (52) and from the name (`connect_start`). Codes 51 and
+  53 now list the T4 among the models that send them.
 
 ## 2.3.0 — 2026-11-14
 
