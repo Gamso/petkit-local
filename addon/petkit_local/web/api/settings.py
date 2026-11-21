@@ -21,6 +21,9 @@ from aiohttp import web
 from petkit_local.ai.pets import (
     LEARNED_WEIGHT_MIN_SAMPLES, WEIGHT_MATCH_SETTINGS, clamp_weight_setting,
 )
+from petkit_local.config import (
+    PETS_SOURCE_PETKIT, PETS_SOURCES, pets_source, save_panel_overrides,
+)
 from petkit_local.events.store import WEIGHT_MEDIAN_SAMPLES
 from petkit_local.http.presence import (
     MIN_INTERVAL_SECONDS, blocker, heartbeat_request,
@@ -31,7 +34,6 @@ from petkit_local.utils.coerce import to_int
 from petkit_local.utils.const import (
     AI_GENERATIONS, DEVICE_NAMES, DEVICE_TYPES_AI, VERSION, device_display_name,
 )
-from petkit_local.utils.jsonio import atomic_write_json, read_json
 from petkit_local.web.api._common import MAX_EVENT_LIMIT, _json_body, _limit_param, _live
 from petkit_local.web.appkeys import (
     CFG, EVENT_STORE, HA_PUBLISHER, HUB, LIVE_CONFIG, REGISTRY, RETENTION_CONFIG,
@@ -64,6 +66,7 @@ LIVE_SETTINGS = {
     "proxy_mqtt_bridge": bool,
     "proxy_keep_online": bool,
     "proxy_only": str,
+    "proxy_pets_source": str,
     "capture": bool,
     **dict.fromkeys(WEIGHT_MATCH_SETTINGS, int),
 }
@@ -85,6 +88,8 @@ LIVE_SETTING_DEFAULTS = {
     # (`http/presence.py`), so it is never on by surprise.
     "proxy_keep_online": False,
     "proxy_only": "",
+    # PetKit's pets, as before the setting existed (`config.PETS_SOURCES`).
+    "proxy_pets_source": PETS_SOURCE_PETKIT,
     "capture": False,
     **{key: default for key, (_low, _high, default) in WEIGHT_MATCH_SETTINGS.items()},
 }
@@ -112,6 +117,8 @@ def _current_settings(request: web.Request) -> dict[str, Any]:
             settings[key] = fallbacks[key] if clamped is None else clamped
         else:
             settings[key] = bool(value) if typ is bool else (value or "")
+    # What the proxy middleware will act on, not a hand-edited stray value.
+    settings["proxy_pets_source"] = pets_source(settings)
     return settings
 
 
@@ -155,7 +162,11 @@ def _valid_dns(value: str) -> bool:
 
 #: Extra validation for settings whose value is not just a type. `api_settings`
 #: coerces to bool or str; anything with a narrower domain is checked here.
-LIVE_SETTING_VALIDATORS = {"proxy_upstream": _valid_upstream, "proxy_dns": _valid_dns}
+LIVE_SETTING_VALIDATORS = {
+    "proxy_upstream": _valid_upstream,
+    "proxy_dns": _valid_dns,
+    "proxy_pets_source": lambda value: value in PETS_SOURCES,
+}
 
 
 async def api_settings(request: web.Request) -> web.Response:
@@ -206,14 +217,7 @@ async def api_settings(request: web.Request) -> web.Response:
     path = request.app[CFG].get("settings_path")
     if path:
         try:
-            # A damaged overrides file is already dead weight — config.py's
-            # apply_panel_overrides ignores it wholesale on a parse error — so
-            # rewriting it from the current settings is a repair, not data loss.
-            existing = read_json(path, {})
-            if not isinstance(existing, dict):
-                existing = {}
-            existing.update(changed)
-            atomic_write_json(path, existing)
+            save_panel_overrides(path, changed)
         except OSError as e:
             log.warning("panel: could not persist settings overrides: %s", e)
 

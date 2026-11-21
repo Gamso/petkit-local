@@ -357,6 +357,38 @@ add-on's data directory with a Cloudflare TURN key (`{"key_id": "...",
 from it for a player to use. The token itself is never sent to a browser; the
 credentials are, to anyone who can open the panel.
 
+## Pets for recognition in proxy mode
+
+A camera that recognises pets on its own asks for the pets to look for, with
+a reference photo of each, at boot and about once an hour. With proxy mode
+off it is given the pets on the **Pets** tab. With proxy mode on, **Setup →
+Settings → Pets for recognition** chooses:
+
+- **PetKit** (the default): the pets and photos in PetKit's app, relayed from
+  the cloud. The photos are served from this app, shrunk to the 224×224 the
+  camera expects.
+- **petkit-local**: the pets on the Pets tab, as with proxy mode off. That
+  request is then answered here and not forwarded to PetKit at all. The
+  detection thresholds are still PetKit's.
+
+The choice is shown only while proxy mode is on, takes effect at each
+camera's next request for its pets, and survives a restart. The phone app can
+read and change it too (`/app/v1/settings/pets-source`).
+
+**What the camera already learned is replaced, not merged.** It keeps the
+faces it extracted from the last photos it was given (in `/system/feature.bin`)
+and recognises against them until its next request, then replaces them with
+the new set. A pet with no photo on the Pets tab, or not assigned to that
+device, is not recognised once you switch to petkit-local, so give each pet a
+photo first — **Import from PetKit** on the Pets tab brings PetKit's pets and
+photos across.
+
+**History keeps its names.** A camera on PetKit's pets reports PetKit's pet
+id; on petkit-local's, this app's. A pet brought across with *Import from
+PetKit* answers to both, so visits recorded before and after the switch land
+on the same pet. A pet created here by hand answers only to its own id: to have
+older visits named, bind PetKit's id to it on the Pets tab.
+
 ## Telling two cats apart by weight
 
 A litter box that cannot say who visited — one with no camera, or a visit the
@@ -485,6 +517,9 @@ and sent the same way whichever of the two changed it:
   them unless the app confirms explicitly.
 - **Settings** — the switches, numbers, lists and times Home Assistant can
   set, within the same bounds.
+- **Pets for recognition** in proxy mode — PetKit's pets or this app's
+  (`GET`/`PATCH /app/v1/settings/pets-source`); proxy mode itself is set in
+  the panel only.
 - **A feeder's plan** — its meals, and pausing it: paused, the meals are kept
   and the feeder is served none until it is resumed. And **one-off feeds** at a
   date and time.

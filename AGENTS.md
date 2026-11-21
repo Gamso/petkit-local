@@ -155,6 +155,8 @@ Two rules about placement that the map does not make obvious:
   endpoint nobody expected it on. Only *blocked* rules are persisted — the address, MQTT, STS and
   timezone rewrites fire on routine polling, so recording each one would bury the attempts that
   matter. Proxy mode and capture are configured ONLY from the panel; no add-on option, no CLI flag.
+  The one proxy setting the app API also writes is `proxy_pets_source` (whose pets a camera
+  recognises), through the same live dict and overrides file — never whether the cloud is reached.
 - **Proxy mode LEARNS settings, it never changes what is relayed.** A device that reports no
   settings of its own (a W7H) is only ever told them by the cloud, so `ha/learn.py` records the
   fields of a relayed `thing.service.property.set` (`mqtt/upstream.py`) and of a served proxied

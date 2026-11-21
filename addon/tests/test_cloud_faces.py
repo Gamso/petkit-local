@@ -422,3 +422,103 @@ async def test_our_own_pets_are_served_as_before(tmp_path, pet_registry: PetRegi
         assert not (tmp_path / CLOUD_FACES_DIR).exists()
     finally:
         await _close(client)
+
+
+# --- whose pets: proxy_pets_source (issue #130) ----------------------------------
+
+async def _pets_app(config, pet_registry: PetRegistry):
+    """A device app with one pet of ours (one face) assigned to device 100."""
+    app = create_app(DeviceRegistry(), config)
+    app[device_keys.EVENT_HUB] = EventHub()
+    app[device_keys.PET_REGISTRY] = pet_registry
+    client = TestClient(TestServer(app))
+    await client.start_server()
+    r = await client.post("/6/t5/dev_signup", headers=HDR)
+    assert r.status == 200
+    device = app[device_keys.REGISTRY].get(100)
+    pet = await pet_registry.create("Mruczek", device_ids=[device.petkit_id])
+    face = await pet_registry.add_face(pet["id"], SMALL)
+    ours = {"result": {"list": [{"id": pet["id"], "discern": [
+        {"id": face["id"],
+         "url": f"{FACES_BASE}/faces/{os.path.basename(face['photo_path'])}"}]}]}}
+    return client, ours
+
+
+def _cloud_entries(cloud):
+    return [{"id": 101392625, "discern": [{"id": 1794662888, "url": cloud.url("big")}]}]
+
+
+async def test_pets_source_local_answers_locally_and_forwards_nothing(
+        tmp_path, normalise, pet_registry: PetRegistry):
+    cloud = await (Cloud({"big": BIG}).start())
+    cloud.entries = _cloud_entries(cloud)
+    client, ours = await _pets_app(
+        _config(tmp_path, proxy_upstream=cloud.base, proxy_pets_source="local"), pet_registry)
+    try:
+        before = list(cloud.hits)
+        assert await _discern(client) == ours
+        # Not forwarded, and so no cloud photo fetched or cached either.
+        assert cloud.hits == before
+        assert not any(h.endswith("/dev_discern_pic") for h in cloud.hits)
+        assert normalise == []
+        assert not (tmp_path / CLOUD_FACES_DIR / "cloud_1794662888.jpg").exists()
+
+        # The thresholds are not part of the choice: still forwarded.
+        await client.post("/6/t5/dev_discern_config", headers=HDR)
+        assert cloud.hits[-1] == "/6/t5/dev_discern_config"
+    finally:
+        await _close(client)
+        await cloud.close()
+
+
+@pytest.mark.parametrize("source", ["petkit", None, "bogus"])
+async def test_pets_source_petkit_forwards_with_the_photo_rewrite(
+        tmp_path, normalise, pet_registry: PetRegistry, source):
+    """The default, and any value that is not `local`, is today's behaviour."""
+    cloud = await (Cloud({"big": BIG}).start())
+    cloud.entries = _cloud_entries(cloud)
+    extra = {} if source is None else {"proxy_pets_source": source}
+    client, ours = await _pets_app(
+        _config(tmp_path, proxy_upstream=cloud.base, **extra), pet_registry)
+    try:
+        body = await _discern(client)
+        assert body != ours
+        assert body == {"result": {"list": [{"id": 101392625, "discern": [
+            {"id": 1794662888, "url": f"{FACES_BASE}/faces/cloud_1794662888.jpg"}]}]}}
+        assert "/6/t5/dev_discern_pic" in cloud.hits
+    finally:
+        await _close(client)
+        await cloud.close()
+
+
+@pytest.mark.parametrize("source", ["petkit", "local"])
+async def test_with_proxy_off_our_pets_are_served_whatever_the_setting(
+        tmp_path, normalise, pet_registry: PetRegistry, source):
+    cloud = await (Cloud({"big": BIG}).start())
+    cloud.entries = _cloud_entries(cloud)
+    client, ours = await _pets_app(
+        _config(tmp_path, proxy_mode=False, proxy_upstream=cloud.base,
+                proxy_pets_source=source), pet_registry)
+    try:
+        assert await _discern(client) == ours
+        assert cloud.hits == []
+    finally:
+        await _close(client)
+        await cloud.close()
+
+
+async def test_switching_to_local_keeps_history_named(tmp_path, pet_registry: PetRegistry):
+    """A pet brought across by "Import from PetKit" answers to PetKit's id (the
+    alias, what a box on cloud faces reports) and to ours (what it reports once
+    it is handed our pets), so both sides of the switch resolve to it."""
+    pet = await pet_registry.create("PetKit pet 101392625", device_ids=[100])
+    await pet_registry.update(pet["id"], device_pet_ids_json=json.dumps([101392625]))
+    face = await pet_registry.add_face(pet["id"], SMALL)
+
+    assert await pet_registry.resolve_pet_ref(101392625) == pet["id"]
+    payload = await pet_registry.discern_pic_payload(100, "192.0.2.199:8080")
+    handed = payload["result"]["list"][0]
+    assert handed["id"] == pet["id"]
+    assert [f["id"] for f in handed["discern"]] == [face["id"]]
+    # What the device reports from then on is the id it was handed.
+    assert await pet_registry.resolve_pet_ref(handed["id"]) == pet["id"]

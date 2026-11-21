@@ -157,7 +157,11 @@ async def _start_app_api(services: Services, app_instance: web.Application) -> N
                          ha_publisher=services.ha_publisher, hub=services.hub,
                          go2rtc=services.go2rtc,
                          notify_channel=(services.notifier.channel
-                                         if services.notifier is not None else None))
+                                         if services.notifier is not None else None),
+                         # The dict the device API reads per request, so a
+                         # setting the phone changes applies at once.
+                         live_config=services.app_config,
+                         settings_path=str(config.overrides_path))
     runner = web.AppRunner(app, shutdown_timeout=SHUTDOWN_DRAIN)
     await runner.setup()
     try:

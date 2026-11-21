@@ -129,6 +129,7 @@ async function loadSetup() {
       ${guard('proxy_media_real_oss', !!s.proxy_media_real_oss, 'Media → real OSS', 'let the device upload recordings to PetKit instead of us — nothing lands locally')}
       ${guard('proxy_local_cvr_window', !!s.proxy_local_cvr_window, 'Keep recording locally', 'ignore the cloud’s subscription window and tell the camera its storage is active — a lapsed PetKit plan otherwise stops recording with no error anywhere')}
     </div>
+    ${on ? petsSource(s.proxy_pets_source, w) : ''}
     ${on ? upstreamStatus(i.upstream || {}) : ''}
     ${on ? presenceStatus(i.presence || []) : ''}
     ${on ? `<div id="blockedView" style="margin-top:14px"></div>` : ''}
@@ -212,6 +213,7 @@ onAction('import-config', async el => {
   toast('Import done');
 });
 onChange('save-setting', el => saveSetting(el.dataset.key, el.checked));
+onChange('save-pets-source', el => saveSetting('proxy_pets_source', el.value));
 // "custom…" only reveals the text box; nothing is saved until a real value is
 // picked, so switching to it does not blank a working upstream.
 onChange('save-upstream', el =>
@@ -242,6 +244,26 @@ async function saveSetting(key, value) {
   });
   toast(r.ok ? 'Saved · ' + key : 'Error: ' + (r.error || 'failed'));
   loadSetup(); // re-render (guards ungrey, the upstream picker appears, …)
+}
+
+// Whose pets a camera recognises in proxy mode (issue #130): the server's
+// `proxy_pets_source`, also writable from the phone app. Shown only while proxy
+// mode is on — with it off every device gets the Pets tab's pets anyway.
+const PETS_SOURCES = [
+  ['petkit', 'PetKit', 'the pets and photos in PetKit’s app, relayed from the cloud'],
+  ['local', 'petkit-local', 'the pets on the Pets tab — the request is not forwarded'],
+];
+function petsSource(current, writable) {
+  const chosen = current === 'local' ? 'local' : 'petkit';
+  return `<p class="sub" style="margin-top:14px">Pets for recognition${help(
+    'Which pets a camera with recognition matches its visits against. It replaces the faces it learned at its next request for them (at boot, then about hourly). Visits already recorded keep their pet: a pet imported from PetKit answers to both ids.',
+  )}</p>
+    <div class="ctrls">
+      ${PETS_SOURCES.map(
+        ([value, title, hint]) =>
+          `<label class="ctrl" for="petsSource-${value}"><span>${title}<br><span class="mut" style="font-size:11px">${hint}</span></span><input type="radio" name="petsSource" id="petsSource-${value}" value="${value}" ${chosen === value ? 'checked' : ''} ${writable ? '' : 'disabled'} data-change="save-pets-source"></label>`,
+      ).join('')}
+    </div>`;
 }
 
 // Once a taken-over device settles down it polls only the heartbeat, PetKit

@@ -184,6 +184,9 @@ Redaction points each `discern[].url` at our `/faces/` route (`_match_faces`), a
 reply waits, or when the device GETs it, never otherwise — because one raw 4096x3072 photo was
 enough to run a D4SH's camera out of memory. A photo that cannot be fetched or normalised is
 dropped from the reply rather than passed through.
+Whose pets that reply carries is the owner's choice (`proxy_pets_source`, set in the panel or
+through the app API's `/settings/pets-source`): on `local`, `dev_discern_pic` is not forwarded at
+all and the device gets our own pets, as with proxy mode off (`LOCAL_PETS_ENDPOINTS`).
 
 Proxy mode only relays what a device sends, so a device that moves to MQTT stops being heard over
 HTTP — and PetKit's app, which judges "online" by the HTTP heartbeat, then shows it disconnected.
