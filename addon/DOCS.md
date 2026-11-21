@@ -402,9 +402,10 @@ Bluetooth at all.
 ## The phone app
 
 A separate app can show your devices, the timeline, photos and clips, and your
-pets from outside your home network, run their buttons, change their settings and
-edit a feeder's plan. It talks to petkit-local through the **app API**, a
-versioned JSON API on its own port, `8097`. Nothing of the
+pets from outside your home network, run their buttons, change their settings,
+edit a feeder's plan, and add or edit pets and their face photos. It talks to
+petkit-local through the **app API**, a versioned JSON API on its own port,
+`8097`. Nothing of the
 panel and nothing of the device API is reachable on that port, and the app API
 is reachable on neither of theirs.
 
