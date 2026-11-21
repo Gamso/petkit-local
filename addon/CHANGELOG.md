@@ -157,6 +157,22 @@
   included: the relay hung up 0.3 s after asking, so no drink ever came back.
   A status reply now settles the status and settings reads only, and the
   session stays open until the 212 is answered.
+- **A CTW3's drink history is now asked for through its parent the way
+  PetKit's app asks over the phone's Bluetooth** (issue #140, experimental).
+  Through a Pura Max 2 the fountain answered its status and settings but never
+  the history request (212), only `252 0001`, and PetKit's own app syncs the
+  history only over the phone's Bluetooth. When a CTW3's history is due (at
+  most every 15 minutes), the relay now runs the app's whole session through
+  the parent, one frame at a time: device id (213), the pairing secret (86),
+  the clock (84), versions (200), device log (201), battery (66), status
+  (210), settings (211), light and do-not-disturb schedules (215, 216), the
+  history request (212), the stream setting (80), then the stream itself,
+  answering each batch check (67) and the end (69) as the app does. Each step
+  waits up to 10 s for its reply. The log shows each step at INFO, with its
+  reply, so one session shows where the fountain stops answering. The secret
+  is never logged. The relay also answers every status a CTW3 pushes (230) as
+  the app does. A CTW3 with no usable secret in `ble_devices.json` gets the
+  plain status reads, as before. Not yet confirmed on hardware.
 
 - **A Dual-Hopper 2's live view no longer freezes after 5–20 seconds**
   (issue #128). Its camera pipeline restarts about every 82 s, viewers or not,

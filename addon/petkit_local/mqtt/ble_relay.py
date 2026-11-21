@@ -14,12 +14,16 @@ of its own: a CTW3 behind a T4 sent one 252 and fell silent on every link-up
 observed. So each link-up is followed by reads of the fountain's status and
 settings (`codes.BLE_LINK_UP_READS`), once, into the session already open.
 
-A CTW3 that answered them is then asked for its drink history (212,
-`codes.BLE_HISTORY_SYNC_CMD`), at most once per session and once per
-`HISTORY_SYNC_INTERVAL_SECONDS`, and every record that comes back is stored as
-a drinking row on the ACCESSORY's own id. Only the request is ever sent: the
-rest of PetKit's history stream needs values this side of a relay cannot know
-(`codes.BLE_OPCODES` 67-82 say which, and why).
+A CTW3 whose drink history is due gets more than the reads: the WHOLE session
+PetKit's app runs on a CTW3 over its own Bluetooth (`codes.CTW3_SESSION_STEPS`:
+213, the secret, the clock, 200, 201, 66, 210, 211, 215, 216, 212, then the 80
+and the stream), one frame in flight at a time, every step and its reply logged
+(#140). PetKit's app never asks for the history through a parent; the bet is
+that the fountain wants the security check and the clock first, and the parent
+forwards our frames verbatim. At most once per `HISTORY_SYNC_INTERVAL_SECONDS`.
+Every record that comes back is stored as a drinking row on the ACCESSORY's own
+id. And every status a CTW3 pushes (230) is answered as the app answers it
+(`codes.BLE_STATUS_ACK`).
 
 It owns no broker connection. Every frame goes out through the bridge
 (`mqtt/bridge.py`), which holds the one client to the embedded broker, and
@@ -33,18 +37,24 @@ import asyncio
 import json
 import logging
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 from petkit_local.devices.ble import (
-    CMD_DEVICE_STATUS, CMD_STREAM_END, CTW3_RECORD_LEN, HistoryFrames, ble_command_frame,
-    ble_read_frame, parse_ctw3_history, parser_for,
+    BLE_TYPE_RESPONSE, CMD_DEVICE_STATUS, CMD_SECURITY_CHECK, CMD_STREAM_CHECK,
+    CMD_STREAM_END, CMD_STREAM_SETTING, CMD_SYNC_TIME, CTW3_RECORD_LEN, HistoryFrames,
+    ble_command_frame, ble_frame_header, ble_read_frame, ble_session_frame,
+    ble_status_ack_frame, ctw3_secret_payload, ctw3_stream_check_payload,
+    ctw3_stream_setting_payload, ctw3_time_payload, decode_ctw3_sync_reply,
+    parse_ctw3_history, parser_for,
 )
-from petkit_local.devices.ble.framing import _iter_ble_frames
+from petkit_local.devices.ble.framing import _ble_unframe, _iter_ble_frames, _iter_ble_raw
 from petkit_local.events import ingest
 from petkit_local.events.codes import (
-    BLE_HISTORY_SYNC_CMD, BLE_HISTORY_SYNC_TYPES, BLE_LINK_NOTICES, BLE_LINK_UP_READS,
-    KIND_DRINKING, ble_opcode_label,
+    BLE_HISTORY_DATA, BLE_HISTORY_SYNC_CMD, BLE_HISTORY_SYNC_TYPES, BLE_LINK_NOTICES,
+    BLE_LINK_UP_READS, BLE_STATUS_ACK, BLE_STATUS_ACK_TYPES, CTW3_SESSION_CHECKED,
+    CTW3_SESSION_STEPS, CTW3_STREAM_BATCH, CTW3_STREAM_MTU, KIND_DRINKING,
+    ble_opcode_label,
 )
 from petkit_local.utils.coerce import to_float, to_int
 from petkit_local.utils.dicts import dig
@@ -95,6 +105,50 @@ HISTORY_SYNC_INTERVAL_SECONDS = 900.0
 HISTORY_MAX_RECORDS_PER_SESSION = 5000
 
 
+#: How long one step of the CTW3 session waits for its reply. A relayed round
+#: trip (broker, parent, radio and back) takes well under a second when it
+#: works; a step that has not answered in this long is where the fountain
+#: stopped, and the session ends there rather than holding the parent's radio.
+CTW3_STEP_TIMEOUT_SECONDS = 10.0
+
+#: How long the stream may go quiet before the session gives up on it.
+CTW3_STREAM_IDLE_SECONDS = 30.0
+
+#: Where a CTW3 session stands: its steps, the 80 it sent, the stream after.
+SESSION_STEPS = "steps"
+SESSION_SETTING = "setting"
+SESSION_STREAM = "stream"
+
+
+@dataclass
+class _Ctw3Session:
+    """One run of `codes.CTW3_SESSION_STEPS` through one parent (#140)."""
+
+    device: Device
+    ble: BLEDevice
+    stage: str = SESSION_STEPS
+    #: Index into `CTW3_SESSION_STEPS` of the step in flight.
+    step: int = 0
+    #: The cmd whose reply is awaited, and the sequence it went out with.
+    waiting: int | None = None
+    seq: int = 0
+    #: This batch's stream packets: their indexes when a header carried them,
+    #: and how many arrived (the fallback when none did).
+    held: set[int] = field(default_factory=set)
+    arrived: int = 0
+    batch_total: int = 0
+    timer: asyncio.Task | None = None
+
+    def where(self) -> str:
+        """The step in flight, for a log line."""
+        if self.stage == SESSION_STEPS:
+            return (f"step {self.step + 1}/{len(CTW3_SESSION_STEPS)} "
+                    f"({ble_opcode_label(self.waiting)})")
+        if self.stage == SESSION_SETTING:
+            return f"the stream setting ({ble_opcode_label(CMD_STREAM_SETTING)})"
+        return "the stream"
+
+
 @dataclass
 class _HistorySync:
     """One relay session's drink-history exchange with one accessory."""
@@ -112,7 +166,7 @@ class _HistorySync:
     rejected: int = 0
     #: The accessory said the stream is over (69).
     ended: bool = False
-    #: Stream control the accessory sent and nothing here answers.
+    #: Stream control the accessory sent (67, 69, 80).
     control: tuple[int, ...] = ()
 
     @property
@@ -225,6 +279,8 @@ class BLERelay:
         #: Per parent, the relay session it holds: `(accessory id, since)`.
         #: One per parent, whichever accessory it is for: see `_open_session`.
         self._sessions: dict[int, tuple[int, float]] = {}
+        #: Per accessory, the CTW3 direct-link session running now (#140).
+        self._ctw3_sessions: dict[int, _Ctw3Session] = {}
 
     def _open_session(self, device: Device) -> tuple[int, float] | None:
         """The relay session `device` still holds, as `(accessory id, since)`.
@@ -348,8 +404,12 @@ class BLERelay:
         costs two frames per poll interval rather than a parent's radio held
         busy (see `_handle_ble_response` on why a retry here would race the
         next poll).
+
+        A CTW3 whose drink history is due gets the whole direct-link session
+        instead (`_start_ctw3_session`), and a link-up notice arriving while
+        one runs starts nothing.
         """
-        if parser_for(ble.ble_type) is None:
+        if parser_for(ble.ble_type) is None or ble.petkit_id in self._ctw3_sessions:
             return
         now = time.time()
         last_event, last_at = self._link_reads.get(ble.petkit_id, ("", 0.0))
@@ -359,6 +419,11 @@ class BLERelay:
         # A new link is a new session: whatever the last one left unfinished
         # is reported now rather than carried into this one.
         self._finish_history(ble)
+        # A CTW3 whose history is due gets the whole direct-link session
+        # instead, whose 210 and 211 are these reads.
+        if await self._start_ctw3_session(device, ble):
+            self._pending_reads.pop(ble.petkit_id, None)
+            return
         sent = set()
         for cmd in BLE_LINK_UP_READS:
             if await self.publish_ble_read(device, ble, cmd):
@@ -390,6 +455,11 @@ class BLERelay:
                      ble_dev.ble_type.upper(), ble_dev.petkit_id, device.petkit_id, result)
         elif action == 0:
             self._pending_reads.pop(ble_dev.petkit_id, None)
+            session = self._ctw3_sessions.pop(ble_dev.petkit_id, None)
+            if session is not None:
+                self._cancel_timer(session)
+                log.info("%s (id=%d) session: the parent closed the link at %s",
+                         ble_dev.ble_type.upper(), ble_dev.petkit_id, session.where())
             self._finish_history(ble_dev)
             held = self._sessions.get(device.petkit_id)
             if held is not None and held[0] == ble_dev.petkit_id:
@@ -668,6 +738,23 @@ class BLERelay:
                          "panel (Setup -> Settings) to collect frames",
                          ble_dev.ble_type.upper(), ble_dev.petkit_id)
 
+        # A CTW3 pushes its status as a REQUEST and is owed an answer: PetKit's
+        # app sends one for every 230 it gets (`codes.BLE_STATUS_ACK`). Sent
+        # before anything below can hang up, into the session the push came on.
+        if (ble_dev.ble_type in BLE_STATUS_ACK_TYPES
+                and any(cmd == BLE_STATUS_ACK[0] for cmd, _ in frames)):
+            await self._ack_status(device, ble_dev)
+
+        # A CTW3 session in progress decides for itself what goes next and
+        # when the link is hung up.
+        session = self._ctw3_sessions.get(ble_dev.petkit_id)
+        if session is not None:
+            await self._advance_ctw3_session(session, content)
+            if self._ha_publisher:
+                await self._ha_publisher.publish_ble_discovery(ble_dev)
+                await self._ha_publisher.publish_ble_state(ble_dev)
+            return
+
         # A 251/252 is the accessory's side of a link-up. It shares its
         # `event_id` with the parent's `ble_relay_over`, so whichever of the two
         # arrives first sends the reads and the other is recognised as the same
@@ -686,25 +773,14 @@ class BLERelay:
         # status and the settings come back as separate replies, and hanging up
         # on the first loses the second. A 230 carries both blocks.
         #
-        # A CTW3 whose reads have all been answered on this link is asked for
-        # its history before the hang-up, the order PetKit's app asks in; the
-        # 212 then becomes the read the session waits on. A reply announcing
-        # records keeps the session open until they are in (or the accessory
-        # says the stream is over, or the parent hangs up) -- hanging up on the
-        # announcement would cut off what it announced.
+        # The history is the CTW3 session's (`_start_ctw3_session`), never
+        # asked for here.
         pending = self._pending_reads.get(ble_dev.petkit_id)
         answered = {cmd for cmd, _ in frames}
-        if pending:
-            if fragment:
-                pending -= answered
-                if CMD_DEVICE_STATUS in answered:
-                    # A 230 answers the status and settings reads, never the
-                    # 212: a CTW3 pushes one unasked right after the history
-                    # request, and clearing everything hung up 0.3 s after
-                    # asking, before the reply could come (#126).
-                    pending &= {BLE_HISTORY_SYNC_CMD}
-            if history.pending is not None:
-                pending.discard(BLE_HISTORY_SYNC_CMD)
+        if pending and fragment:
+            pending -= answered
+            if CMD_DEVICE_STATUS in answered:
+                pending.clear()
         # History progress ends a session only once a 212 reply has said how
         # much to expect. Records nobody here announced are a sync somebody
         # else runs -- the real cloud's, in proxy mode -- and hanging up on
@@ -713,9 +789,7 @@ class BLERelay:
         announced = sync is not None and sync.pending is not None
         progressed = bool(fragment) or (announced and bool(history))
         if progressed and not pending:
-            if pending is not None and fragment and await self._ask_history(device, ble_dev):
-                pass
-            elif sync is not None and sync.streaming:
+            if sync is not None and sync.streaming:
                 pass
             else:
                 self._pending_reads.pop(ble_dev.petkit_id, None)
@@ -727,36 +801,224 @@ class BLERelay:
 
     # --- the drink history -----------------------------------------------------
 
-    async def _ask_history(self, device: Device, ble: BLEDevice) -> bool:
-        """Send a CTW3 its 212, if this session has not and the interval allows.
+    async def _start_ctw3_session(self, device: Device, ble: BLEDevice) -> bool:
+        """Begin `codes.CTW3_SESSION_STEPS` on a link that has just come up.
 
-        Into the session the link-up reads were sent on, never a new one: the
-        fountain has just shown it answers on this link. Bounded three ways --
-        one per session (`_history` holds this session's exchange), one per
-        `HISTORY_SYNC_INTERVAL_SECONDS` (persisted, so a restart does not ask
-        again at once), and none at all with no store to put records in.
+        Only for a CTW3 (`BLE_HISTORY_SYNC_TYPES`), only with a store to keep
+        its records in, only once per `HISTORY_SYNC_INTERVAL_SECONDS`
+        (persisted as `asked_at`, so a restart does not ask again at once), and
+        only with a pairing secret the 86 can carry. Anything else falls back
+        to the plain link-up reads.
 
         Returns:
-            True if the request went out, which makes it the read the session
-            now waits on.
+            True if the first step went out.
         """
         if (ble.ble_type not in BLE_HISTORY_SYNC_TYPES or self._event_store is None
-                or ble.petkit_id in self._history):
+                or not self._bridge.connected):
             return False
         now = time.time()
         history = ble.history if isinstance(ble.history, dict) else {}
         asked_at = to_float(history.get("asked_at"), 0.0) or 0.0
         if 0.0 <= now - asked_at < HISTORY_SYNC_INTERVAL_SECONDS:
             return False
-        if not await self.publish_ble_read(device, ble, BLE_HISTORY_SYNC_CMD):
+        name = f"{ble.ble_type.upper()} (id={ble.petkit_id})"
+        if ctw3_secret_payload(ble.secret) is None:
+            log.info("%s: no usable pairing secret (ble_devices.json), so its drink "
+                     "history cannot be asked for; reading its status only", name)
             return False
-        cursor = to_float(history.get("cursor"), 0.0) or 0.0
-        self._history[ble.petkit_id] = _HistorySync(since=cursor)
+        self._history[ble.petkit_id] = _HistorySync(
+            since=to_float(history.get("cursor"), 0.0) or 0.0)
         ble.history = {**history, "asked_at": now}
         if self._ble_registry is not None:
             self._ble_registry.mark_dirty()
-        self._pending_reads[ble.petkit_id] = {BLE_HISTORY_SYNC_CMD}
+        session = self._ctw3_sessions[ble.petkit_id] = _Ctw3Session(device=device, ble=ble)
+        log.info("%s session: starting the direct-link sequence through parent %d "
+                 "(%s)", name, device.petkit_id,
+                 " -> ".join(str(c) for c in (*CTW3_SESSION_STEPS, CMD_STREAM_SETTING)))
+        if not await self._send_session_step(session):
+            await self._end_ctw3_session(session, "the first step could not be sent")
+            return True
         return True
+
+    def _session_payload(self, session: _Ctw3Session, cmd: int) -> bytes:
+        """What one step carries: the secret, the clock, or nothing."""
+        if cmd == CMD_SECURITY_CHECK:
+            return ctw3_secret_payload(session.ble.secret) or b""
+        if cmd == CMD_SYNC_TIME:
+            return ctw3_time_payload(time.time(), session.device.timezone_offset)
+        if cmd == CMD_STREAM_SETTING:
+            return ctw3_stream_setting_payload(CTW3_STREAM_BATCH, CTW3_STREAM_MTU)
+        return b""
+
+    async def _send_session_step(self, session: _Ctw3Session,
+                                 cmd: int | None = None) -> bool:
+        """Send the step in flight (or `cmd`), and wait for its reply.
+
+        Logged at INFO with the frame's hex, so a capture of one session shows
+        exactly where the fountain stops answering -- except the secret, which
+        is logged as its length only.
+        """
+        ble = session.ble
+        cmd = CTW3_SESSION_STEPS[session.step] if cmd is None else cmd
+        seq = self._next_seq(ble)
+        payload = self._session_payload(session, cmd)
+        data = ble_session_frame(cmd, seq, payload)
+        if data is None or not self._bridge.connected:
+            return False
+        await self._publish_frame(session.device, ble, cmd, data)
+        session.waiting, session.seq = cmd, seq
+        shown = (f"<{len(payload)}-byte secret>" if cmd == CMD_SECURITY_CHECK
+                 else payload.hex() or "(empty)")
+        log.info("%s (id=%d) session %s -> sent, seq %d, payload %s",
+                 ble.ble_type.upper(), ble.petkit_id, session.where(), seq, shown)
+        self._arm_timer(session, CTW3_STEP_TIMEOUT_SECONDS)
+        return True
+
+    async def _send_session_answer(self, session: _Ctw3Session, cmd: int, seq: int,
+                                   payload: bytes) -> None:
+        """A type-2 answer the stream is owed (67, 69)."""
+        data = ble_session_frame(cmd, seq, payload, BLE_TYPE_RESPONSE)
+        if data is None or not self._bridge.connected:
+            return
+        await self._publish_frame(session.device, session.ble, cmd, data)
+        log.info("%s (id=%d) session: answered %s, seq %d, payload %s",
+                 session.ble.ble_type.upper(), session.ble.petkit_id,
+                 ble_opcode_label(cmd), seq, payload.hex() or "(empty)")
+
+    def _arm_timer(self, session: _Ctw3Session, seconds: float) -> None:
+        self._cancel_timer(session)
+        session.timer = asyncio.get_running_loop().create_task(
+            self._session_timeout(session, seconds))
+
+    @staticmethod
+    def _cancel_timer(session: _Ctw3Session) -> None:
+        timer, session.timer = session.timer, None
+        if timer is not None and timer is not asyncio.current_task():
+            timer.cancel()
+
+    async def _session_timeout(self, session: _Ctw3Session, seconds: float) -> None:
+        await asyncio.sleep(seconds)
+        if self._ctw3_sessions.get(session.ble.petkit_id) is not session:
+            return
+        session.timer = None
+        sync = self._history.get(session.ble.petkit_id)
+        if (session.stage == SESSION_STREAM and sync is not None and sync.pending
+                and sync.received >= sync.pending):
+            await self._end_ctw3_session(session, "every announced byte is in")
+            return
+        await self._end_ctw3_session(
+            session, f"no answer to {session.where()} within {seconds:g} s",
+            stopped=True)
+
+    async def _end_ctw3_session(self, session: _Ctw3Session, reason: str,
+                                stopped: bool = False) -> None:
+        """Close a CTW3 session, say why, and hang the link up."""
+        ble = session.ble
+        if self._ctw3_sessions.get(ble.petkit_id) is session:
+            del self._ctw3_sessions[ble.petkit_id]
+        self._cancel_timer(session)
+        (log.warning if stopped else log.info)(
+            "%s (id=%d) session %s: %s", ble.ble_type.upper(), ble.petkit_id,
+            "STOPPED" if stopped else "done", reason)
+        self._finish_history(ble)
+        self._pending_reads.pop(ble.petkit_id, None)
+        await self._ble_connect(session.device, ble, action=0)
+
+    async def _advance_ctw3_session(self, session: _Ctw3Session, content: dict) -> None:
+        """Take one `ble_response` through a running CTW3 session.
+
+        Device input: anything malformed is skipped, never raised on. The
+        records themselves were already stored by `_apply_history`; this only
+        decides what to send next.
+        """
+        ble = session.ble
+        name = f"{ble.ble_type.upper()} (id={ble.petkit_id})"
+        for json_cmd, raw in _iter_ble_raw(content):
+            framed_cmd, data = _ble_unframe(raw)
+            cmd = to_int(framed_cmd if framed_cmd is not None else json_cmd, None)
+            if cmd is None:
+                continue
+            header = ble_frame_header(raw) or {}
+            if self._ctw3_sessions.get(ble.petkit_id) is not session:
+                return
+            if session.stage == SESSION_STREAM:
+                await self._session_stream_frame(session, cmd, data, header)
+                continue
+            if cmd != session.waiting:
+                continue
+            if "seq" in header and header["seq"] != session.seq:
+                log.info("%s session: %s came back with seq %d, not %d -- still "
+                         "waiting", name, ble_opcode_label(cmd), header["seq"], session.seq)
+                continue
+            log.info("%s session %s <- reply %s", name, session.where(),
+                     bytes(data).hex() or "(empty)")
+            if cmd in CTW3_SESSION_CHECKED and (not data or data[0] != 1):
+                await self._end_ctw3_session(
+                    session, f"{ble_opcode_label(cmd)} was refused "
+                    f"({bytes(data).hex() or 'empty'}; the app needs 01)", stopped=True)
+                return
+            if session.stage == SESSION_SETTING:
+                session.stage, session.waiting = SESSION_STREAM, None
+                log.info("%s session: the stream has started", name)
+                self._arm_timer(session, CTW3_STREAM_IDLE_SECONDS)
+                continue
+            if cmd == BLE_HISTORY_SYNC_CMD:
+                count = decode_ctw3_sync_reply(bytes(data))
+                if not count:
+                    await self._end_ctw3_session(
+                        session, "the 212 reply announced no drink history"
+                        if count == 0 else "the 212 reply was too short to read")
+                    return
+                session.stage = SESSION_SETTING
+                if not await self._send_session_step(session, CMD_STREAM_SETTING):
+                    await self._end_ctw3_session(session, "the 80 could not be sent",
+                                                 stopped=True)
+                    return
+                continue
+            session.step += 1
+            if not await self._send_session_step(session):
+                await self._end_ctw3_session(
+                    session, f"step {session.step + 1} could not be sent", stopped=True)
+                return
+
+    async def _session_stream_frame(self, session: _Ctw3Session, cmd: int,
+                                    data: bytes, header: dict[str, int]) -> None:
+        """One frame of the history stream: a packet, a check, or the end."""
+        if cmd in BLE_HISTORY_DATA:
+            session.arrived += 1
+            if "index" in header:
+                session.held.add(header["index"])
+                session.batch_total = session.batch_total or header.get("total", 0)
+            self._arm_timer(session, CTW3_STREAM_IDLE_SECONDS)
+        elif cmd == CMD_STREAM_CHECK:
+            # Without the stream header the indexes never reached us: take the
+            # packets that arrived to be 0..n-1, which is a guess.
+            held = session.held or set(range(min(session.arrived, 32)))
+            total = session.batch_total or (len(held) if not session.held else 32)
+            bitmap, complete = ctw3_stream_check_payload(held, total)
+            await self._send_session_answer(session, CMD_STREAM_CHECK,
+                                            header.get("seq", 0), bitmap)
+            if complete:
+                session.held, session.arrived, session.batch_total = set(), 0, 0
+            self._arm_timer(session, CTW3_STREAM_IDLE_SECONDS)
+        elif cmd == CMD_STREAM_END:
+            await self._send_session_answer(session, CMD_STREAM_END,
+                                            header.get("seq", 0), b"")
+            await self._end_ctw3_session(session, "the fountain ended its stream (69)")
+
+    async def _ack_status(self, device: Device, ble: BLEDevice) -> None:
+        """Answer a CTW3's pushed 230 the way PetKit's app does.
+
+        `codes.BLE_STATUS_ACK`: a type-2 frame, sequence 0, data `01`. Not
+        numbered from this accessory's sequence -- the app's ack carries none
+        -- and never a reason to open a session: it goes into the one the push
+        arrived on.
+        """
+        if not self._bridge.connected:
+            return
+        await self._publish_frame(device, ble, BLE_STATUS_ACK[0], ble_status_ack_frame())
+        log.debug("BLE status ack -> %s (mac=%s) via parent %d",
+                  ble.ble_type, ble.mac, device.petkit_id)
 
     async def _apply_history(self, device: Device, ble: BLEDevice,
                              frames: HistoryFrames) -> None:
@@ -793,7 +1055,7 @@ class BLERelay:
         if frames.control:
             sync.control += tuple(frames.control)
             sync.ended = sync.ended or CMD_STREAM_END in frames.control
-            log.info("%s sent history stream control %s, which nothing here answers",
+            log.info("%s sent history stream control %s",
                      name, ", ".join(ble_opcode_label(c) for c in frames.control))
 
         fresh = [r for r in frames.records if r.start > sync.since]
@@ -855,10 +1117,9 @@ class BLERelay:
         if sync.pending and sync.received < sync.pending and not sync.ended:
             log.warning(
                 "%s announced %d bytes of drink history and %d arrived before the "
-                "session ended. PetKit's app follows a 212 with a stream setting "
-                "(cmd 80) and acknowledges every batch (67, 69); none of that is "
-                "sent here. A capture of this session (Setup -> Settings) is what "
-                "would settle it.", name, sync.pending, sync.received)
+                "session ended. The session log above shows the last step the "
+                "fountain answered; a capture of it (Setup -> Settings) is what "
+                "would settle the rest.", name, sync.pending, sync.received)
         elif sync.stored or sync.duplicates or sync.skipped or sync.rejected:
             log.info("%s history session: %d stored, %d already held, %d before the "
                      "cursor, %d rejected", name, sync.stored, sync.duplicates,

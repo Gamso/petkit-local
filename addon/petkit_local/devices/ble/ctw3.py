@@ -432,6 +432,67 @@ def decode_ctw3_sync_reply(data: bytes) -> int | None:
     return int.from_bytes(data[1:5], "big")
 
 
+# --- the direct-link session's payloads (#140, `codes.CTW3_SESSION_STEPS`) -----
+
+#: The secret goes out as 8 bytes, left-padded with zeros
+#: (`ByteUtil.makeUpBtyesForward(bytes, 8)`).
+CTW3_SECRET_LEN = 8
+
+
+def ctw3_secret_payload(secret: Any) -> bytes | None:
+    """The 86's payload: the pairing secret, hex-decoded and left-padded to 8.
+
+    `BaseDataConvertor.securityCheckAndSyncData` @0x0092-0x009e. None for a
+    secret that is missing or not an even-length hex string -- the app would
+    send zeros for one, and a security check we know is wrong is not worth
+    sending.
+    """
+    if not isinstance(secret, str) or not secret or len(secret) % 2:
+        return None
+    try:
+        raw = bytes.fromhex(secret)
+    except ValueError:
+        return None
+    return raw.rjust(CTW3_SECRET_LEN, b"\x00")
+
+
+def ctw3_time_payload(now: float, tz_hours: float) -> bytes:
+    """The 84's payload: `00`, seconds since 2000 (big-endian u32), zone + 12.
+
+    `BaseDataConvertor.securityCheckAndSyncData` @0x0035-0x0077: UTC seconds
+    for anything not an AQ (`CTW3BleClient.isAqDevice` is false), and the zone
+    as round(offset in hours) + 12 in one byte.
+    """
+    seconds = max(int(now) - CTW3_CLOCK_EPOCH, 0) & 0xFFFFFFFF
+    zone = (round(tz_hours) + 12) & 0xFF
+    return b"\x00" + seconds.to_bytes(4, "big") + bytes([zone])
+
+
+def ctw3_stream_setting_payload(batch: int, mtu: int) -> bytes:
+    """The 80's payload: two big-endian u32, packets per batch then the MTU.
+
+    `BaseDataConvertor.setStreamSetting` @0x0000-0x001b.
+    """
+    return (batch & 0xFFFFFFFF).to_bytes(4, "big") + (mtu & 0xFFFFFFFF).to_bytes(4, "big")
+
+
+def ctw3_stream_check_payload(held: set[int], total: int) -> tuple[bytes, bool]:
+    """The answer to a 67: the bitmap of packets held, and whether none is missing.
+
+    `BaseDataConvertor.checkStreamData` @0x0000-0x0049: for i in 0..31, bit
+    31-i is set when packet i is held; the batch is complete when no index
+    below `total` is missing. The bitmap is a big-endian u32 (int2Bytes).
+    """
+    bitmap = 0
+    missing = False
+    for i in range(32):
+        if i in held:
+            bitmap |= 1 << (31 - i)
+        elif i < total:
+            missing = True
+    return bitmap.to_bytes(4, "big"), not missing
+
+
 def decode_ctw3_records(data: bytes, now: float | None = None) -> tuple[list[DrinkRecord], int]:
     """Every plausible record in one history packet, and how many were not.
 

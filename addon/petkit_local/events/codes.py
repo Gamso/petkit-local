@@ -1872,10 +1872,16 @@ BLE_FROM_ACCESSORY = "from_accessory"
 BLE_BOTH_WAYS = "both"
 
 #: What `devices/ble/framing.py` may build a frame for. A read carries an empty
-#: payload; a write restates a whole block. Anything else is refused there
-#: rather than sent as a frame whose payload we would be inventing.
+#: payload; a write restates a whole block; an ack is the `type 2` answer to
+#: something the accessory pushed (`BLE_STATUS_ACK`, the stream's 67 and 69);
+#: a session frame carries a payload only the CTW3 direct-link session builds
+#: (`CTW3_SESSION_STEPS`: the secret, the clock, the stream setting). Anything
+#: else is refused there rather than sent as a frame whose payload we would be
+#: inventing.
 BLE_SEND_READ = "read"
 BLE_SEND_WRITE = "write"
+BLE_SEND_ACK = "ack"
+BLE_SEND_SESSION = "session"
 
 
 @dataclass(frozen=True)
@@ -1888,8 +1894,8 @@ class BleOpcode:
         direction: One of `BLE_TO_ACCESSORY`, `BLE_FROM_ACCESSORY`,
             `BLE_BOTH_WAYS`.
         grade: Evidence grade, from `GRADES`.
-        send: `BLE_SEND_READ`, `BLE_SEND_WRITE`, or "" for an opcode we never
-            send.
+        send: `BLE_SEND_READ`, `BLE_SEND_WRITE`, `BLE_SEND_ACK`,
+            `BLE_SEND_SESSION`, or "" for an opcode we never send.
         source: Where the meaning comes from, verbatim.
         note: Caveat, or what is still unknown.
     """
@@ -1904,6 +1910,65 @@ class BleOpcode:
 
 
 BLE_OPCODES: dict[int, BleOpcode] = {
+    66: BleOpcode(
+        name="sync_battery", label="Battery", direction=BLE_BOTH_WAYS,
+        grade=INFERRED, send=BLE_SEND_READ,
+        source="PetKit app 13.8.1: CTW3DataConvertor.getSyncBattery @0x0007 "
+               "(PetkitBleMsg(66, new byte[0])), sent by CTW3BleClient."
+               "securityCheckFinish; reply read by CTW3DataConvertor."
+               "parseBleMsgData @0x05cd-0x05fb",
+        note="CTW3 only. The first thing the app asks once the link's security "
+             "check is done, and its reply is what makes the app send 210 and "
+             "211 (CTW3BleClient.onReceiveCustomData @0x0187). The reply is a "
+             "big-endian battery voltage (bytes 0-1) then a percentage (byte "
+             "2). Sent as step 6 of `CTW3_SESSION_STEPS`; its reply is logged, "
+             "not decoded (the 230 and 210 blocks carry both values)."),
+    84: BleOpcode(
+        name="sync_time", label="Set clock", direction=BLE_BOTH_WAYS,
+        grade=INFERRED, send=BLE_SEND_SESSION,
+        source="PetKit app 13.8.1: BaseDataConvertor.securityCheckAndSyncData "
+               "@0x0035-0x00a5; reply PetkitBleClient.onReceiveCustomData "
+               "@0x027e-0x029c",
+        note="Six bytes: `00`, the seconds since 2000-01-01 UTC as a "
+             "big-endian u32 ((now_ms - 946684800000) / 1000 -- shifted to "
+             "local time only for an AQ device, and `CTW3BleClient.isAqDevice` "
+             "is false), then the zone as whole hours + 12 "
+             "(round(TimeZone.getOffset / 3600000) + 12, ByteUtil.toByte). A "
+             "reply whose byte 0 is not 1 is a failure (\"CMD_PETKIT_BLE_T "
+             "fail\"). Here the zone is the PARENT's `timezone_offset`: the "
+             "app uses the phone's."),
+    86: BleOpcode(
+        name="security_check", label="Security check", direction=BLE_BOTH_WAYS,
+        grade=INFERRED, send=BLE_SEND_SESSION,
+        source="PetKit app 13.8.1: BaseDataConvertor.securityCheckAndSyncData "
+               "@0x0092-0x009e (also BaseDataConvertor.securityCheck); reply "
+               "PetkitBleClient.onReceiveCustomData @0x025b-0x0279",
+        note="The accessory's pairing `secret`, hex-decoded "
+             "(ByteUtil.hexStrToByteArray) and left-padded with zeros to 8 "
+             "bytes (makeUpBtyesForward(bytes, 8)). A reply whose byte 0 is "
+             "not 1 is a failure (\"CMD_PETKIT_BLE_V fail\"). The secret is "
+             "the one `dev_ble_device` hands the parent, held in "
+             "`ble_devices.json`."),
+    200: BleOpcode(
+        name="get_version", label="Get versions", direction=BLE_BOTH_WAYS,
+        grade=INFERRED, send=BLE_SEND_READ,
+        source="PetKit app 13.8.1: BaseDataConvertor.securityCheckAndSyncData "
+               "@0x00aa (PetkitBleMsg(200)); reply BaseDataConvertor."
+               "parseBleMsgData @0x0118-0x0143",
+        note="Empty. The reply's byte 0 is the hardware and byte 1 the "
+             "firmware (setHardware, setFirmware); under 2 bytes is an "
+             "error."),
+    201: BleOpcode(
+        name="get_device_log", label="Get device log", direction=BLE_BOTH_WAYS,
+        grade=INFERRED, send=BLE_SEND_READ,
+        source="PetKit app 13.8.1: BaseDataConvertor.securityCheckAndSyncData "
+               "@0x00b1 (PetkitBleMsg(201)); reply BaseDataConvertor."
+               "parseBleMsgData @0x0104-0x0117, then PetkitBleClient."
+               "onReceiveCustomData @0x0058-0x0065 (updateDeviceLog, "
+               "securityCheckFinish)",
+        note="Empty. The reply is at least 24 bytes, uploaded by the app as "
+             "a device log; its arrival ends the security check, which on a "
+             "CTW3 sends 66."),
     210: BleOpcode(
         name="get_state", label="Get state", direction=BLE_BOTH_WAYS,
         grade=INFERRED, send=BLE_SEND_READ,
@@ -1922,6 +1987,16 @@ BLE_OPCODES: dict[int, BleOpcode] = {
              "CTW3 (`03 03 00 78 04 b0 01 03 00 00 01 00` off a live one), "
              "13-14 on the W5 family. A CTW3 is silent to it over direct GATT "
              "on firmware 111, which is why aavdberg/ha-petkit never asks."),
+    213: BleOpcode(
+        name="get_device_id", label="Get device id", direction=BLE_BOTH_WAYS,
+        grade=INFERRED, send=BLE_SEND_READ,
+        source="PetKit app 13.8.1: BaseDataConvertor.getDeviceId @0x0007; "
+               "reply BaseDataConvertor.parseBleMsgData @0x0015-0x0100, then "
+               "PetkitBleClient.onReceiveCustomData @0x0096-0x0256",
+        note="Empty, the first frame of a link. The reply is the device id "
+             "(big-endian u64, bytes 0-7) then a 14-character serial; under 8 "
+             "bytes marks the device unknown. For a bound device the app then "
+             "sends 86, 84, 200 and 201 (securityCheckAndSyncData)."),
     212: BleOpcode(
         name="sync_history", label="Sync drink history", direction=BLE_BOTH_WAYS,
         grade=INFERRED, send=BLE_SEND_READ,
@@ -1929,14 +2004,49 @@ BLE_OPCODES: dict[int, BleOpcode] = {
                "@0x0007 (PetkitBleMsg(212, new byte[0])); reply read by "
                "CTW3BleClient.onReceiveCustomData @0x0054-0x006c",
         note="CTW3 only (the W5 family's convertor has no such command). An "
-             "empty request: nothing in it says where to resume, so what is "
-             "sent back is the fountain's choice. The reply's DATA bytes 1-4 "
-             "are a big-endian count of history BYTES waiting "
+             "empty request, type 1: nothing in it says where to resume, so "
+             "what is sent back is the fountain's choice. The reply's DATA "
+             "bytes 1-4 are a big-endian count of history BYTES waiting "
              "(ByteUtil.bytes2Int -> PetkitBleClient.maxDataLength); byte 0 "
-             "is never read. Over a parent's relay PetKit's app sends this "
-             "one frame and nothing after it (CTW3BleApiUtils.bleControlDevice "
-             "@0x0027-0x009a posts getBleMsgList().get(0) to ble/controlDevice), "
-             "so that is all we send too. Never yet seen answered."),
+             "is never read. On a DIRECT link the app sends it only once 216 "
+             "is answered (CTW3BleClient.onReceiveCustomData @0x0116), at the "
+             "end of 66 -> 210 -> 211 -> 215 -> 216, one frame at a time "
+             "(PetkitBleClientImpl.parseReceivedPetkitBleMsg waits for the "
+             "reply with the same cmd and sequence before the next). Over a "
+             "parent's relay it is sent only when the owner taps Sync "
+             "(CTW3HomeActivity.onClick @0x03a8 -> CTW3HomePresenter."
+             "syncRecordData -> postBleMsg -> CTW3BleUtils2.controlDevice -> "
+             "CTW3BleApiUtils.bleControlDevice), as the same empty frame and "
+             "nothing before or after it: `ble/controlDevice` carries bleId, "
+             "type 24, mac, cmd 212 and getBleMsgList().get(0)."
+             "toRawDataBytes() with a sequence from generateSendSequence "
+             "(@0x0027-0x009a). What the cloud then sends the parent is not in "
+             "the app. Never yet seen answered over a relay: a T4 and a D4SH "
+             "both answered ours with 252 only (#126, #140)."),
+    215: BleOpcode(
+        name="get_light_schedule", label="Get light schedule",
+        direction=BLE_BOTH_WAYS, grade=INFERRED, send=BLE_SEND_READ,
+        source="PetKit app 13.8.1: CTW3DataConvertor.getCTW3NewSetting "
+               "@0x0007 (PetkitBleMsg(215, new byte[0])), sent by "
+               "CTW3BleClient.onReceiveCustomData @0x009b on the 211 reply; "
+               "reply read by CTW3DataConvertor.parseBleMsgData @0x00a6-0x010e",
+        note="CTW3 only, an empty read. The reply is the lamp-ring schedule: "
+             "byte 0 the switch (setLightConfig), byte 1 a count n, then n "
+             "windows whose start and end minutes are big-endian shorts at "
+             "5i+6 and 5i+8 (setLightMultiTime). Sent as a step of "
+             "`CTW3_SESSION_STEPS` because the app sends it there; its reply "
+             "is logged, not decoded."),
+    216: BleOpcode(
+        name="get_dnd_schedule", label="Get do-not-disturb schedule",
+        direction=BLE_BOTH_WAYS, grade=INFERRED, send=BLE_SEND_READ,
+        source="PetKit app 13.8.1: CTW3DataConvertor.getCTW3NewSetting "
+               "@0x000e (PetkitBleMsg(216, new byte[0])); reply read by "
+               "CTW3DataConvertor.parseBleMsgData @0x0039-0x00a1, then "
+               "CTW3BleClient.onReceiveCustomData @0x0113-0x011a sends 212",
+        note="CTW3 only, an empty read. The reply is the do-not-disturb "
+             "schedule in the 215 layout (setDisturbConfig, "
+             "setDisturbMultiTime). Its reply is the app's trigger for the "
+             "212: `onConnectSuccess`, then `startSyncHistoryRecord`."),
     220: BleOpcode(
         name="set_mode", label="Set power / mode", direction=BLE_TO_ACCESSORY,
         grade=INFERRED, send=BLE_SEND_WRITE,
@@ -1958,22 +2068,29 @@ BLE_OPCODES: dict[int, BleOpcode] = {
         source="mr-ransel W5 protocol notes; PetKit app getCTW3ResetFilterElement",
         note="Empty payload. aavdberg/ha-petkit sends one zero byte instead."),
     230: BleOpcode(
-        name="device_status", label="Status", direction=BLE_FROM_ACCESSORY,
-        grade=CONFIRMED,
-        source="issue #4 (a real CTW3 frame); mr-ransel W5 protocol notes",
+        name="device_status", label="Status", direction=BLE_BOTH_WAYS,
+        grade=CONFIRMED, send=BLE_SEND_ACK,
+        source="issue #4 (a real CTW3 frame); mr-ransel W5 protocol notes; "
+               "PetKit app 13.8.1: CTW3BleClient.onReceiveCustomData "
+               "@0x01c9-0x01e5, CTW3DataConvertor.getDeviceUpdateResponse",
         note="The status the accessory pushes: 42 bytes on a CTW3, the 30 of a "
-             "210 plus the 12-byte settings block."),
+             "210 plus the 12-byte settings block. CONFIRMED is the block; "
+             "the answer to it is INFERRED: the push is a REQUEST (type 1), "
+             "and PetKit's app answers every one from a CTW3 with "
+             "`BLE_STATUS_ACK`. A device repeats a type-1 frame nobody "
+             "answered: the app keeps its last response to resend when the "
+             "same cmd and sequence come again (PetkitBleClient."
+             "onReceiveCustomData @0x038f-0x03ad)."),
     # -- the history stream. Everything below a 212 reply, as PetKit's app
     # runs it over a DIRECT link (`PetkitBleClient.onReceiveCustomData`,
-    # `BaseDataConvertor`, app 13.8.1). None of it is sent from here: the
-    # stream setting carries the GATT MTU of a link we are not party to, and
-    # both acknowledgements echo a sequence byte a relayed frame has never
-    # been seen to carry (the parent strips the header -- see 252). The rows
-    # exist so a frame that DOES arrive is named, and so a capture can finish
-    # what is graded here.
+    # `BaseDataConvertor`, app 13.8.1). The CTW3 session (#140) runs it
+    # through the parent too, with two values the app has and we do not: the
+    # link's MTU (`CTW3_STREAM_MTU`, a guess) and the sequence byte of the
+    # accessory's 67/69, which a relayed frame carries only if the parent
+    # passes the header through (0 otherwise, a guess).
     67: BleOpcode(
         name="stream_check", label="History check", direction=BLE_BOTH_WAYS,
-        grade=INFERRED,
+        grade=INFERRED, send=BLE_SEND_ACK,
         source="PetKit app 13.8.1: PetkitBleClient.onReceiveCustomData "
                "@0x03df-0x04a2; BaseDataConvertor.checkStreamData @0x0000-0x0049",
         note="The accessory asks (type 1) which packets of a batch arrived. "
@@ -1981,7 +2098,9 @@ BLE_OPCODES: dict[int, BleOpcode] = {
              "4-byte big-endian bitmap: bit 31-i set for each packet index i "
              "(0-31) it holds. A batch with none missing below its "
              "`totalNumber` is parsed then; otherwise the bitmap asks for the "
-             "rest. Not answered here."),
+             "rest. Answered by the CTW3 session; over a relay that strips the "
+             "stream header, the packet indexes are taken to be 0..n-1 in "
+             "arrival order, which is a guess."),
     68: BleOpcode(
         name="stream_data", label="History data", direction=BLE_FROM_ACCESSORY,
         grade=INFERRED,
@@ -1994,7 +2113,7 @@ BLE_OPCODES: dict[int, BleOpcode] = {
              "(`devices/ble/ctw3.py`)."),
     69: BleOpcode(
         name="stream_end", label="History end", direction=BLE_BOTH_WAYS,
-        grade=INFERRED,
+        grade=INFERRED, send=BLE_SEND_ACK,
         source="PetKit app 13.8.1: PetkitBleClient.onReceiveCustomData "
                "@0x03c5-0x03cd; BaseDataConvertor.getStreamEndResponse @0x0008; "
                "CTW3BleClient.onReceiveCustomData @0x01f6",
@@ -2002,10 +2121,10 @@ BLE_OPCODES: dict[int, BleOpcode] = {
              "cmd 69, type 2, empty, same sequence byte, then logs \"ctw3 work "
              "sync data end\" and uploads the records (ctw3/saveWorkRecord). "
              "Whether the fountain forgets what it sent only after that answer "
-             "is unknown. Not answered here."),
+             "is unknown. Answered by the CTW3 session."),
     80: BleOpcode(
         name="stream_setting", label="History stream setting",
-        direction=BLE_BOTH_WAYS, grade=INFERRED,
+        direction=BLE_BOTH_WAYS, grade=INFERRED, send=BLE_SEND_SESSION,
         source="PetKit app 13.8.1: BaseDataConvertor.setStreamSetting "
                "@0x0000-0x001b, sent by CTW3BleClient.onReceiveCustomData "
                "@0x0070; reply PetkitBleClient.onReceiveCustomData @0x02a1",
@@ -2013,9 +2132,11 @@ BLE_OPCODES: dict[int, BleOpcode] = {
              "ints, packets per batch (32) and `maxPackageLength`, which is "
              "the phone's negotiated GATT MTU (PetkitBleClient."
              "onMtuChangeResult). A reply with data[0] == 1 is \"sync data "
-             "start\". NOT sent here: the MTU between a parent and its "
-             "accessory is not ours to know, and inventing it is the guess "
-             "this table exists to refuse."),
+             "start\". The app asks for an MTU of 255 (GattCallback."
+             "onDescriptorWrite / requestMtu(255)) and sends what was granted. "
+             "Sent by the CTW3 session with `CTW3_STREAM_MTU`, which is a "
+             "guess: the MTU between a parent and its accessory is not ours "
+             "to know."),
     82: BleOpcode(
         name="stream_data_82", label="History data (82)",
         direction=BLE_FROM_ACCESSORY, grade=INFERRED,
@@ -2035,9 +2156,15 @@ BLE_OPCODES: dict[int, BleOpcode] = {
         direction=BLE_FROM_ACCESSORY, grade=INFERRED,
         source="a CTW3 (type 24) behind a T4 Pura Max, firmware 1.652, 2026-11-17",
         note="`00 01`, unframed, ~0.3 s after `ble_relay_over` reports the "
-             "link up (`action 1, result 0`), sharing its `event_id` -- and "
-             "then nothing, on 4 of 4 link-ups, until the parent hangs up "
-             "100-130 s later. Meaning unknown. Also seen from a D4SH."),
+             "link up (`action 1, result 0`), sharing its `event_id`, before "
+             "anything was sent -- so it is not an answer to a request. Also "
+             "seen from a D4SH, and after a 212 on both (#126, #140). Meaning "
+             "unknown, and PetKit's app cannot tell us: no BLE class in it "
+             "(PetkitBleClient, PetkitBleClientImpl, CTW3BleClient, "
+             "BaseDataConvertor, CTW3DataConvertor) handles a 252, and its "
+             "relay path never sees a frame at all (the cloud does). Either "
+             "the parent's own report or a fountain notice a direct client "
+             "ignores; read as neither a refusal nor a reply."),
 }
 
 #: What is asked of a fountain each time its parent reports the BLE link up:
@@ -2058,17 +2185,60 @@ BLE_LINK_UP_READS_GRADE = INFERRED
 #: without the parent's `ble_relay_over` ahead of it.
 BLE_LINK_NOTICES = frozenset({251, 252})
 
-#: What is asked of a CTW3 once its link-up reads are answered: its drink
-#: history, one empty 212 per relay session (`mqtt/ble_relay.py` bounds it).
-#:
-#: INFERRED, and the order is PetKit's: its app asks 210, 211, 215, 216 and
-#: only then 212 (`CTW3BleClient.onReceiveCustomData` @0x0116, after
-#: `onConnectSuccess`), so a fountain that never answered the reads is never
-#: asked for its history either. Only the request is sent -- see the stream
-#: rows above for what is not, and why.
+#: The drink history's request, and the accessories asked for it: a CTW3 only.
+#: Sent only as a step of `CTW3_SESSION_STEPS` (`mqtt/ble_relay.py` bounds it).
 BLE_HISTORY_SYNC_CMD = 212
 BLE_HISTORY_SYNC_TYPES = frozenset({"ctw3"})
 BLE_HISTORY_SYNC_GRADE = INFERRED
+
+#: The whole session PetKit's app runs on a CTW3 it drives over its own
+#: Bluetooth, in order, one frame in flight at a time (#140):
+#:
+#:     213 -> 86 (secret) -> 84 (clock) -> 200 -> 201 -> 66 -> 210 -> 211
+#:         -> 215 -> 216 -> 212 -> 80 -> the stream (68/82, 67, 69)
+#:
+#: INFERRED from `PetkitBleClient.onReceiveCustomData` (213 -> 86/84/200/201 by
+#: `securityCheckAndSyncData`, 201 -> `securityCheckFinish`),
+#: `CTW3BleClient.securityCheckFinish` (66) and `CTW3BleClient.
+#: onReceiveCustomData` (66 -> 210/211 @0x0187, 211 -> 215/216 @0x009b, 216 ->
+#: 212 @0x0116, 212 -> 80 @0x0070). `PetkitBleClientImpl.
+#: parseReceivedPetkitBleMsg` sends the next frame only once the reply with the
+#: same cmd and sequence is in.
+#:
+#: The owner's fountain answers 210/211 through its T4 but never a bare 212,
+#: and PetKit's own app syncs the history only over the phone's Bluetooth. The
+#: bet is that the fountain wants the security check and the clock first, and
+#: the T4 forwards our frames verbatim. Not yet confirmed on hardware.
+CTW3_SESSION_STEPS: tuple[int, ...] = (213, 86, 84, 200, 201, 66, 210, 211, 215, 216, 212)
+CTW3_SESSION_GRADE = INFERRED
+
+#: The steps whose reply must carry `01` in byte 0, or the app stops (onError).
+CTW3_SESSION_CHECKED = frozenset({84, 86, 80})
+
+#: The stream setting's first int: packets per batch, the app's constant 32
+#: (`CTW3BleClient.onReceiveCustomData` @0x0070, `setMaxPackageCount(32)`).
+CTW3_STREAM_BATCH = 32
+
+#: The stream setting's second int. GUESSED: the app sends the GATT MTU its
+#: phone negotiated after asking for 255, and the one between a parent and its
+#: fountain is unknown. 20 is the payload every BLE link carries (the 23-byte
+#: default ATT MTU less its 3-byte header), so a packet sized to it fits
+#: whatever the parent negotiated; the cost is more packets.
+CTW3_STREAM_MTU = 20
+CTW3_STREAM_MTU_GRADE = UNVERIFIED
+
+#: The answer to a pushed 230, as `(cmd, type, data)`: cmd 230, type 2
+#: (response), one byte `01`, sequence 0.
+#:
+#: INFERRED from `CTW3DataConvertor.getDeviceUpdateResponse` (`new
+#: PetkitBleMsg(230, {1}, 2)`), sent for every type-1 230 a CTW3 pushes
+#: (`CTW3BleClient.onReceiveCustomData` @0x01e1). The sequence is 0 because
+#: nothing sets one: `PetkitBleClientImpl.post` numbers only types 0 and 1 and
+#: writes a type 2 as built. A relayed frame does not say its type, so every 230
+#: from a CTW3 is answered, as the app would answer each of them.
+BLE_STATUS_ACK: tuple[int, int, bytes] = (230, 2, b"\x01")
+BLE_STATUS_ACK_TYPES = frozenset({"ctw3"})
+BLE_STATUS_ACK_GRADE = INFERRED
 
 #: The opcodes whose data is drink records: 68 and the 82 the app stores alike.
 BLE_HISTORY_DATA = frozenset({68, 82})

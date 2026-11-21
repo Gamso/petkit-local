@@ -393,7 +393,8 @@ def test_every_ble_opcode_is_graded_and_says_who_sends_it():
         assert op.label and op.source, f"BLE {cmd} names no label or source"
         # Something we send has to go TO the accessory.
         if op.send:
-            assert op.send in (codes.BLE_SEND_READ, codes.BLE_SEND_WRITE)
+            assert op.send in (codes.BLE_SEND_READ, codes.BLE_SEND_WRITE,
+                               codes.BLE_SEND_ACK, codes.BLE_SEND_SESSION)
             assert op.direction != codes.BLE_FROM_ACCESSORY, f"BLE {cmd} is sent by us"
 
 
@@ -411,7 +412,7 @@ def test_what_we_send_an_accessory_is_derived_from_the_table():
     from petkit_local.devices.ble import BLE_READABLE, BLE_SENDABLE
 
     assert BLE_SENDABLE == {220, 221, 222}
-    assert BLE_READABLE == {210, 211, 212}
+    assert BLE_READABLE == {66, 200, 201, 210, 211, 212, 213, 215, 216}
     assert set(codes.BLE_LINK_UP_READS) <= BLE_READABLE
     assert codes.BLE_HISTORY_SYNC_CMD in BLE_READABLE
     # The link-up read is a working assumption until a reply to it is seen.
@@ -419,14 +420,48 @@ def test_what_we_send_an_accessory_is_derived_from_the_table():
     assert codes.BLE_HISTORY_SYNC_GRADE == codes.INFERRED
 
 
-def test_the_history_stream_is_named_and_none_of_it_is_sent():
-    """67-82 carry what PetKit's app sends after a 212 over a DIRECT link: the
-    GATT MTU of that link and sequence bytes a relayed frame does not carry.
-    Their rows exist to name what arrives, never to build a frame."""
+def test_the_ctw3_session_is_the_apps_own_order_and_graded():
+    """#140: the whole session PetKit's app runs on a CTW3 over its own
+    Bluetooth, read off its bytecode and nothing more."""
+    from petkit_local.devices.ble import BLE_SESSION_SENDABLE
+
+    assert codes.CTW3_SESSION_STEPS == (
+        213, 86, 84, 200, 201, 66, 210, 211, 215, 216, 212)
+    assert codes.CTW3_SESSION_GRADE == codes.INFERRED
+    assert codes.CTW3_SESSION_CHECKED == {84, 86, 80}
+    for cmd in (*codes.CTW3_SESSION_STEPS, 80, 67, 69):
+        op = codes.BLE_OPCODES[cmd]
+        assert op.grade in (codes.INFERRED, codes.CONFIRMED), cmd
+        assert cmd in BLE_SESSION_SENDABLE, cmd
+    for cmd in (213, 86, 84, 200, 201, 66, 215, 216, 80):
+        assert "13.8.1" in codes.BLE_OPCODES[cmd].source, cmd
+    # The payload-carrying steps are built by the session only.
+    for cmd in (86, 84, 80):
+        assert codes.BLE_OPCODES[cmd].send == codes.BLE_SEND_SESSION, cmd
+    # The MTU is the one value nobody can read off the app.
+    assert codes.CTW3_STREAM_BATCH == 32
+    assert codes.CTW3_STREAM_MTU_GRADE == codes.UNVERIFIED
+    # A write is never a session frame.
+    assert not BLE_SESSION_SENDABLE & {220, 221, 222}
+
+    assert codes.BLE_STATUS_ACK == (230, 2, b"\x01")
+    assert codes.BLE_STATUS_ACK_GRADE == codes.INFERRED
+    assert codes.BLE_STATUS_ACK_TYPES == {"ctw3"}
+    status = codes.BLE_OPCODES[230]
+    assert status.send == codes.BLE_SEND_ACK and status.direction == codes.BLE_BOTH_WAYS
+    assert "getDeviceUpdateResponse" in status.source
+
+
+def test_the_history_stream_is_named_and_answered_not_invented():
+    """67-82 are what PetKit's app exchanges after a 212 over a DIRECT link.
+    The data packets are only received; 67 and 69 are answered (type 2) and 80
+    is built by the session, all three from the app's own code."""
     for cmd in (67, 68, 69, 80, 82):
         op = codes.BLE_OPCODES[cmd]
-        assert op.grade == codes.INFERRED and not op.send, cmd
+        assert op.grade == codes.INFERRED, cmd
         assert "13.8.1" in op.source, cmd
+    assert not codes.BLE_OPCODES[68].send and not codes.BLE_OPCODES[82].send
+    assert codes.BLE_OPCODES[67].send == codes.BLE_OPCODES[69].send == codes.BLE_SEND_ACK
     assert codes.BLE_HISTORY_DATA == {68, 82}
     assert codes.BLE_HISTORY_SYNC_TYPES == {"ctw3"}
 

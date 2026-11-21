@@ -12,7 +12,10 @@ import urllib.parse
 from collections.abc import Iterator
 from typing import Any
 
-from petkit_local.events.codes import BLE_OPCODES, BLE_SEND_READ, BLE_SEND_WRITE
+from petkit_local.events.codes import (
+    BLE_OPCODES, BLE_SEND_ACK, BLE_SEND_READ, BLE_SEND_SESSION, BLE_SEND_WRITE,
+    BLE_STATUS_ACK,
+)
 
 # The framing both fountain families share, carried as urlencode(base64(...))
 # inside a relayed `ble_response`:
@@ -49,9 +52,11 @@ BLE_FRAME_HEADER_LEN = 8
 BLE_STREAM_HEADER = bytes([0xFA, 0xFC, 0xFE])
 BLE_STREAM_HEADER_LEN = 9
 
-#: The `type` byte: 1 request, 2 response, 3 request wanting no answer. We only
-#: ever send the first.
+#: The `type` byte: 1 request, 2 response, 3 request wanting no answer. We
+#: send requests, and one response: the ack a pushed 230 is owed
+#: (`codes.BLE_STATUS_ACK`).
 BLE_TYPE_REQUEST = 0x01
+BLE_TYPE_RESPONSE = 0x02
 
 # The commands, in the one numbering that runs in both directions. `cmd` and
 # the opcode inside the frame are THE SAME NUMBER — 220 is 0xDC — which is
@@ -68,11 +73,19 @@ CMD_SET_CONFIG = 221        # the settings block, written whole
 CMD_RESET_FILTER = 222      # filter life back to 100%
 CMD_DEVICE_STATUS = 230     # status the accessory pushes unasked
 CMD_SYNC_HISTORY = 212      # CTW3: "send me your drink history"
-CMD_STREAM_SETTING = 80     # starts the history stream; never sent here
-CMD_STREAM_CHECK = 67       # "which packets arrived?"; never answered here
+CMD_GET_LIGHT_SCHEDULE = 215  # CTW3: lamp-ring schedule
+CMD_GET_DND_SCHEDULE = 216  # CTW3: do-not-disturb schedule
+CMD_SYNC_BATTERY = 66       # CTW3: battery, first after the security check
+CMD_GET_DEVICE_ID = 213     # the first frame of a direct-link session
+CMD_SECURITY_CHECK = 86     # the pairing secret, 8 bytes
+CMD_SYNC_TIME = 84          # the clock: seconds since 2000 and the zone
+CMD_GET_VERSION = 200       # hardware and firmware
+CMD_GET_DEVICE_LOG = 201    # ends the security check
+CMD_STREAM_SETTING = 80     # starts the history stream
+CMD_STREAM_CHECK = 67       # "which packets arrived?"
 CMD_STREAM_DATA = 68        # history records, in a stream frame
 CMD_STREAM_DATA_82 = 82     # the same, by a branch the app does not tell apart
-CMD_STREAM_END = 69         # "that was all"; never answered here
+CMD_STREAM_END = 69         # "that was all"
 
 #: The WRITES we know how to build a frame for. Anything else is refused
 #: rather than sent as a frame whose length or payload we would be inventing.
@@ -85,6 +98,12 @@ BLE_SENDABLE = frozenset(
 #: reported up, and opening another there would restart the link it asks over.
 BLE_READABLE = frozenset(
     cmd for cmd, op in BLE_OPCODES.items() if op.send == BLE_SEND_READ)
+
+#: What the CTW3 direct-link session may send beyond the reads: the frames
+#: whose payload it builds itself, and the type-2 answers it owes.
+BLE_SESSION_SENDABLE = frozenset(
+    cmd for cmd, op in BLE_OPCODES.items()
+    if op.send in (BLE_SEND_READ, BLE_SEND_SESSION, BLE_SEND_ACK))
 
 #: The mode values a W5-family fountain really runs in. Anything else is the
 #: device saying "not running right now" in a field that has no way to say it,
@@ -145,6 +164,38 @@ def _ble_unframe(raw: bytes) -> tuple[int | None, bytes]:
     return None, raw
 
 
+def _iter_ble_raw(content: Any) -> Iterator[tuple[Any, bytes]]:
+    """`(json cmd, raw bytes)` for every decodable entry of a `ble_response`."""
+    if not isinstance(content, dict):
+        return
+    payload = content.get("payload")
+    items = payload if isinstance(payload, list) else []
+    for alt in ("data", "value", "frame"):
+        if alt in content and content[alt] is not None:
+            items = items + [{"cmd": None, "data": content[alt]}]
+    for item in items:
+        if not isinstance(item, dict) or "data" not in item:
+            continue
+        raw = _ble_decode_data(item.get("data"))
+        if raw is not None:
+            yield item.get("cmd"), raw
+
+
+def ble_frame_header(raw: bytes) -> dict[str, int] | None:
+    """What a WHOLE relayed frame's header says, or None for a bare DATA block.
+
+    `{"cmd", "type", "seq"}` for a command frame, `{"cmd", "type", "index",
+    "total"}` for a stream packet. The relay has so far always stripped the
+    header, so this is for a parent that does not -- and it is the only way a
+    sequence byte or a packet index can reach us.
+    """
+    if len(raw) >= BLE_FRAME_HEADER_LEN + 1 and raw[:3] == BLE_FRAME_HEADER:
+        return {"cmd": raw[3], "type": raw[4], "seq": raw[5]}
+    if len(raw) >= BLE_STREAM_HEADER_LEN and raw[:3] == BLE_STREAM_HEADER:
+        return {"cmd": raw[3], "type": raw[4], "index": raw[5], "total": raw[6]}
+    return None
+
+
 def _iter_ble_frames(content: Any) -> Iterator[tuple[Any, bytes]]:
     """Yield `(cmd, data_bytes)` for every frame in a `ble_response` content.
 
@@ -154,22 +205,9 @@ def _iter_ble_frames(content: Any) -> Iterator[tuple[Any, bytes]]:
     entries are skipped silently — a BLE accessory is a best-effort extra, and
     one bad frame must not cost the parent's whole report.
     """
-    if not isinstance(content, dict):
-        return
-    payload = content.get("payload")
-    items = payload if isinstance(payload, list) else []
-    # tolerate a single loose blob too
-    for alt in ("data", "value", "frame"):
-        if alt in content and content[alt] is not None:
-            items = items + [{"cmd": None, "data": content[alt]}]
-    for item in items:
-        if not isinstance(item, dict) or "data" not in item:
-            continue
-        raw = _ble_decode_data(item.get("data"))
-        if raw is None:
-            continue
+    for json_cmd, raw in _iter_ble_raw(content):
         framed_cmd, data = _ble_unframe(raw)
-        yield (framed_cmd if framed_cmd is not None else item.get("cmd"), data)
+        yield (framed_cmd if framed_cmd is not None else json_cmd, data)
 
 
 # --- writing to an accessory -------------------------------------------------
@@ -185,7 +223,8 @@ def _iter_ble_frames(content: Any) -> Iterator[tuple[Any, bytes]]:
 # reset both intervals as a side effect of changing the brightness.
 
 
-def build_ble_frame(cmd: int, seq: int, payload: bytes) -> str:
+def build_ble_frame(cmd: int, seq: int, payload: bytes,
+                    frame_type: int = BLE_TYPE_REQUEST) -> str:
     """One outbound BLE frame, encoded the way `thing/service/ble` carries it.
 
     `FA FC FD | cmd | type | seq | len_lo | len_hi | payload | FB`, then base64,
@@ -196,7 +235,7 @@ def build_ble_frame(cmd: int, seq: int, payload: bytes) -> str:
     is a sequence number and sending a constant would be the kind of detail
     that works until it does not.
     """
-    body = bytes([*BLE_FRAME_HEADER, cmd & 0xFF, BLE_TYPE_REQUEST, seq & 0xFF,
+    body = bytes([*BLE_FRAME_HEADER, cmd & 0xFF, frame_type & 0xFF, seq & 0xFF,
                   len(payload) & 0xFF, (len(payload) >> 8) & 0xFF,
                   *payload, BLE_FRAME_TRAILER])
     return urllib.parse.quote(base64.b64encode(body).decode())
@@ -217,3 +256,25 @@ def ble_read_frame(cmd: int, seq: int) -> str | None:
     if cmd not in BLE_READABLE:
         return None
     return build_ble_frame(cmd, seq, b"")
+
+
+def ble_session_frame(cmd: int, seq: int, payload: bytes,
+                      frame_type: int = BLE_TYPE_REQUEST) -> str | None:
+    """The encoded frame for one step of the CTW3 direct-link session.
+
+    None for a cmd the session has no business sending
+    (`BLE_SESSION_SENDABLE`): a write never goes out this way.
+    """
+    if cmd not in BLE_SESSION_SENDABLE:
+        return None
+    return build_ble_frame(cmd, seq, payload, frame_type)
+
+
+def ble_status_ack_frame() -> str:
+    """The encoded answer to a pushed 230: `fa fc fd e6 02 00 01 00 01 fb`.
+
+    Type 2, sequence 0, one byte `01` -- PetKit's app's own
+    `getDeviceUpdateResponse`, graded in `codes.BLE_STATUS_ACK`.
+    """
+    cmd, frame_type, data = BLE_STATUS_ACK
+    return build_ble_frame(cmd, 0, data, frame_type)

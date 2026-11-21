@@ -3,16 +3,20 @@
 What is held here, all of it from PetKit's app 13.8.1 and none of it yet seen
 from a real fountain (`codes.BLE_OPCODES` 212 and 67-82 grade it):
 
-* the 212 request is the app's own bytes, an empty frame, and it goes out only
-  once a CTW3 has answered its link-up reads -- once per session, once per
-  `HISTORY_SYNC_INTERVAL_SECONDS`, and never with no store to keep records in;
+* a CTW3 whose history is due gets PetKit's whole direct-link session through
+  its parent (#140): 213, the secret (86), the clock (84), 200, 201, 66, 210,
+  211, 215, 216, 212, then 80 and the stream -- one frame in flight at a time,
+  each step timed out on its own, once per `HISTORY_SYNC_INTERVAL_SECONDS`, and
+  never with no store or no secret;
+* every status a CTW3 pushes (230) is answered with the app's own ack;
 * its reply announces a big-endian byte count in DATA bytes 1-4; a history
   packet (68 or 82, relayed bare or in its `FA FC FE` stream frame) is whole
   6-byte records, `workTime` then a signed `stayTime`, big-endian;
 * every plausible record becomes ONE drinking row on the accessory's own id,
   timed by its own span, deduplicated by the fountain's timestamp, and the
   cursor that skips them next time is persisted;
-* nothing past the request is ever sent, and nothing a fountain sends raises;
+* the stream's 67 and 69 are answered as the app answers them, and nothing a
+  fountain sends raises;
 * the rows reach the timeline, its drinking chip and the app API.
 """
 from __future__ import annotations
@@ -148,11 +152,20 @@ def test_the_row_is_the_accessorys_timed_drink():
 
 # --- over the relay ------------------------------------------------------------
 
-def _relay(event_store=None):
+#: A placeholder for the owner's pairing secret: 16 hex digits, as the cloud
+#: hands it out in `dev_ble_device`.
+SECRET = "0123456789abcdef"
+#: The clock the session's 84 is built from, and the parent's zone (UTC+1).
+NOW = 1794949774.0
+
+
+def _relay(event_store=None, secret=SECRET):
     reg = DeviceRegistry()
-    reg.get_or_create(petkit_id=10, device_type="t4", serial_number="SN10").mqtt_connected = True
+    parent = reg.get_or_create(petkit_id=10, device_type="t4", serial_number="SN10")
+    parent.mqtt_connected = True
+    parent.config["timezone"] = 1.0
     ble = BLERegistry()
-    ble.register(ble_type="ctw3", petkit_id=700, mac=MAC.upper(), secret="s",
+    ble.register(ble_type="ctw3", petkit_id=700, mac=MAC.upper(), secret=secret,
                  interval=240, link_with=10)
     bridge = MQTTBridge(reg, None, ble, event_store=event_store)
     bridge._client = _FakeClient()
@@ -173,78 +186,317 @@ def _connects(bridge):
             for topic, body in bridge._client.sent if topic.endswith("/thing/service/connect")]
 
 
-async def _link_up_and_answer(bridge, reg):
-    """A link-up, then the status and the settings its reads ask for."""
-    await bridge._handle_event(reg.get(10), "ble_relay_over", RELAY["over_link_up"])
-    status = base64.b64decode(CTW3_CMD230)[:30]
-    settings = bytes.fromhex("0303007804b0010300000100")
-    await bridge._handle_event(reg.get(10), "ble_response", _response((210, status)))
-    await bridge._handle_event(reg.get(10), "ble_response", _response((211, settings)))
-
-
 async def _stored(store, device_id=700):
     return [r for r in await store.query_timeline(device_id=device_id, limit=100)
             if r["event_type"] == codes.BLE_DRINK_EVENT]
 
 
-async def test_a_ctw3_that_answered_its_reads_is_asked_for_its_history(event_store):
-    bridge, reg, ble = _relay(event_store)
-    await _link_up_and_answer(bridge, reg)
+#: What a fountain that answers every step says, per cmd. Byte 0 of 86, 84 and
+#: 80 is the `01` the app checks for; the rest is the shape the app reads.
+ANSWERS = {
+    213: (400066264).to_bytes(8, "big") + b"20260101C30001",
+    86: b"\x01",
+    84: b"\x01",
+    200: b"\x01\x6f",
+    201: bytes(24),
+    66: bytes([0x10, 0x68, 0x55]),
+    210: base64.b64decode(CTW3_CMD230)[:30],
+    211: bytes.fromhex("0303007804b0010300000100"),
+    215: b"\x01\x00",
+    216: b"\x00\x00",
+    212: bytes([0, 0, 0, 0, 12]),
+    80: b"\x01",
+}
 
-    frames = _ble_frames(bridge)
-    assert [cmd for cmd, _ in frames] == [210, 211, 212]
-    # The app's bytes exactly: an empty request, the next sequence number.
-    assert frames[2][1] == bytes.fromhex("fafcfdd401020000fb")
-    # Not hung up: the 212 is now the read the session waits on.
+
+async def _fake_fountain(bridge, reg, answers=ANSWERS, stop_at=None):
+    """Answer each frame the relay sends, one at a time, until it stops sending
+    or `stop_at` is reached (that one goes unanswered)."""
+    answered = 0
+    for _ in range(40):
+        frames = _ble_frames(bridge)
+        if len(frames) == answered:
+            return
+        cmd, _ = frames[answered]
+        answered += 1
+        if cmd == stop_at or cmd not in answers:
+            return
+        await bridge._handle_event(reg.get(10), "ble_response", _response((cmd, answers[cmd])))
+
+
+@pytest.fixture
+def clock(monkeypatch):
+    now = [NOW]
+    monkeypatch.setattr(ble_relay.time, "time", lambda: now[0])
+    return now
+
+
+#: The frames of a whole session, hex, with `SECRET` and `NOW` at UTC+1. The
+#: 84 is `00 | 328f7f0e` (NOW - 2000-01-01, seconds) `| 0d` (1 + 12).
+SESSION_FRAMES = [
+    (213, "fafcfdd501000000fb"),
+    (86, "fafcfd56010108000123456789abcdeffb"),
+    (84, "fafcfd540102060000328f7f0e0dfb"),
+    (200, "fafcfdc801030000fb"),
+    (201, "fafcfdc901040000fb"),
+    (66, "fafcfd4201050000fb"),
+    (210, "fafcfdd201060000fb"),
+    (211, "fafcfdd301070000fb"),
+    (215, "fafcfdd701080000fb"),
+    (216, "fafcfdd801090000fb"),
+    (212, "fafcfdd4010a0000fb"),
+    (80, "fafcfd50010b08000000002000000014fb"),
+]
+
+
+async def test_a_due_ctw3_gets_the_whole_direct_link_session_in_order(event_store, clock):
+    """#140: PetKit's app reads a CTW3's history only over its own Bluetooth,
+    after 213, the secret (86), the clock (84), 200, 201, 66, 210, 211, 215,
+    216. Each frame goes once the one before it is answered."""
+    bridge, reg, ble = _relay(event_store)
+    await bridge._handle_event(reg.get(10), "ble_relay_over", RELAY["over_link_up"])
+    # One frame in flight: the link-up sends the 213 and nothing else.
+    assert [cmd for cmd, _ in _ble_frames(bridge)] == [213]
+
+    await _fake_fountain(bridge, reg)
+    assert [(cmd, data.hex()) for cmd, data in _ble_frames(bridge)] == SESSION_FRAMES
+    assert _connects(bridge) == [], "hung up before the stream"
+    assert ble.get(700).history["asked_at"] == NOW
+    relay = bridge._ble_relay
+    assert relay._ctw3_sessions[700].stage == ble_relay.SESSION_STREAM
+
+    # The stream: two records in one packet, the batch check, the end.
+    # An hour before the session's own clock, so inside every plausibility window.
+    start = NOW - 3600
+    body = _record(start, 42) + _record(start + 600, 7)
+    await bridge._handle_event(reg.get(10), "ble_response", _response((68, body)))
+    await bridge._handle_event(reg.get(10), "ble_response", _response((67, b"")))
+    await bridge._handle_event(reg.get(10), "ble_response", _response((69, b"")))
+
+    rows = await _stored(event_store)
+    assert sorted(r["ts"] for r in rows) == [start, start + 600]
+    assert ble.get(700).history["cursor"] == start + 600
+    tail = [(cmd, data.hex()) for cmd, data in _ble_frames(bridge)][len(SESSION_FRAMES):]
+    assert tail == [
+        # One packet held: bit 31 set (`checkStreamData`), type 2, seq 0.
+        (67, "fafcfd4302000400" + "80000000" + "fb"),
+        # The end, answered empty, type 2.
+        (69, "fafcfd4502000000fb"),
+    ]
+    assert _connects(bridge) == [0]
+    assert relay._ctw3_sessions == {} and relay._history == {}
+
+
+async def test_each_step_and_its_reply_is_logged(event_store, clock, caplog):
+    import logging
+
+    caplog.set_level(logging.INFO, logger="petkit_local.mqtt.ble_relay")
+    bridge, reg, _ = _relay(event_store)
+    await bridge._handle_event(reg.get(10), "ble_relay_over", RELAY["over_link_up"])
+    await _fake_fountain(bridge, reg)
+    assert "session step 1/11 (cmd 213 (Get device id)) -> sent" in caplog.text
+    assert "session step 1/11 (cmd 213 (Get device id)) <- reply 0000000017d8" in caplog.text
+    assert "session step 3/11 (cmd 84 (Set clock)) -> sent, seq 2, payload 00328f7f0e0d" \
+        in caplog.text
+    # The secret itself never reaches the log.
+    assert SECRET not in caplog.text and "<8-byte secret>" in caplog.text
+
+
+async def test_a_fountain_that_stops_at_the_secret_is_named_and_hung_up(
+        event_store, clock, monkeypatch, caplog):
+    import asyncio
+    import logging
+
+    caplog.set_level(logging.INFO, logger="petkit_local.mqtt.ble_relay")
+    monkeypatch.setattr(ble_relay, "CTW3_STEP_TIMEOUT_SECONDS", 0.01)
+    bridge, reg, _ = _relay(event_store)
+    await bridge._handle_event(reg.get(10), "ble_relay_over", RELAY["over_link_up"])
+    await _fake_fountain(bridge, reg, stop_at=86)
+    assert [cmd for cmd, _ in _ble_frames(bridge)] == [213, 86]
     assert _connects(bridge) == []
-    assert ble.get(700).history["asked_at"] > 0
+
+    await asyncio.sleep(0.05)
+    assert "session STOPPED: no answer to step 2/11 (cmd 86 (Security check))" in caplog.text
+    assert _connects(bridge) == [0]
+    assert bridge._ble_relay._ctw3_sessions == {}
+    # Nothing more was sent after the hang-up.
+    assert [cmd for cmd, _ in _ble_frames(bridge)] == [213, 86]
 
 
-async def test_a_status_push_after_the_request_does_not_hang_up_on_it(event_store):
-    """The owner's CTW3 on 2026-11-21 (#126): right after the 212 it sent two
-    252s and an unasked 230, and that 230 cleared the pending 212 -- the relay
-    hung up 0.3 s after asking, before any history could come back."""
-    bridge, reg, ble = _relay(event_store)
-    await _link_up_and_answer(bridge, reg)
-    assert [cmd for cmd, _ in _ble_frames(bridge)] == [210, 211, 212]
+async def test_a_refused_secret_stops_the_session(event_store, clock, caplog):
+    """The app stops when the 86's reply is not `01` (\"CMD_PETKIT_BLE_V fail\")."""
+    bridge, reg, _ = _relay(event_store)
+    await bridge._handle_event(reg.get(10), "ble_relay_over", RELAY["over_link_up"])
+    await _fake_fountain(bridge, reg, answers={**ANSWERS, 86: b"\x00"})
+    assert [cmd for cmd, _ in _ble_frames(bridge)] == [213, 86]
+    assert "cmd 86 (Security check) was refused (00; the app needs 01)" in caplog.text
+    assert _connects(bridge) == [0]
 
+
+async def test_the_owners_252s_do_not_move_the_session(event_store, clock):
+    """The owner's fountain says `252 0001` at link-up and after frames (#140).
+    It is no step's reply: the session keeps waiting, and a 252 does not start
+    a second one."""
+    bridge, reg, _ = _relay(event_store)
+    await bridge._handle_event(reg.get(10), "ble_relay_over", RELAY["over_link_up"])
+    await bridge._handle_event(reg.get(10), "ble_response", RELAY["response_252"])
     await bridge._handle_event(reg.get(10), "ble_response", _response((252, b"\x00\x01")))
-    await bridge._handle_event(reg.get(10), "ble_response", _response((252, b"\x00\x01")))
+    assert [cmd for cmd, _ in _ble_frames(bridge)] == [213]
+    assert _connects(bridge) == []
+    bridge._ble_relay._cancel_timer(bridge._ble_relay._ctw3_sessions[700])
+
+
+async def test_a_reply_with_another_sequence_is_not_the_steps(event_store, clock):
+    """When the parent passes a whole frame through, its sequence must match."""
+    bridge, reg, _ = _relay(event_store)
+    await bridge._handle_event(reg.get(10), "ble_relay_over", RELAY["over_link_up"])
+    wrong = bytes([0xFA, 0xFC, 0xFD, 213, 2, 9, 8, 0, *ANSWERS[213][:8], 0xFB])
+    await bridge._handle_event(reg.get(10), "ble_response", _response((213, wrong)))
+    assert [cmd for cmd, _ in _ble_frames(bridge)] == [213]
+    right = bytes([0xFA, 0xFC, 0xFD, 213, 2, 0, 8, 0, *ANSWERS[213][:8], 0xFB])
+    await bridge._handle_event(reg.get(10), "ble_response", _response((213, right)))
+    assert [cmd for cmd, _ in _ble_frames(bridge)] == [213, 86]
+    bridge._ble_relay._cancel_timer(bridge._ble_relay._ctw3_sessions[700])
+
+
+async def test_a_stream_frame_with_its_header_gives_its_index_and_seq(event_store, clock):
+    bridge, reg, _ = _relay(event_store)
+    await bridge._handle_event(reg.get(10), "ble_relay_over", RELAY["over_link_up"])
+    await _fake_fountain(bridge, reg)
+    packet = _stream_frame(68, _record(START, 5), index=1, total=2)
+    await bridge._handle_event(reg.get(10), "ble_response", {"params": {
+        "content": json.dumps({"device": {"mac": MAC}, "payload": [
+            {"cmd": None, "data": base64.b64encode(packet).decode()}]})}})
+    check = bytes([0xFA, 0xFC, 0xFD, 67, 1, 7, 0, 0, 0xFB])
+    await bridge._handle_event(reg.get(10), "ble_response", _response((67, check)))
+    cmd, frame = _ble_frames(bridge)[-1]
+    # Packet 1 of 2 held, packet 0 missing: bit 30 only, the request's seq 7.
+    assert (cmd, frame.hex()) == (67, "fafcfd4302070400" + "40000000" + "fb")
+    bridge._ble_relay._cancel_timer(bridge._ble_relay._ctw3_sessions[700])
+
+
+async def test_nothing_waiting_ends_the_session_at_once(event_store, clock):
+    bridge, reg, _ = _relay(event_store)
+    await bridge._handle_event(reg.get(10), "ble_relay_over", RELAY["over_link_up"])
+    await _fake_fountain(bridge, reg, answers={**ANSWERS, 212: bytes(5)})
+    assert 80 not in [cmd for cmd, _ in _ble_frames(bridge)]
+    assert _connects(bridge) == [0]
+
+
+async def test_a_status_push_mid_session_is_acked_and_moves_nothing(event_store, clock):
+    bridge, reg, _ = _relay(event_store)
+    await bridge._handle_event(reg.get(10), "ble_relay_over", RELAY["over_link_up"])
     await bridge._handle_event(reg.get(10), "ble_response",
                                _response((230, base64.b64decode(CTW3_CMD230))))
-    assert _connects(bridge) == [], "hung up before the 212 was answered"
-
-    # The reply still ends it the normal way.
-    await bridge._handle_event(reg.get(10), "ble_response",
-                               _response((212, bytes([0, 0, 0, 0, 6]))))
+    frames = [(cmd, data.hex()) for cmd, data in _ble_frames(bridge)]
+    assert frames == [(213, "fafcfdd501000000fb"), (230, "fafcfde60200010001fb")]
     assert _connects(bridge) == []
+    bridge._ble_relay._cancel_timer(bridge._ble_relay._ctw3_sessions[700])
+
+
+async def test_a_pushed_status_is_answered_with_the_apps_ack(event_store):
+    """`CTW3DataConvertor.getDeviceUpdateResponse`: cmd 230, type 2, data 01,
+    sequence 0 -- the answer the app sends to every 230 a CTW3 pushes."""
+    bridge, reg, _ = _relay(event_store)
     await bridge._handle_event(reg.get(10), "ble_response",
-                               _response((68, _record(START, 42))))
-    assert len(await _stored(event_store)) == 1
-    assert _connects(bridge) == [0]
+                               _response((230, base64.b64decode(CTW3_CMD230))))
+    acks = [data for cmd, data in _ble_frames(bridge) if cmd == 230]
+    assert acks == [bytes.fromhex("fafcfde60200010001fb")]
 
 
-async def test_records_land_on_the_accessory_and_the_session_ends_when_all_are_in(event_store):
+async def test_a_w5_status_is_not_acked(event_store):
+    """The ack is the CTW3 client's; the W5 family's is not in the app."""
     bridge, reg, ble = _relay(event_store)
-    await _link_up_and_answer(bridge, reg)
+    ble.remove(700)
+    ble.register(ble_type="w5", petkit_id=701, mac=MAC.upper(), link_with=10)
+    await bridge._handle_event(reg.get(10), "ble_response", _response((230, bytes(18))))
+    assert 230 not in [cmd for cmd, _ in _ble_frames(bridge)]
 
-    await bridge._handle_event(reg.get(10), "ble_response",
-                               _response((212, bytes([0, 0, 0, 0, 12]))))
-    assert _connects(bridge) == [], "hung up on the announcement"
-    assert ble.get(700).history["pending_bytes"] == 12
 
-    body = _record(START, 42) + _record(START + 600, 7)
-    await bridge._handle_event(reg.get(10), "ble_response", _response((68, body)))
-    rows = await _stored(event_store)
-    assert sorted((r["ts"], r["event_kind"], r["device_type"]) for r in rows) == [
-        (START, codes.KIND_DRINKING, "ctw3"), (START + 600, codes.KIND_DRINKING, "ctw3")]
-    # None on the parent: the drink happened at the fountain.
-    assert await _stored(event_store, device_id=10) == []
-    assert ble.get(700).history["cursor"] == START + 600
-    # All 12 announced bytes are in: now it hangs up.
-    assert _connects(bridge) == [0]
-    # And nothing beyond the request was ever sent.
-    assert [cmd for cmd, _ in _ble_frames(bridge)] == [210, 211, 212]
+async def test_a_session_runs_once_per_interval(event_store, clock):
+    bridge, reg, _ = _relay(event_store)
+    await bridge._handle_event(reg.get(10), "ble_relay_over", RELAY["over_link_up"])
+    await _fake_fountain(bridge, reg, answers={**ANSWERS, 212: bytes(5)})
+
+    for advance, event_id in ((240, "100000001_1794950014"), (900, "100000001_1794950914")):
+        clock[0] += advance
+        later = json.loads(json.dumps(RELAY["over_link_up"]))
+        later["params"]["event_id"] = event_id
+        await bridge._handle_event(reg.get(10), "ble_relay_over", later)
+        await _fake_fountain(bridge, reg, answers={**ANSWERS, 212: bytes(5)})
+
+    sent = [cmd for cmd, _ in _ble_frames(bridge)]
+    # The first link-up runs it; 240 s later only the reads go; 1140 s later
+    # it runs again.
+    assert sent.count(213) == 2 and sent.count(212) == 2
+
+
+async def test_no_secret_means_the_plain_reads(event_store, caplog):
+    import logging
+
+    caplog.set_level(logging.INFO, logger="petkit_local.mqtt.ble_relay")
+    bridge, reg, ble = _relay(event_store, secret="")
+    await bridge._handle_event(reg.get(10), "ble_relay_over", RELAY["over_link_up"])
+    assert [cmd for cmd, _ in _ble_frames(bridge)] == [210, 211]
+    assert "no usable pairing secret" in caplog.text
+    assert "asked_at" not in ble.get(700).history
+
+
+async def test_no_store_means_no_session(event_store):
+    """A history with nowhere to go is not worth holding a session for."""
+    bridge, reg, _ = _relay(None)
+    await bridge._handle_event(reg.get(10), "ble_relay_over", RELAY["over_link_up"])
+    assert [cmd for cmd, _ in _ble_frames(bridge)] == [210, 211]
+
+
+async def test_no_broker_sends_nothing_and_raises_nothing(event_store):
+    bridge, reg, ble = _relay(event_store)
+    bridge._client = None
+    await bridge._handle_event(reg.get(10), "ble_relay_over", RELAY["over_link_up"])
+    assert "asked_at" not in ble.get(700).history
+
+
+async def test_only_a_ctw3_gets_a_session(event_store):
+    bridge, reg, ble = _relay(event_store)
+    ble.remove(700)
+    ble.register(ble_type="w5", petkit_id=701, mac=MAC.upper(), secret=SECRET, link_with=10)
+    await bridge._handle_event(reg.get(10), "ble_relay_over", RELAY["over_link_up"])
+    assert [cmd for cmd, _ in _ble_frames(bridge)] == [210, 211]
+
+
+async def test_the_parent_closing_mid_session_ends_it(event_store, clock, caplog):
+    import logging
+
+    caplog.set_level(logging.INFO, logger="petkit_local.mqtt.ble_relay")
+    bridge, reg, _ = _relay(event_store)
+    await bridge._handle_event(reg.get(10), "ble_relay_over", RELAY["over_link_up"])
+    await _fake_fountain(bridge, reg, stop_at=84)
+    await bridge._handle_event(reg.get(10), "ble_relay_over", RELAY["over_closed"])
+    assert "the parent closed the link at step 3/11 (cmd 84 (Set clock))" in caplog.text
+    assert bridge._ble_relay._ctw3_sessions == {}
+
+
+async def test_the_session_end_reports_a_stream_that_never_came(event_store, clock, caplog):
+    bridge, reg, _ = _relay(event_store)
+    await bridge._handle_event(reg.get(10), "ble_relay_over", RELAY["over_link_up"])
+    await _fake_fountain(bridge, reg, answers={**ANSWERS, 212: bytes([0, 0, 0, 0, 60])})
+    await bridge._handle_event(reg.get(10), "ble_relay_over", RELAY["over_closed"])
+    assert "announced 60 bytes of drink history and 0 arrived" in caplog.text
+    assert bridge._ble_relay._history == {}
+
+
+@pytest.mark.parametrize("payload", [
+    "garbage", [{"cmd": [86], "data": "AA=="}], [{"cmd": 999, "data": "AQ=="}],
+    [{"cmd": 86}], [{"cmd": "x", "data": "AQ=="}], [{"cmd": 67, "data": 5}],
+])
+async def test_garbage_mid_session_is_skipped(event_store, clock, payload):
+    bridge, reg, _ = _relay(event_store)
+    await bridge._handle_event(reg.get(10), "ble_relay_over", RELAY["over_link_up"])
+    await bridge._handle_event(reg.get(10), "ble_response", _response((213, ANSWERS[213])))
+    await bridge._handle_event(reg.get(10), "ble_response", {"params": {
+        "content": json.dumps({"device": {"mac": MAC}, "payload": payload})}})
+    assert [cmd for cmd, _ in _ble_frames(bridge)] == [213, 86]
+    bridge._ble_relay._cancel_timer(bridge._ble_relay._ctw3_sessions[700])
 
 
 async def test_a_record_sent_twice_is_one_drink(event_store):
@@ -282,58 +534,6 @@ async def test_the_cursor_skips_what_a_previous_session_stored(event_store, monk
     assert ble.get(700).history["cursor"] == START + 900
 
 
-async def test_nothing_waiting_ends_the_session_at_once(event_store):
-    bridge, reg, _ = _relay(event_store)
-    await _link_up_and_answer(bridge, reg)
-    await bridge._handle_event(reg.get(10), "ble_response",
-                               _response((212, bytes(5))))
-    assert _connects(bridge) == [0]
-
-
-async def test_a_history_is_asked_for_once_per_interval(event_store, monkeypatch):
-    bridge, reg, _ = _relay(event_store)
-    clock = [1794949774.0]
-    monkeypatch.setattr(ble_relay.time, "time", lambda: clock[0])
-    await _link_up_and_answer(bridge, reg)
-    await bridge._handle_event(reg.get(10), "ble_relay_over", RELAY["over_closed"])
-
-    for advance, event_id in ((240, "100000001_1794950014"), (900, "100000001_1794950914")):
-        clock[0] += advance
-        later = json.loads(json.dumps(RELAY["over_link_up"]))
-        later["params"]["event_id"] = event_id
-        await bridge._handle_event(reg.get(10), "ble_relay_over", later)
-        status = base64.b64decode(CTW3_CMD230)
-        await bridge._handle_event(reg.get(10), "ble_response", _response((230, status)))
-
-    # The first link-up asks; 240 s later it does not; 1140 s later it does.
-    assert [cmd for cmd, _ in _ble_frames(bridge)].count(212) == 2
-
-
-async def test_no_store_means_no_request(event_store):
-    """A history with nowhere to go is not worth holding a session for."""
-    bridge, reg, _ = _relay(None)
-    await _link_up_and_answer(bridge, reg)
-    assert 212 not in [cmd for cmd, _ in _ble_frames(bridge)]
-    assert _connects(bridge) == [0]
-
-
-async def test_no_broker_sends_nothing_and_raises_nothing(event_store):
-    bridge, reg, ble = _relay(event_store)
-    bridge._client = None
-    await _link_up_and_answer(bridge, reg)
-    assert "asked_at" not in ble.get(700).history
-
-
-async def test_only_a_ctw3_is_asked(event_store):
-    bridge, reg, ble = _relay(event_store)
-    ble.remove(700)
-    ble.register(ble_type="w5", petkit_id=701, mac=MAC.upper(), link_with=10)
-    await bridge._handle_event(reg.get(10), "ble_relay_over", RELAY["over_link_up"])
-    w5_status = bytes(18)
-    await bridge._handle_event(reg.get(10), "ble_response", _response((210, w5_status)))
-    assert 212 not in [cmd for cmd, _ in _ble_frames(bridge)]
-
-
 @pytest.mark.parametrize("payload", [
     [{"cmd": 68, "data": base64.b64encode(b"\x01\x02\x03").decode()}],
     [{"cmd": 68, "data": base64.b64encode(bytes(12)).decode()}],
@@ -360,16 +560,6 @@ async def test_a_failing_store_loses_the_batch_not_the_relay(event_store, monkey
     assert "cursor" not in ble.get(700).history
 
 
-async def test_the_session_end_reports_a_stream_that_never_came(event_store, caplog):
-    bridge, reg, _ = _relay(event_store)
-    await _link_up_and_answer(bridge, reg)
-    await bridge._handle_event(reg.get(10), "ble_response",
-                               _response((212, bytes([0, 0, 0, 0, 60]))))
-    await bridge._handle_event(reg.get(10), "ble_relay_over", RELAY["over_closed"])
-    assert "announced 60 bytes of drink history and 0 arrived" in caplog.text
-    assert bridge._ble_relay._history == {}
-
-
 async def test_the_cursor_persists_with_the_accessory(tmp_path):
     ble = BLERegistry(tmp_path / "ble.json")
     dev = ble.register(ble_type="ctw3", petkit_id=700, mac=MAC.upper(), link_with=10)
@@ -377,6 +567,33 @@ async def test_the_cursor_persists_with_the_accessory(tmp_path):
     ble.save()
     assert BLERegistry(tmp_path / "ble.json").get(700).history == {"cursor": START,
                                                                    "asked_at": START}
+
+
+# --- the session's payloads -------------------------------------------------------
+
+def test_the_secret_is_hex_decoded_and_left_padded_to_8():
+    from petkit_local.devices.ble import ctw3_secret_payload
+
+    assert ctw3_secret_payload(SECRET) == bytes.fromhex(SECRET)
+    assert ctw3_secret_payload("0a0b") == bytes(6) + b"\x0a\x0b"
+    for bad in ("", "s", "abc", "zz", None, 7):
+        assert ctw3_secret_payload(bad) is None
+
+
+def test_the_clock_is_seconds_since_2000_and_the_zone_plus_12():
+    from petkit_local.devices.ble import ctw3_time_payload
+
+    assert ctw3_time_payload(NOW, 1.0).hex() == "00" + "328f7f0e" + "0d"
+    assert ctw3_time_payload(NOW, -5.0)[-1] == 7
+    assert ctw3_time_payload(NOW, 5.75)[-1] == 18
+
+
+def test_the_stream_check_sets_bit_31_minus_i():
+    from petkit_local.devices.ble import ctw3_stream_check_payload
+
+    assert ctw3_stream_check_payload({0, 1}, 2) == (bytes.fromhex("c0000000"), True)
+    assert ctw3_stream_check_payload({1}, 2) == (bytes.fromhex("40000000"), False)
+    assert ctw3_stream_check_payload(set(range(32)), 32) == (b"\xff" * 4, True)
 
 
 # --- where the rows show up ----------------------------------------------------
