@@ -46,6 +46,25 @@
   (`ctw3_working`) still works on battery, restating mode 3 as PetKit's own
   Pause does. The panel's select no longer falls back to its first option for
   a value it does not offer.
+- **A CTW3 is asked for its drink history, and its drinks reach the
+  timeline** — under the fountain's own id, not the litter box or feeder that
+  relays it. Until now only its status and settings ever arrived, so a CTW3
+  had no history at all. Once a fountain has answered its link-up reads, it is
+  sent the request PetKit's app sends (cmd 212, empty), at most once per relay
+  session and once every 15 minutes, and never with no event store. Each
+  record (a 4-byte time and a 2-byte stay in seconds, big-endian) becomes one
+  **drinking** card timed by that stay, in the panel's and the phone app's
+  timeline, its Drinking chip, and `/app/v1/timeline?device=<fountain id>`. A
+  record sent twice is one drink, and the newest stored is kept in
+  `ble_devices.json` (`history.cursor`) so a restart does not re-read. All of
+  it comes from PetKit's app 13.8.1 and none of it has been seen from a real
+  fountain yet (graded `inferred` in `events/codes.py`, with the bytecode it
+  came from). Only the request is sent: PetKit's app goes on to start a stream
+  whose setting is the phone's Bluetooth MTU and to acknowledge every batch,
+  and none of that can be known from this side of a relay. If the fountain
+  answers that records are waiting and none arrive, the log says so when the
+  session ends; a capture of that session (Setup → Settings) is what would
+  finish it.
 
 ### Fixed
 
@@ -72,6 +91,10 @@
   payload of either is captured, and their meaning comes from the order and
   counts they arrive in (52) and from the name (`connect_start`). Codes 51 and
   53 now list the T4 among the models that send them.
+- **A relayed accessory frame whose `cmd` is not a number no longer raises.**
+  A list there reached a set lookup in `mqtt/ble_relay.py` and took the
+  whole `ble_response` down with it; it is now skipped like any other frame
+  nothing can read.
 
 ## 2.3.0 — 2026-11-14
 

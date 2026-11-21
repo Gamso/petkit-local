@@ -14,6 +14,13 @@ of its own: a CTW3 behind a T4 sent one 252 and fell silent on every link-up
 observed. So each link-up is followed by reads of the fountain's status and
 settings (`codes.BLE_LINK_UP_READS`), once, into the session already open.
 
+A CTW3 that answered them is then asked for its drink history (212,
+`codes.BLE_HISTORY_SYNC_CMD`), at most once per session and once per
+`HISTORY_SYNC_INTERVAL_SECONDS`, and every record that comes back is stored as
+a drinking row on the ACCESSORY's own id. Only the request is ever sent: the
+rest of PetKit's history stream needs values this side of a relay cannot know
+(`codes.BLE_OPCODES` 67-82 say which, and why).
+
 It owns no broker connection. Every frame goes out through the bridge
 (`mqtt/bridge.py`), which holds the one client to the embedded broker, and
 every path here checks that connection first — a session opened for a publish
@@ -26,22 +33,30 @@ import asyncio
 import json
 import logging
 import time
+from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from petkit_local.devices.ble import (
-    CMD_DEVICE_STATUS, ble_command_frame, ble_read_frame, parser_for,
+    CMD_DEVICE_STATUS, CMD_STREAM_END, CTW3_RECORD_LEN, HistoryFrames, ble_command_frame,
+    ble_read_frame, parse_ctw3_history, parser_for,
 )
 from petkit_local.devices.ble.framing import _iter_ble_frames
-from petkit_local.events.codes import BLE_LINK_NOTICES, BLE_LINK_UP_READS, ble_opcode_label
-from petkit_local.utils.coerce import to_int
+from petkit_local.events import ingest
+from petkit_local.events.codes import (
+    BLE_HISTORY_SYNC_CMD, BLE_HISTORY_SYNC_TYPES, BLE_LINK_NOTICES, BLE_LINK_UP_READS,
+    KIND_DRINKING, ble_opcode_label,
+)
+from petkit_local.utils.coerce import to_float, to_int
 from petkit_local.utils.dicts import dig
 
 if TYPE_CHECKING:
     from petkit_local.devices.base import Device
     from petkit_local.devices.ble import BLEDevice, BLERegistry
     from petkit_local.devices.registry import DeviceRegistry
+    from petkit_local.events.store import EventStore
     from petkit_local.ha.publisher import HAPublisher
     from petkit_local.mqtt.bridge import MQTTBridge
+    from petkit_local.web.hub import EventHub
 
 log = logging.getLogger(__name__)
 
@@ -64,6 +79,46 @@ LINK_UP_DEDUP_SECONDS = 10.0
 #: others 100-130 s. 180 is clearly past that and still under the 240 s
 #: default poll interval, so a lost `action 0` costs one deferred tick.
 BLE_SESSION_TIMEOUT_SECONDS = 180.0
+
+#: How often a CTW3 is asked for its drink history, at most. The first link-up
+#: after it is due asks; every other one does not. Fifteen minutes is far
+#: slower than the 240 s poll and still puts a drink on the timeline the same
+#: quarter-hour -- and a fountain whose history arrives in a form nothing here
+#: reads (a reply announcing bytes, then no records) costs one held session
+#: per interval rather than one per poll.
+HISTORY_SYNC_INTERVAL_SECONDS = 900.0
+
+#: Records stored from one relay session, at most. A record is 6 bytes and
+#: PetKit's app takes a stream in batches of 32 packets, so a real session
+#: carries tens to hundreds; this is far above that and only bounds what a
+#: stream of garbage could write.
+HISTORY_MAX_RECORDS_PER_SESSION = 5000
+
+
+@dataclass
+class _HistorySync:
+    """One relay session's drink-history exchange with one accessory."""
+
+    #: The cursor when this session began: a record at or before it is one a
+    #: previous session already stored. Snapshotted, not live, because records
+    #: of one session can arrive out of order (a resent packet).
+    since: float
+    #: The byte count the 212 reply announced; None until one has.
+    pending: int | None = None
+    received: int = 0
+    stored: int = 0
+    duplicates: int = 0
+    skipped: int = 0
+    rejected: int = 0
+    #: The accessory said the stream is over (69).
+    ended: bool = False
+    #: Stream control the accessory sent and nothing here answers.
+    control: tuple[int, ...] = ()
+
+    @property
+    def streaming(self) -> bool:
+        """Records announced and not all in yet: the session is not done."""
+        return bool(self.pending) and self.received < (self.pending or 0) and not self.ended
 
 
 def _relay_content(params: object) -> dict:
@@ -145,11 +200,19 @@ class BLERelay:
 
     def __init__(self, bridge: MQTTBridge, registry: DeviceRegistry,
                  ble_registry: BLERegistry | None = None,
-                 ha_publisher: HAPublisher | None = None) -> None:
+                 ha_publisher: HAPublisher | None = None,
+                 event_store: EventStore | None = None,
+                 hub: EventHub | None = None) -> None:
         self._bridge = bridge
         self._registry = registry
         self._ble_registry = ble_registry
         self._ha_publisher = ha_publisher
+        #: Where a CTW3's drink records go; None stores nothing (and asks for
+        #: nothing -- a history with nowhere to go is not worth a session).
+        self._event_store = event_store
+        self._hub = hub
+        #: Per accessory, the history exchange of the session open now.
+        self._history: dict[int, _HistorySync] = {}
         self._ble_poll_ts: dict[int, float] = {}
         #: Per-accessory BLE frame sequence, wrapping at a byte.
         self._ble_seq: dict[int, int] = {}
@@ -293,6 +356,9 @@ class BLERelay:
         if (event_id and event_id == last_event) or now - last_at < LINK_UP_DEDUP_SECONDS:
             return
         self._link_reads[ble.petkit_id] = (event_id, now)
+        # A new link is a new session: whatever the last one left unfinished
+        # is reported now rather than carried into this one.
+        self._finish_history(ble)
         sent = set()
         for cmd in BLE_LINK_UP_READS:
             if await self.publish_ble_read(device, ble, cmd):
@@ -324,6 +390,7 @@ class BLERelay:
                      ble_dev.ble_type.upper(), ble_dev.petkit_id, device.petkit_id, result)
         elif action == 0:
             self._pending_reads.pop(ble_dev.petkit_id, None)
+            self._finish_history(ble_dev)
             held = self._sessions.get(device.petkit_id)
             if held is not None and held[0] == ble_dev.petkit_id:
                 del self._sessions[device.petkit_id]
@@ -568,9 +635,15 @@ class BLERelay:
         ble_dev.last_heard = time.time()
         self._ble_registry.mark_dirty()
 
-        frames = list(_iter_ble_frames(content))
+        # Coerced here, once: the JSON `cmd` is device input, and a list there
+        # reached a set lookup below and raised for the whole bridge.
+        frames = [(to_int(cmd, None), data) for cmd, data in _iter_ble_frames(content)]
         parse = parser_for(ble_dev.ble_type)
         fragment = parse(content) if parse is not None else {}
+        history = (parse_ctw3_history(content) if ble_dev.ble_type in BLE_HISTORY_SYNC_TYPES
+                   else HistoryFrames())
+        if history:
+            await self._apply_history(device, ble_dev, history)
         if fragment:
             for section, vals in fragment.items():
                 ble_dev.state.setdefault(section, {}).update(vals)
@@ -579,7 +652,7 @@ class BLERelay:
             log.info("Decoded %s (id=%d) from parent %d: %s",
                      ble_dev.ble_type.upper(), ble_dev.petkit_id,
                      device.petkit_id, json.dumps(fragment)[:120])
-        else:
+        elif not history:
             # Not a status frame, or one we cannot read. Either way, name what
             # came back: a write is answered with a bare `01` on its own cmd,
             # or a short 251/252, and dropping those in silence left "the
@@ -612,16 +685,177 @@ class BLERelay:
         # And not while a read sent on this link is still unanswered: the
         # status and the settings come back as separate replies, and hanging up
         # on the first loses the second. A 230 carries both blocks.
+        #
+        # A CTW3 whose reads have all been answered on this link is asked for
+        # its history before the hang-up, the order PetKit's app asks in; the
+        # 212 then becomes the read the session waits on. A reply announcing
+        # records keeps the session open until they are in (or the accessory
+        # says the stream is over, or the parent hangs up) -- hanging up on the
+        # announcement would cut off what it announced.
         pending = self._pending_reads.get(ble_dev.petkit_id)
-        if fragment and pending:
-            answered = {cmd for cmd, _ in frames}
-            pending -= answered
-            if CMD_DEVICE_STATUS in answered:
-                pending.clear()
-        if fragment and not pending:
-            self._pending_reads.pop(ble_dev.petkit_id, None)
-            await self._ble_connect(device, ble_dev, action=0)
+        answered = {cmd for cmd, _ in frames}
+        if pending:
+            if fragment:
+                pending -= answered
+                if CMD_DEVICE_STATUS in answered:
+                    pending.clear()
+            if history.pending is not None:
+                pending.discard(BLE_HISTORY_SYNC_CMD)
+        # History progress ends a session only once a 212 reply has said how
+        # much to expect. Records nobody here announced are a sync somebody
+        # else runs -- the real cloud's, in proxy mode -- and hanging up on
+        # those would cut it off halfway.
+        sync = self._history.get(ble_dev.petkit_id)
+        announced = sync is not None and sync.pending is not None
+        progressed = bool(fragment) or (announced and bool(history))
+        if progressed and not pending:
+            if pending is not None and fragment and await self._ask_history(device, ble_dev):
+                pass
+            elif sync is not None and sync.streaming:
+                pass
+            else:
+                self._pending_reads.pop(ble_dev.petkit_id, None)
+                await self._ble_connect(device, ble_dev, action=0)
 
         if self._ha_publisher:
             await self._ha_publisher.publish_ble_discovery(ble_dev)
             await self._ha_publisher.publish_ble_state(ble_dev)
+
+    # --- the drink history -----------------------------------------------------
+
+    async def _ask_history(self, device: Device, ble: BLEDevice) -> bool:
+        """Send a CTW3 its 212, if this session has not and the interval allows.
+
+        Into the session the link-up reads were sent on, never a new one: the
+        fountain has just shown it answers on this link. Bounded three ways --
+        one per session (`_history` holds this session's exchange), one per
+        `HISTORY_SYNC_INTERVAL_SECONDS` (persisted, so a restart does not ask
+        again at once), and none at all with no store to put records in.
+
+        Returns:
+            True if the request went out, which makes it the read the session
+            now waits on.
+        """
+        if (ble.ble_type not in BLE_HISTORY_SYNC_TYPES or self._event_store is None
+                or ble.petkit_id in self._history):
+            return False
+        now = time.time()
+        history = ble.history if isinstance(ble.history, dict) else {}
+        asked_at = to_float(history.get("asked_at"), 0.0) or 0.0
+        if 0.0 <= now - asked_at < HISTORY_SYNC_INTERVAL_SECONDS:
+            return False
+        if not await self.publish_ble_read(device, ble, BLE_HISTORY_SYNC_CMD):
+            return False
+        cursor = to_float(history.get("cursor"), 0.0) or 0.0
+        self._history[ble.petkit_id] = _HistorySync(since=cursor)
+        ble.history = {**history, "asked_at": now}
+        if self._ble_registry is not None:
+            self._ble_registry.mark_dirty()
+        self._pending_reads[ble.petkit_id] = {BLE_HISTORY_SYNC_CMD}
+        return True
+
+    async def _apply_history(self, device: Device, ble: BLEDevice,
+                             frames: HistoryFrames) -> None:
+        """Store what one `ble_response` carried of a CTW3's history.
+
+        Records arrive whether or not we asked -- in proxy mode the real cloud
+        may run the exchange itself -- and are stored either way: a drink is a
+        drink. Each becomes one drinking row on the ACCESSORY's id
+        (`ingest.from_ble_drink_record`), deduplicated by the fountain's own
+        timestamp, and a record at or before the cursor this session started
+        from is skipped without a write. The cursor then moves to the newest
+        record stored, never past now (a clock set a day ahead must not hide
+        tomorrow's real drinks).
+
+        Never raises: a store that fails loses this batch, logged, and the
+        relay carries on.
+        """
+        sync = self._history.get(ble.petkit_id)
+        if sync is None:
+            history = ble.history if isinstance(ble.history, dict) else {}
+            sync = self._history[ble.petkit_id] = _HistorySync(
+                since=to_float(history.get("cursor"), 0.0) or 0.0)
+        name = f"{ble.ble_type.upper()} (id={ble.petkit_id})"
+
+        if frames.pending is not None:
+            sync.pending = frames.pending
+            ble.history = {**(ble.history or {}), "pending_bytes": frames.pending}
+            if self._ble_registry is not None:
+                self._ble_registry.mark_dirty()
+            log.info("%s: %d bytes of drink history waiting (about %d records)",
+                     name, frames.pending, frames.pending // CTW3_RECORD_LEN)
+        sync.received += frames.data_bytes
+        sync.rejected += frames.rejected
+        if frames.control:
+            sync.control += tuple(frames.control)
+            sync.ended = sync.ended or CMD_STREAM_END in frames.control
+            log.info("%s sent history stream control %s, which nothing here answers",
+                     name, ", ".join(ble_opcode_label(c) for c in frames.control))
+
+        fresh = [r for r in frames.records if r.start > sync.since]
+        sync.skipped += len(frames.records) - len(fresh)
+        room = max(HISTORY_MAX_RECORDS_PER_SESSION - sync.stored - sync.duplicates, 0)
+        if len(fresh) > room:
+            log.warning("%s: %d drink records past this session's cap of %d dropped",
+                        name, len(fresh) - room, HISTORY_MAX_RECORDS_PER_SESSION)
+            fresh = fresh[:room]
+        if not fresh or self._event_store is None:
+            return
+
+        new = 0
+        newest = 0.0
+        try:
+            async with self._event_store.transaction() as store:
+                for record in fresh:
+                    row = ingest.from_ble_drink_record(
+                        ble.petkit_id, ble.ble_type, record.raw_time, record.start,
+                        record.seconds)
+                    _, inserted = await store.record_event(row)
+                    new += int(inserted)
+                    newest = max(newest, record.start)
+        except Exception:  # noqa: BLE001 - a lost batch must not take the relay down
+            log.exception("%s: storing %d drink records failed", name, len(fresh))
+            return
+        sync.stored += new
+        sync.duplicates += len(fresh) - new
+        cursor = min(newest, time.time())
+        history = ble.history if isinstance(ble.history, dict) else {}
+        if cursor > (to_float(history.get("cursor"), 0.0) or 0.0):
+            ble.history = {**history, "cursor": cursor}
+            if self._ble_registry is not None:
+                self._ble_registry.mark_dirty()
+        log.info("%s: %d drink records stored (%d already held)", name, new,
+                 len(fresh) - new)
+        if new and self._hub is not None:
+            # One line per batch, not per record: a first sync can carry
+            # hundreds. It is also what tells the app's live feed to re-read
+            # this accessory. `is_new` False keeps the phone notifier off it --
+            # a drink hours old is history, not news.
+            self._hub.publish("event", ble.petkit_id,
+                              f"{len(fresh)} drink records from history ({new} new)",
+                              detail={"event_kind": KIND_DRINKING, "device_id": ble.petkit_id,
+                                      "device_type": ble.ble_type, "is_new": False,
+                                      "parent_id": device.petkit_id})
+
+    def _finish_history(self, ble: BLEDevice) -> None:
+        """Close this session's history exchange, saying how it ended.
+
+        The one place a reply announcing records that never came is reported:
+        that is a fountain waiting on the rest of the stream, and what a capture
+        of this session would show is exactly what finishes the protocol.
+        """
+        sync = self._history.pop(ble.petkit_id, None)
+        if sync is None:
+            return
+        name = f"{ble.ble_type.upper()} (id={ble.petkit_id})"
+        if sync.pending and sync.received < sync.pending and not sync.ended:
+            log.warning(
+                "%s announced %d bytes of drink history and %d arrived before the "
+                "session ended. PetKit's app follows a 212 with a stream setting "
+                "(cmd 80) and acknowledges every batch (67, 69); none of that is "
+                "sent here. A capture of this session (Setup -> Settings) is what "
+                "would settle it.", name, sync.pending, sync.received)
+        elif sync.stored or sync.duplicates or sync.skipped or sync.rejected:
+            log.info("%s history session: %d stored, %d already held, %d before the "
+                     "cursor, %d rejected", name, sync.stored, sync.duplicates,
+                     sync.skipped, sync.rejected)
