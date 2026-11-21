@@ -75,6 +75,22 @@
   A status reply now settles the status and settings reads only, and the
   session stays open until the 212 is answered.
 
+- **A Dual-Hopper 2's live view no longer freezes after 5–20 seconds**
+  (issue #128). Its camera pipeline restarts about every 82 s, viewers or not,
+  and tserver never re-attaches an open connection afterwards: the stream
+  stopped dead (measured 2026-11-21: ~27 fps for 19 s, then nothing for over
+  a minute, with nothing waiting on the camera's side) while a new connection
+  worked. When the camera sends nothing for 3 s while go2rtc is still
+  reading, the relay (`media/tserver_relay.py`) now resets that connection,
+  opens a new one with the usual retries, and splices it onto the stream
+  go2rtc already has: the new FLV file header is dropped and every tag's
+  timestamp shifted to carry on 40 ms after the last one sent, so go2rtc
+  sees a short gap rather than a dead camera. The first connection still
+  passes through byte for byte. A reopen that fails, a stream the relay
+  cannot follow tag by tag, or a fourth stop within a minute ends the stream
+  as before. Not yet confirmed on the device: how go2rtc and the browser take
+  the seam, and that the codec parameters do not change across a restart
+  (go2rtc keeps the ones it read first).
 - **A Dual-Hopper 2's live view no longer dies after the first viewer**
   (issue #122). Its camera (the camera patcher's tserver, fw 916) serves one
   client at a time and never closes its side when a client hangs up normally:
