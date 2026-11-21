@@ -13,19 +13,21 @@ import logging
 
 from aiohttp import web
 
+from petkit_local.ai.cloud_faces import drop_faces
 from petkit_local.ha.learn import learn_generation, learn_settings
 from petkit_local.http.appkeys import (
-    CONFIG, EVENT_HUB, EVENT_STORE, HA_PUBLISHER, PROXY_UPSTREAM_CREDS, REGISTRY,
+    CLOUD_FACES, CONFIG, EVENT_HUB, EVENT_STORE, HA_PUBLISHER, PROXY_UPSTREAM_CREDS, REGISTRY,
 )
 from petkit_local.http.dns import loops_back
 from petkit_local.http.handlers._common import request_device
+from petkit_local.http.handlers.discern import faces_host
 from petkit_local.http.handlers.heartbeat import carries_commands
 from petkit_local.http.handlers.ota import offers_firmware
 from petkit_local.http.handlers.iot_device_info import self_mqtt_host
 from petkit_local.http.middleware import API_PREFIX, PROXY_OUTCOME, Handler
 from petkit_local.http.middleware.logging import _short, _text_or_none
-from petkit_local.http.proxy import forward, resolve_upstream
-from petkit_local.http.redact import RedactionPolicy
+from petkit_local.http.proxy import forward, get_proxy_session, resolve_upstream
+from petkit_local.http.redact import RULE_FACES, Redaction, RedactionPolicy
 from petkit_local.media.crypto import resolve_key_string
 from petkit_local.utils.capture import capture_record
 
@@ -57,7 +59,12 @@ log = logging.getLogger(__name__)
 #: This set is for answers that would BREAK the device, not for answers that
 #: are merely inconvenient to us. `dev_discern_pic` is deliberately absent: the
 #: cloud's pets and face photos reaching the device is what proxy mode MEANS.
-#: Turn proxy off to have our own pets take effect.
+#: Turn proxy off to have our own pets take effect. What reaches the device is
+#: the cloud's list with every photo URL pointing at OUR `/faces/` route, which
+#: serves that photo normalised to 224x224 (`http/redact/rules.py::_match_faces`,
+#: `ai/cloud_faces.py`); a photo that cannot be fetched or normalised is dropped
+#: from the list (`_serve_cloud_faces`). Passed through raw, one 4096x3072 photo
+#: ran a D4SH's camera out of memory every ~82 s (issue #129).
 LOCAL_ONLY_ENDPOINTS = frozenset({"dev_ble_device"})
 
 #: Endpoints whose REQUEST is the leak, withheld while the log-upload guard is
@@ -146,6 +153,8 @@ def _build_policy(request: web.Request, device):
         media_to_real_oss=config.get("proxy_media_real_oss", False),
         local_cvr_window=config.get("proxy_local_cvr_window", False),
         esp32_http_only=config.get("esp32_http_only", True),
+        faces_base=(f"http://{faces_host(request)}"
+                    if request.app.get(CLOUD_FACES) is not None else ""),
     )
 
 
@@ -275,6 +284,9 @@ async def proxy_middleware(request: web.Request, handler: Handler) -> web.Stream
         if exchange is None:
             return local
 
+        if exchange.usable and exchange.captured.get("cloud_faces"):
+            await _serve_cloud_faces(request, exchange)
+
         await _record_exchange(request, device, exchange, body=body, local=local)
         _note_outcome(request, exchange)
 
@@ -297,6 +309,47 @@ async def proxy_middleware(request: web.Request, handler: Handler) -> web.Stream
     except Exception:
         log.exception("PROXY: failed on %s, serving the local answer", request.path)
         return local
+
+
+async def _serve_cloud_faces(request: web.Request, exchange) -> None:
+    """Make the cloud face photos a rewritten reply names servable, or drop them.
+
+    Redaction has already pointed every `discern[].url` at our `/faces/` route
+    and captured the cloud URL behind each name (`_match_faces`). Here those
+    names are remembered (`ai/cloud_faces.py`, persisted, so a URL the device
+    holds survives a restart) and their photos fetched and normalised while the
+    reply waits, bounded by `cloud_faces.PREFETCH_TIMEOUT` for all of them together.
+
+    A photo that definitely failed — not fetched, not a JPEG, not normalisable
+    to 224x224 — is removed from the reply and recorded as a `faces` redaction,
+    so the device is never pointed at a URL that has nothing behind it. One
+    still in flight at the deadline keeps its URL: the fetch finishes in the
+    background and the device's own GET is served from the cache.
+
+    The fetches are the device's: this runs only inside a proxied reply the
+    device asked for, and asks for exactly the photos the cloud told it to
+    fetch. A failure here costs the device its photos, never its reply.
+    """
+    faces = request.app.get(CLOUD_FACES)
+    captured = exchange.captured["cloud_faces"]
+    if faces is None:
+        return
+    try:
+        await faces.remember(captured)
+        session = get_proxy_session(request.app, request.app[CONFIG].get("proxy_dns", ""))
+        failed = await faces.prefetch(captured, session)
+        if not failed:
+            return
+        exchange.body, removed = drop_faces(exchange.body, failed)
+        for path, url in removed:
+            exchange.records.append(Redaction(
+                rule=RULE_FACES, path=path, original=url,
+                note="cloud face photo dropped: it could not be fetched or normalised",
+            ))
+    except asyncio.CancelledError:
+        raise
+    except Exception:
+        log.exception("PROXY: could not prepare the cloud face photos for %s", request.path)
 
 
 def _local_socket(request: web.Request) -> tuple[str, int] | None:

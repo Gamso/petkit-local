@@ -134,6 +134,19 @@ LITTER_T6_SWITCHES = [
               value_path="settings.noSound", icon="mdi:microphone-off"),
 ]
 
+#: A Pura Max 2 (T4) with a linked Pura Air K3: the K3's light (issue #133).
+#:
+#: On the T4, not on the K3: the K3 is BLE-only and its light is driven through
+#: the parent, by an ACTION, not a setting — ON is `start_action` 7 and OFF
+#: `end_action` 7 (`codes.T4_K3_LIGHT_COMMANDS`), routed by
+#: `ha/commands.py::ACTION_SWITCHES`. Its value is the T4's own report,
+#: `state.k3LightSwitch`, never a stored setting. Published only while a K3 is
+#: linked (`ha/categories.py::has_linked_k3`).
+LITTER_T4_K3_SWITCHES = [
+    EntityDef(component="switch", key="k3_light", name="K3 Light",
+              value_path="state.k3LightSwitch", icon="mdi:lightbulb"),
+]
+
 FEEDER_SWITCHES = [
     # Pauses the recurring meals without deleting them
     # (`ha/commands.py::FEED_SCHEDULE_SWITCH`). `local.`, not `settings.`: the

@@ -1149,6 +1149,10 @@ T4_LITTER_CALIBRATION_ACTION = 6
 #: and are all real (deodorize, maintenance, N60 reset — 10 confirmed against
 #: the real cloud on a T5), because the T6 action sheet does not offer them.
 #: Nothing may validate against this table.
+#:
+#: 7 is "light" on every model, but WHICH light is per model: a T6's camera
+#: illuminator, a T4's linked K3 (`T4_K3_LIGHT_COMMANDS`, which has no
+#: illuminator of its own).
 LITTER_START_ACTIONS: dict[int, tuple[str, str]] = {
     0: ("scoop", CONFIRMED),
     1: ("empty", CONFIRMED),
@@ -1157,6 +1161,58 @@ LITTER_START_ACTIONS: dict[int, tuple[str, str]] = {
     7: ("light", CONFIRMED),
     8: ("pack waste", CONFLICTED),
     11: ("open sealed door", CONFIRMED),
+}
+
+#: Where the T4 K3-light rows below come from.
+#:
+#: A proxy capture of PetKit's app on a Pura Max 2 (T4, firmware 1.652) with a
+#: linked Pura Air K3, 2026-11-21, the owner toggling the app's K3 light on and
+#: off (issue #133).
+T4_K3_LIGHT_CAPTURE = "proxy capture of the official app, T4 fw 1.652 + K3, 2026-11-21"
+
+#: The action code a T4 drives its linked K3's light with.
+T4_K3_LIGHT_ACTION = 7
+
+#: A T4's `start_action`/`end_action` 7: the linked K3's LIGHT, on and off.
+#:
+#: The same integer the T6 uses for its camera illuminator
+#: (`LITTER_START_ACTIONS[7]`) and `WORK_MODES[7]` "light cycle"; a T4 has no
+#: illuminator, and on it the light is the K3's. From `T4_K3_LIGHT_CAPTURE`:
+#:
+#:   * ON — the cloud sent `thing.service.start {"start_action":7}`, the T4
+#:     answered `thing/event/work_start/post {"action":7,"reason":2}`, and its
+#:     `property/post` `device.k3LightSwitch` went 0 -> 1. Command, echo and
+#:     state all seen: `confirmed`.
+#:   * OFF — the cloud sent `thing.service.end {"end_action":7}` when the owner
+#:     switched the light off in the app, and the owner saw it go off. The
+#:     `property/post` taking `k3LightSwitch` back to 0 was NOT captured, so
+#:     the command is the cloud's own but its effect rests on the owner's eyes:
+#:     `inferred`.
+#:
+#: Not known: whether the K3 switches its light off by itself after
+#: `k3Config.singleLightTime` (120) seconds. `k3LightSwitch` is the state to
+#: read either way, so nothing here assumes it stays on.
+T4_K3_LIGHT_COMMANDS: dict[str, tuple[str, str]] = {
+    "start_action": ("K3 light on", CONFIRMED),
+    "end_action": ("K3 light off", INFERRED),
+}
+
+#: T4 state fields about its linked K3, as the state parsers flatten them.
+#:
+#: `k3LightSwitch` is nested as `device.k3LightSwitch` in the property post
+#: (and in the state report, whose shape is the same), 0/1. Seen going 0 -> 1
+#: in `T4_K3_LIGHT_CAPTURE`, and at 0 in earlier T4 property posts
+#: (`tests/test_state_parsers.py`). Seen at 1 -> 0 never: see the OFF row
+#: above.
+#:
+#: `k3Id` is top level, beside the K3's `battery`/`liquid` the parent relays
+#: (`mqtt/ble_relay.py::update_linked_k3`): the id of the K3 the T4 holds in its
+#: one slot. Nonzero in every report from a T4 with a K3; that an unlinked T4
+#: reports 0 rather than leaving it out is inferred from the unlink write
+#: (`k3Id: 0`, `web/api/ble.py`), not captured.
+T4_K3_STATE_FIELDS: dict[str, tuple[str, str]] = {
+    "k3LightSwitch": ("K3 light on/off", CONFIRMED),
+    "k3Id": ("id of the linked K3, 0 for none", INFERRED),
 }
 
 #: The Purobot Ultra's privacy ("home") mode, as `property.set` fields.

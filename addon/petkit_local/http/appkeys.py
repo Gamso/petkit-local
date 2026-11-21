@@ -27,6 +27,8 @@ key                        what it holds                                 set by
 `CONFIG`                   the runtime config dict the handlers read     create_app
                            (`Config.to_app_config()`); the panel holds
                            the SAME dict as `live_config`
+`CLOUD_FACES`              `CloudFaces` — proxy mode's normalised copies create_app
+                           of the cloud's face photos (`/faces/cloud_*`)
 `BLE_REGISTRY`             `BLERegistry`                                 main/wiring.py
 `EVENT_HUB`                `EventHub` — the panel's live log             main/wiring.py
 `EVENT_STORE`              `EventStore`                                  main/wiring.py
@@ -68,6 +70,7 @@ from aiohttp import web
 if TYPE_CHECKING:
     from amqtt.broker import Broker
 
+    from petkit_local.ai.cloud_faces import CloudFaces
     from petkit_local.ai.pets import PetRegistry
     from petkit_local.devices.base import Device
     from petkit_local.devices.ble import BLERegistry
@@ -81,6 +84,7 @@ if TYPE_CHECKING:
 
 REGISTRY: web.AppKey[DeviceRegistry] = web.AppKey("registry")
 CONFIG: web.AppKey[dict[str, Any]] = web.AppKey("config")
+CLOUD_FACES: web.AppKey[CloudFaces] = web.AppKey("cloud_faces")
 
 BLE_REGISTRY: web.AppKey[BLERegistry | None] = web.AppKey("ble_registry")
 EVENT_HUB: web.AppKey[EventHub | None] = web.AppKey("event_hub")

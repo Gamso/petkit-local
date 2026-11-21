@@ -73,7 +73,8 @@ petkit_local/
 ├── patchers/      on-device patches: cacert · mqtt · cloud · camera · ssh
 │                  firmware (ESP32: a whole image rebuilt, not a file on a device)
 │                  esp32_ota (that image stored, offered over OTA, rolled back)
-├── ai/pets.py     pet CRUD + the face photos the device's NPU matches against
+├── ai/            pets.py pet CRUD + the face photos the device's NPU matches against
+│                  cloud_faces.py proxy mode: the cloud's face photos, normalised and cached
 └── utils/         const · crypto · tls · capture · jsonio · paths · coerce · dicts · timeutil
 ```
 
@@ -178,6 +179,13 @@ device --HTTP--> http/server.py          route table; /{path:.*} is registered L
 That the local handler runs even in proxy mode is deliberate: it is what makes "the upstream is
 unreachable, slow, or refuses this device" a non-event rather than an outage.
 
+One proxied reply is changed in substance, not only in address: `dev_discern_pic`'s face photos.
+Redaction points each `discern[].url` at our `/faces/` route (`_match_faces`), and
+`ai/cloud_faces.py` answers it with the cloud's photo normalised to 224x224 — fetched while that
+reply waits, or when the device GETs it, never otherwise — because one raw 4096x3072 photo was
+enough to run a D4SH's camera out of memory. A photo that cannot be fetched or normalised is
+dropped from the reply rather than passed through.
+
 Proxy mode only relays what a device sends, so a device that moves to MQTT stops being heard over
 HTTP — and PetKit's app, which judges "online" by the HTTP heartbeat, then shows it disconnected.
 The opt-in **keep-online heartbeat** (`http/presence.py`, the Setup switch "Keep online in PetKit's
@@ -236,7 +244,9 @@ refuses a second connection for several seconds and because Home Assistant's cam
 reading its FLV directly. A model whose tserver a normally-closed connection locks for
 minutes (`patchers/camera.py::RELAYED_MODELS`, the D4SH) is read through
 `media/tserver_relay.py` on loopback instead: it holds the device's one connection and always
-leaves it with a TCP reset.
+leaves it with a TCP reset. That tserver also stops sending when the camera pipeline restarts
+(every ~82 s), so a connection silent for a few seconds is reset and reopened, and the new FLV
+spliced onto the one go2rtc is reading with its timestamps rebased (`FlvSplicer`).
 
 ## Where the knowledge lives
 

@@ -3,7 +3,8 @@
 That tserver serves one client at a time and is locked for minutes by a client
 that leaves with a FIN; a reset frees it. These tests stand a fake tserver up
 on loopback and check what the relay does to it: retries a silent one, resets
-every connection it is done with, and never holds two.
+every connection it is done with, never holds two, and resumes a stream the
+device stopped sending (issue #128) by splicing a new connection's FLV on.
 """
 import asyncio
 import contextlib
@@ -17,7 +18,48 @@ from petkit_local.media import tserver_relay as r
 from petkit_local.patchers import camera
 
 FLV_HEAD = b"HTTP/1.1 200 OK\r\nContent-Type: video/x-flv\r\n\r\n"
-FLV_BODY = g.FLV_SIGNATURE + b"\x05\x00\x00\x00\x09" + b"\x00" * 64
+AUDIO, VIDEO, SCRIPT = 8, 9, 18
+
+
+def flv_tag(kind, ts, data, trailer=True):
+    """One FLV tag and, unless `trailer` is off, the PreviousTagSize after it."""
+    tag = (bytes([kind]) + len(data).to_bytes(3, "big") + (ts & 0xFFFFFF).to_bytes(3, "big")
+           + bytes([ts >> 24 & 0xFF]) + b"\x00\x00\x00" + data)
+    return tag + (len(tag).to_bytes(4, "big") if trailer else b"")
+
+
+def flv(*tags):
+    """A file header, PreviousTagSize0, then `tags`."""
+    return g.FLV_SIGNATURE + b"\x05\x00\x00\x00\x09" + b"\x00" * 4 + b"".join(tags)
+
+
+def tserver_flv(*frame_ts, seed=b"a"):
+    """What tserver opens with: onMetaData, the AVC and AAC headers, then frames."""
+    return flv(flv_tag(SCRIPT, 0, b"\x02\x00\x0aonMetaData" + seed),
+               flv_tag(VIDEO, 0, b"\x17\x00\x00\x00\x00" + seed * 4),
+               flv_tag(AUDIO, 0, b"\xaf\x00\x12\x10"),
+               *(flv_tag(VIDEO, ts, b"\x27\x01\x00\x00\x00" + seed * (5 + ts % 7))
+                 for ts in frame_ts))
+
+
+def read_tags(stream):
+    """The tags of `stream` as go2rtc 1.9.14 reads them: a 9-byte header, then
+    4+11 bytes (PreviousTagSize ignored) and the data, until it runs out."""
+    assert stream[:3] == b"FLV"
+    i = int.from_bytes(stream[5:9], "big")
+    tags = []
+    while i + 15 <= len(stream):
+        h = stream[i + 4:i + 15]
+        size = int.from_bytes(h[1:4], "big")
+        ts = int.from_bytes(h[4:7], "big") | h[7] << 24
+        tags.append((h[0], ts, bytes(stream[i + 15:i + 15 + size])))
+        i += 15 + size
+    # Ending on the last tag's PreviousTagSize, or just before it, is whole.
+    assert len(stream) - i in (0, 4), "the stream ends inside a tag"
+    return tags
+
+
+FLV_BODY = tserver_flv(0, 40, 80)
 
 
 class FakeTserver:
@@ -25,7 +67,9 @@ class FakeTserver:
 
     `silent` reads the request and never answers; `serve` answers with an FLV
     header and body and keeps the connection; `empty` closes at once; `html`
-    answers something that is not a stream. Every connection then waits for
+    answers something that is not a stream; bytes are sent as they are. Short
+    of `empty`, every one then goes silent with the connection open — what a
+    Dual-Hopper 2's tserver does once its camera pipeline restarts. Every connection then waits for
     the client to go, and records whether it left with a reset or a FIN.
     """
 
@@ -57,7 +101,9 @@ class FakeTserver:
             if mode == "empty":
                 outcome = "closed by us"
                 return
-            if mode == "serve":
+            if isinstance(mode, bytes):
+                writer.write(mode)
+            elif mode == "serve":
                 writer.write(FLV_HEAD + FLV_BODY)
             elif mode == "html":
                 writer.write(b"HTTP/1.1 200 OK\r\n\r\n<html>")
@@ -514,3 +560,174 @@ async def test_the_auto_candidate_looks_past_a_relay_url(tmp_path, monkeypatch):
         assert doc["webrtc"]["candidates"] == [f"192.168.1.9:{g.WEBRTC_PORT}"]
     finally:
         await relay.stop()
+
+
+# --- a stream the device stops sending (issue #128) ---------------------------
+
+async def _read_until_eof(reader, timeout=5):
+    out = b""
+    async with asyncio.timeout(timeout):
+        while chunk := await reader.read(65536):
+            out += chunk
+    return out
+
+
+async def test_a_silent_stream_is_reset_reopened_and_spliced(fake_factory):
+    """tserver never re-attaches an open connection after its camera pipeline
+    restarts; a new one works. go2rtc must see one stream, time going on."""
+    first = tserver_flv(0, 40, 80, 120)
+    second = tserver_flv(0, 40, 80, seed=b"b")
+    fake = await fake_factory(FLV_HEAD + first, FLV_HEAD + second)
+    relay = await _relay(fake, _cam(), stall_seconds=0.3, max_resumes=1)
+    try:
+        reader, writer, head = await _get(relay)
+        assert head == FLV_HEAD
+        # The second goes silent too, and with one resume allowed that ends it.
+        got = await _read_until_eof(reader)
+        assert got[:len(first)] == first, "the first connection passes byte for byte"
+        # Less the second file header and PreviousTagSize0 (13 bytes), and its
+        # last PreviousTagSize, which a rewritten stream holds back as the
+        # start of the next tag.
+        assert len(got) == len(first) + len(second) - 17
+        # Both connections were reset, never FIN'd.
+        assert await fake.wait_outcomes(2) == ["reset", "reset"]
+        assert len(fake.requests) == 2
+        tags = read_tags(got)
+        assert len(tags) == 7 + 6, "no second file header, nothing lost"
+        old, new = tags[:7], tags[7:]
+        assert [t for _, t, _ in old] == [0, 0, 0, 0, 40, 80, 120]
+        # 120 + one frame (40 ms), then the new connection's own spacing.
+        assert [t for _, t, _ in new] == [160, 160, 160, 160, 200, 240]
+        # Metadata and sequence headers pass, and every payload is unchanged.
+        assert [(k, d) for k, _, d in new] == [(k, d) for k, _, d in read_tags(second)]
+        writer.close()
+    finally:
+        await relay.stop()
+
+
+async def test_a_reopen_that_fails_ends_the_stream(fake_factory):
+    fake = await fake_factory(FLV_HEAD + FLV_BODY, "silent", "silent", "silent")
+    relay = await _relay(fake, _cam(), stall_seconds=0.2, header_timeout=0.2)
+    try:
+        reader, writer, _ = await _get(relay)
+        assert await _read_until_eof(reader) == FLV_BODY
+        assert await fake.wait_outcomes(4) == ["reset"] * 4
+        assert len(fake.requests) == 4, "the first connection, then three attempts"
+        writer.close()
+    finally:
+        await relay.stop()
+
+
+async def test_resumes_are_capped(fake_factory):
+    """A camera that keeps stopping is not reopened forever."""
+    bodies = [tserver_flv(0, 40, seed=bytes([65 + n])) for n in range(4)]
+    fake = await fake_factory(*(FLV_HEAD + b for b in bodies))
+    relay = await _relay(fake, _cam(), stall_seconds=0.2, max_resumes=2)
+    try:
+        reader, writer, _ = await _get(relay)
+        got = await _read_until_eof(reader)
+        assert len(fake.requests) == 3, "the first connection and two resumes, no third"
+        assert await fake.wait_outcomes(3) == ["reset"] * 3
+        stamps = [t for _, t, _ in read_tags(got)]
+        assert len(stamps) == 3 * 5 and stamps == sorted(stamps)
+        writer.close()
+    finally:
+        await relay.stop()
+
+
+async def test_a_stream_that_cannot_be_followed_is_not_spliced(fake_factory):
+    """Not an FLV the parser knows: passed through as ever, but a stall then
+    ends it rather than gluing a new stream onto something unknown."""
+    odd = FLV_BODY[:13] + b"\x00" * 30
+    fake = await fake_factory(FLV_HEAD + odd, "serve")
+    relay = await _relay(fake, _cam(), stall_seconds=0.2, header_timeout=0.2)
+    try:
+        reader, writer, _ = await _get(relay)
+        assert await _read_until_eof(reader) == odd
+        assert len(fake.requests) == 1
+        writer.close()
+    finally:
+        await relay.stop()
+
+
+async def test_garbage_on_a_reopened_connection_ends_the_stream(fake_factory):
+    fake = await fake_factory(FLV_HEAD + FLV_BODY, FLV_HEAD + b"<html>nope</html>")
+    relay = await _relay(fake, _cam(), stall_seconds=0.2)
+    try:
+        reader, writer, _ = await _get(relay)
+        assert await _read_until_eof(reader) == FLV_BODY
+        assert len(fake.requests) == 2
+        writer.close()
+    finally:
+        await relay.stop()
+
+
+# --- the splicer on its own ---------------------------------------------------
+
+def _feed_bytewise(splicer, data):
+    return b"".join(splicer.feed(data[i:i + 1]) for i in range(len(data)))
+
+
+@pytest.mark.parametrize("trailer", [True, False])
+def test_tags_are_followed_and_rebased_across_any_chunking(trailer):
+    """Tags straddle recv chunks; fed one byte at a time the result is the
+    same. Whether or not the first connection's last PreviousTagSize went out,
+    go2rtc's reader stays on tag boundaries."""
+    first = tserver_flv(0, 40, 80)
+    if not trailer:
+        first = first[:-4]
+    second = tserver_flv(1000, 1040, seed=b"z")
+    expected = None
+    for feed in (_feed_bytewise, lambda s, d: s.feed(d)):
+        sp = r.FlvSplicer()
+        out = feed(sp, first)
+        assert out == first and sp.last_ts == 80 and sp.tags == 6
+        assert sp.splice_blocker() is None
+        sp.restart()
+        out += feed(sp, second)
+        assert sp.broken is None and sp.offset == 120
+        expected = expected or out
+        assert out == expected
+    tags = read_tags(expected)
+    assert [t for _, t, _ in tags] == [0, 0, 0, 0, 40, 80, 120, 120, 120, 1120, 1160]
+
+
+def test_the_first_connection_is_returned_untouched():
+    sp = r.FlvSplicer()
+    data = tserver_flv(0, 40, 0x1234567)
+    assert sp.feed(data) is data
+    assert sp.last_ts == 0x1234567, "the extended byte is the top 8 bits"
+
+
+def test_a_stall_inside_a_tag_cannot_be_spliced():
+    sp = r.FlvSplicer()
+    sp.feed(tserver_flv(0, 40)[:-10])
+    assert "inside a tag" in sp.splice_blocker()
+
+
+def test_a_second_resume_before_any_tag_keeps_the_first_seam():
+    """A reopen that sent nothing yet leaves go2rtc where it was."""
+    first, second = tserver_flv(0, 40), tserver_flv(0, 40, seed=b"q")
+    sp = r.FlvSplicer()
+    sp.feed(first)
+    sp.restart()
+    sp.feed(second[:5])
+    assert sp.splice_blocker() is None
+    sp.restart()
+    stream = first + sp.feed(second)
+    assert [t for _, t, _ in read_tags(stream)][-2:] == [80, 120]
+
+
+@pytest.mark.parametrize("junk", [
+    b"\x00" * 40,                                                      # no FLV header
+    b"FLV\x01\x05\xff\xff\xff\xff" + b"\x00" * 9,                      # absurd header size
+    b"FLV\x01\x05\x00\x00\x00\x09\x00\x00\x00\x00\x07" + b"\x00" * 30,  # tag type 7
+])
+def test_malformed_bytes_never_raise(junk):
+    sp = r.FlvSplicer()
+    assert sp.feed(junk) == junk and sp.broken is not None
+    assert sp.splice_blocker() is not None
+    sp2 = r.FlvSplicer()
+    sp2.feed(tserver_flv(0))
+    sp2.restart()
+    assert sp2.feed(junk) == b"" and sp2.broken is not None

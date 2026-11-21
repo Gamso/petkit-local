@@ -22,8 +22,10 @@ from urllib.parse import urlparse
 
 from aiohttp import web
 
-from petkit_local.http.appkeys import CONFIG, PET_REGISTRY, REGISTRY
+from petkit_local.ai.cloud_faces import is_cloud_face
+from petkit_local.http.appkeys import CLOUD_FACES, CONFIG, PET_REGISTRY, REGISTRY
 from petkit_local.http.handlers._common import no_device_response, request_device
+from petkit_local.http.proxy import get_proxy_session
 from petkit_local.utils.coerce import to_bool, to_float, to_int
 from petkit_local.utils.paths import UnsafePathError, safe_join
 
@@ -44,6 +46,18 @@ def _ai_on(device) -> bool:
     """
     return bool(device) and device.supports_ai and to_bool(
         device.config.get("ai_enabled", True), True)
+
+
+def faces_host(request: web.Request) -> str:
+    """The `host[:port]` a device is told to fetch `/faces/` photos from.
+
+    `api_url`'s, rather than the request's own Host header where possible: the
+    device fetches them in a separate connection, so they have to name an
+    address it can reach on its own, not whatever it happened to dial us on.
+    Shared by our own `dev_discern_pic` answer and proxy mode's rewrite of the
+    cloud's (`http/redact/rules.py::_match_faces`), so both point at one place.
+    """
+    return urlparse(request.app[CONFIG].get("api_url", "")).netloc or request.host
 
 
 def _note_ai_capable(request: web.Request, device) -> None:
@@ -79,10 +93,7 @@ def _note_ai_capable(request: web.Request, device) -> None:
 async def handle_discern_pic(request: web.Request) -> web.Response:
     """Hand the device the reference face photos it should recognise pets by.
 
-    The URLs are built against the host in `api_url` rather than the request's
-    own Host header where possible: the device fetches them in a separate
-    connection, so they have to name an address it can reach on its own, not
-    whatever it happened to dial us on.
+    The URLs are built against `faces_host`.
 
     This is also where `ai_enabled` is enforced. `dev_discern_config` carries no
     on/off field on the wire, so "recognise nobody" can only be said by serving
@@ -102,9 +113,8 @@ async def handle_discern_pic(request: web.Request) -> web.Response:
     if pet_registry is None or not _ai_on(device):
         return web.json_response({"result": {"list": []}})
 
-    config = request.app[CONFIG]
-    api_host = urlparse(config.get("api_url", "")).netloc or request.host
-    return web.json_response(await pet_registry.discern_pic_payload(device.petkit_id, api_host))
+    return web.json_response(
+        await pet_registry.discern_pic_payload(device.petkit_id, faces_host(request)))
 
 
 async def handle_discern_config(request: web.Request) -> web.Response:
@@ -160,7 +170,12 @@ async def handle_faces(request: web.Request) -> web.Response:
     (ai/pets.py::_safe_photo_filename); traversal is still rejected here, because
     this handler is reachable by anything that can open a socket to us and must
     not depend on the write path having been careful.
+
+    A `cloud_*` name is not one of ours: it is proxy mode's normalised copy of
+    a cloud photo (`_serve_cloud_face`).
     """
+    if is_cloud_face(request.match_info["filename"]):
+        return await _serve_cloud_face(request, request.match_info["filename"])
     data_dir = request.app[CONFIG].get("data_dir", "/data")
     # The faces dir — not data_dir — is the root, so neither a traversal nor a
     # symlink planted inside it can reach the rest of /data (devices.json, the
@@ -172,5 +187,32 @@ async def handle_faces(request: web.Request) -> web.Response:
         return web.Response(status=400, text="bad filename")
 
     if not os.path.isfile(path):
+        return web.Response(status=404, text="not found")
+    return web.FileResponse(path)
+
+
+async def _serve_cloud_face(request: web.Request, filename: str) -> web.Response:
+    """Serve a cloud face photo, normalised, fetching it first if need be.
+
+    The URL was handed out by proxy mode's rewrite of `dev_discern_pic`
+    (`ai/cloud_faces.py`). A photo not cached yet is fetched now, because the
+    device asked for it — the same request it would otherwise have sent to
+    PetKit's storage — and only while proxy mode is on: with it off, a device
+    still holding an old cloud URL gets what is cached and nothing more.
+
+    Answers like a missing local face (404) when there is nothing to serve: a
+    fetch or decode failure, or a fetch still running at `SERVE_TIMEOUT`. The
+    device then goes without that photo until its next `dev_discern_pic`,
+    which drops a photo that failed and finds one that finished.
+    """
+    faces = request.app.get(CLOUD_FACES)
+    if faces is None:
+        return web.Response(status=404, text="not found")
+    config = request.app[CONFIG]
+    session = (get_proxy_session(request.app, config.get("proxy_dns", ""))
+               if config.get("proxy_mode") else None)
+    path = await faces.ensure(filename, session)
+    if path is None:
+        log.info("No cloud face photo to serve for %s", filename)
         return web.Response(status=404, text="not found")
     return web.FileResponse(path)

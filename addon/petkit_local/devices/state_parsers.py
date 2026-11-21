@@ -39,7 +39,7 @@ from petkit_local.devices.state_tables import (CONSUMABLE_RECORD_KEY, CONSUMABLE
                                                W7H_DEVICE_TIMESTAMPS, W7H_HALLS, W7H_MODELS,
                                                W7H_STATE_FIELDS, WORK_MODE_IDLE)
 from petkit_local.events import codes
-from petkit_local.utils.coerce import to_float
+from petkit_local.utils.coerce import to_bool, to_float, to_int
 from petkit_local.utils.const import (DEVICE_TYPES_FEEDER_NEXT_GEN,
                                      DEVICE_TYPES_LITTER_USED_TIMES_UNREPORTED)
 from petkit_local.utils.dicts import dig
@@ -212,6 +212,27 @@ def _extract_presence_flags(body: dict[str, Any], state: dict[str, Any]) -> None
         state[flag] = 1 if body.get(field_name) else 0
 
 
+def _extract_linked_k3(body: dict[str, Any], state: dict[str, Any]) -> None:
+    """The parent's own view of its K3: which one it holds, and its light.
+
+    `k3Id` is top level and `k3LightSwitch` nested under `device`
+    (`codes.T4_K3_STATE_FIELDS`); both are flattened, coerced, so a T4 says
+    the same thing over either transport. Before this the light reached
+    `device.state` only as the raw `device` block of an MQTT post -- replaced
+    whole by the next one -- and never at all from an HTTP state report, which
+    is not merged raw. An uncoercible value is skipped, never raised on.
+    """
+    if "k3Id" in body:
+        k3_id = to_int(body.get("k3Id"), None)
+        if k3_id is not None:
+            state["k3Id"] = k3_id
+    dev = body.get("device")
+    if isinstance(dev, dict) and "k3LightSwitch" in dev:
+        on = to_bool(dev.get("k3LightSwitch"), None)
+        if on is not None:
+            state["k3LightSwitch"] = int(on)
+
+
 def _extract_shared(body: dict[str, Any], state: dict[str, Any]) -> None:
     """Everything derived identically from either transport's payload.
 
@@ -229,6 +250,7 @@ def _extract_shared(body: dict[str, Any], state: dict[str, Any]) -> None:
         state["totalTime"] = body["runtime"]
     _extract_consumable_days(body, state)
     _extract_presence_flags(body, state)
+    _extract_linked_k3(body, state)
 
 
 def reports_used_times(device_type: str | None) -> bool:

@@ -200,9 +200,12 @@ def cloud_pets(payload: Any, device_id: int) -> list[dict[str, Any]]:
     """The pets a proxied `dev_discern_pic` reply describes.
 
     That reply is the account's recognition set for one device: which animals
-    it should match against, and where their reference photos are. It already
-    passes through us untouched — the cloud's pets reaching the device is what
-    proxy mode MEANS — and we read it for the same reason the device does.
+    it should match against, and where their reference photos are. In proxy
+    mode it already passes through us — the cloud's pets reaching the device is
+    what proxy mode MEANS, with only its photo URLs pointed at our normalised
+    copies (`ai/cloud_faces.py`) — and we read it for the same reason the
+    device does. This reads the cloud's own answer (`cloud_fetch.py`), so the
+    URLs here are PetKit's.
 
     Args:
         payload: The decoded upstream JSON body.
