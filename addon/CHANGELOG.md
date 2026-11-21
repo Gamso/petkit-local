@@ -20,6 +20,24 @@
 
 ### New
 
+- **A Pura Max 2 with a linked Pura Air switches the K3's light** (issue
+  #133). A new **K3 Light** switch (`k3_light`) on the T4, not on the K3,
+  which is Bluetooth-only and driven through its litter box: on sends
+  `thing.service.start {"start_action":7}`, off `thing.service.end
+  {"end_action":7}`, over MQTT when the box holds a session and through its
+  heartbeat otherwise, like its other commands. That is what PetKit's cloud
+  sent for the owner's toggles in a proxy capture of 2026-11-21 (T4 1.652);
+  for on, the box answered `work_start` with action 7 and its
+  `device.k3LightSwitch` went 0 -> 1, which is now read (from either
+  transport) as the switch's state. For off, the box's answer was not
+  captured, so it is graded `inferred` in `events/codes.py`. Whether the K3
+  turns its light off by itself after `singleLightTime` is not known; the
+  switch follows what the box reports. It is offered only while the box
+  holds a K3: the `k3Id` it reports, or before its first report since a
+  start, the K3 linked in the panel. Home Assistant gets it, or loses it, as
+  soon as that changes. The phone app gets it like any other switch: in the
+  device's `entities`, and `PUT /app/v1/devices/{id}/entities/k3_light
+  {"value": true}`.
 - **A Bluetooth accessory is named by its generation too: a CTW3 can be an
   EverSweet Max 2** (issue #115). PetKit sells the EverSweet Max Cordless and
   the EverSweet Max 2 under the one codename `ctw3`, so every one showed as a
