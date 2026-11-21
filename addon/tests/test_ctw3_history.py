@@ -302,8 +302,11 @@ async def test_each_step_and_its_reply_is_logged(event_store, clock, caplog):
     assert SECRET not in caplog.text and "<8-byte secret>" in caplog.text
 
 
-async def test_a_fountain_that_stops_at_the_secret_is_named_and_hung_up(
+async def test_a_silent_step_is_skipped_and_only_a_silent_212_stops_the_session(
         event_store, clock, monkeypatch, caplog):
+    """Through a T4 the owner's fountain did not answer the 213 (2026-11-21).
+    A silent step before the 212 is skipped, so one session maps which steps
+    the parent passes; only a silent 212 ends it."""
     import asyncio
     import logging
 
@@ -315,12 +318,13 @@ async def test_a_fountain_that_stops_at_the_secret_is_named_and_hung_up(
     assert [cmd for cmd, _ in _ble_frames(bridge)] == [213, 86]
     assert _connects(bridge) == []
 
-    await asyncio.sleep(0.05)
-    assert "session STOPPED: no answer to step 2/11 (cmd 86 (Security check))" in caplog.text
+    await asyncio.sleep(0.5)
+    assert "step 2/11 (cmd 86 (Security check)): no answer within 0.01 s, skipping it" in caplog.text
+    assert [cmd for cmd, _ in _ble_frames(bridge)] == [
+        213, 86, 84, 200, 201, 66, 210, 211, 215, 216, 212]
+    assert "session STOPPED: no answer to step 11/11 (cmd 212" in caplog.text
     assert _connects(bridge) == [0]
     assert bridge._ble_relay._ctw3_sessions == {}
-    # Nothing more was sent after the hang-up.
-    assert [cmd for cmd, _ in _ble_frames(bridge)] == [213, 86]
 
 
 async def test_a_refused_secret_stops_the_session(event_store, clock, caplog):

@@ -819,9 +819,12 @@ class BLERelay:
         now = time.time()
         history = ble.history if isinstance(ble.history, dict) else {}
         asked_at = to_float(history.get("asked_at"), 0.0) or 0.0
-        if 0.0 <= now - asked_at < HISTORY_SYNC_INTERVAL_SECONDS:
-            return False
         name = f"{ble.ble_type.upper()} (id={ble.petkit_id})"
+        if 0.0 <= now - asked_at < HISTORY_SYNC_INTERVAL_SECONDS:
+            log.info("%s: drink history asked %.0f s ago, next session in %.0f s; "
+                     "reading its status only", name, now - asked_at,
+                     HISTORY_SYNC_INTERVAL_SECONDS - (now - asked_at))
+            return False
         if ctw3_secret_payload(ble.secret) is None:
             log.info("%s: no usable pairing secret (ble_devices.json), so its drink "
                      "history cannot be asked for; reading its status only", name)
@@ -905,6 +908,22 @@ class BLERelay:
         if (session.stage == SESSION_STREAM and sync is not None and sync.pending
                 and sync.received >= sync.pending):
             await self._end_ctw3_session(session, "every announced byte is in")
+            return
+        # A step before the 212 that goes unanswered is skipped, not fatal.
+        # Through a parent the fountain stays silent on the 213 (owner's CTW3
+        # via a T4, 2026-11-21: "no answer to step 1/11"), most likely because
+        # the parent runs that handshake itself. Walking on maps, in one
+        # session, which steps the relay passes and whether the 212 answers
+        # once the others went out.
+        if (session.stage == SESSION_STEPS
+                and session.step < len(CTW3_SESSION_STEPS) - 1):
+            log.info("%s (id=%d) session %s: no answer within %g s, skipping it",
+                     session.ble.ble_type.upper(), session.ble.petkit_id,
+                     session.where(), seconds)
+            session.step += 1
+            if not await self._send_session_step(session):
+                await self._end_ctw3_session(
+                    session, f"step {session.step + 1} could not be sent", stopped=True)
             return
         await self._end_ctw3_session(
             session, f"no answer to {session.where()} within {seconds:g} s",
