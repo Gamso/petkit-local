@@ -203,11 +203,19 @@ Two rules about placement that the map does not make obvious:
   AUTHENTICATED, the connection it replaces is closed and its teardown stops only its own handler —
   no state change, no will, no `CLIENT_DISCONNECTED`. A clean CONNECT gets a fresh `Session`, so
   there the disconnect hook's object comparison still matters, and the replaced connection, which
-  amqtt would leave open and deaf, is closed too. A refused CONNECT changes nothing: amqtt has
-  already closed the open connection, and the device correctly goes off MQTT.
+  amqtt would leave open and deaf, is closed too. A refused CONNECT takes the device off MQTT: the
+  open connection is closed with an ordinary teardown.
+  **A device never resumes a session** (#150): `DeviceBroker` reads every device CONNECT as
+  clean_session=1, so a take-over gets a fresh `Session` and a CONNACK with session-present 0.
+  The T4 asks to resume (clean_session=0) and, answered session-present=1, stopped receiving
+  what we published while its own frames still arrived. The broker delivered fine in every
+  test, so the cause is a HYPOTHESIS about the firmware, still to be confirmed on hardware.
+  QoS 0 everywhere and `_server_subscribe` on every CONNECT mean no session state is worth
+  keeping. Our bridge and other non-device clients keep amqtt's handling.
   **Re-check it on EVERY amqtt version change** (a Dependabot bump included): `DeviceBroker`
-  overrides three PRIVATE methods written against amqtt 0.12.2 — `_delete_session`,
-  `_authenticate` and `_handle_disconnect` — and reads `_sessions`, `_stop_handler` and the
+  overrides four PRIVATE methods written against amqtt 0.12.2 — `_initialize_client_session`,
+  `_delete_session`, `_authenticate` and `_handle_disconnect` — wraps
+  `BrokerProtocolHandler.init_from_connect`, and reads `_sessions`, `_stop_handler` and the
   take-over loop in `_handle_client_session`. Diff those in the new release, and run
   `tests/test_mqtt_takeover.py`, which drives the real broker. The requirement is left at `<1`
   on purpose, so this check is the guard. Once amqtt fixes the take-over upstream, delete

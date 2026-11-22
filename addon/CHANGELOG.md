@@ -149,6 +149,18 @@
 
 ### Fixed
 
+- **A patched ESP32 (Pura Max 2) that reconnects should keep receiving over
+  MQTT** (issue #150; to be confirmed on hardware). After a reconnect that took
+  over its still-open connection, the T4 stopped receiving anything we sent:
+  each `data_get` timed out after 3 s, it fell back to the HTTP heartbeat for
+  about an hour, and commands sent meanwhile, such as switching the K3's light
+  off, waited. Its own messages kept arriving. The broker delivers correctly in
+  every case we could test, so the fix rests on a hypothesis: the T4 reconnects
+  asking to resume its session, the broker answered "session present", and the
+  firmware then seems not to set up its subscriptions again. Every device
+  connection now starts a fresh session and is told no session exists. Nothing
+  is lost: the add-on already subscribes the device itself on every connect,
+  and everything it sends a device is QoS 0.
 - **A Dual-Hopper 2 in proxy mode no longer restarts its camera every 82 s**
   (issue #129). Its live view froze after 5–20 s, and recognition and recording
   ran only about 20 s out of every 82. With proxy mode on, the device is handed

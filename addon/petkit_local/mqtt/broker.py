@@ -19,10 +19,12 @@ import os
 import socket
 import ssl
 import weakref
+from contextvars import ContextVar
 from typing import TYPE_CHECKING, Any
 
 from amqtt.broker import Broker, BrokerConfig
 from amqtt.contexts import ListenerConfig
+from amqtt.mqtt.protocol.broker_handler import BrokerProtocolHandler
 
 from petkit_local.config import _supervisor_host_ip
 from petkit_local.devices.registry import DeviceRegistry
@@ -242,6 +244,38 @@ def configure_device_tls(ctx: ssl.SSLContext, data_dir: str) -> ssl.SSLContext:
     return ctx
 
 
+#: Set for the duration of `DeviceBroker._initialize_client_session`: each
+#: connection is served by its own task, so this scopes the forced clean session
+#: to the CONNECTs a DeviceBroker reads and leaves any other amqtt broker alone.
+_force_device_clean: ContextVar[bool] = ContextVar("petkit_force_device_clean",
+                                                   default=False)
+_clean_patch_installed = False
+
+
+def _install_device_clean_session() -> None:
+    """Make a device's CONNECT read as clean_session=1, under a DeviceBroker.
+
+    amqtt builds the `Session` from the CONNECT inside
+    `BrokerProtocolHandler.init_from_connect` and branches on its
+    `clean_session` straight after, with no hook in between, so the flag is
+    set where the session is born. Idempotent.
+    """
+    global _clean_patch_installed
+    if _clean_patch_installed:
+        return
+    original = BrokerProtocolHandler.init_from_connect.__func__
+
+    async def init_from_connect(cls, *args: Any, **kwargs: Any) -> Any:
+        handler, session = await original(cls, *args, **kwargs)
+        if (_force_device_clean.get() and not session.clean_session
+                and parse_client_id(session.client_id or "")):
+            session.clean_session = True
+        return handler, session
+
+    BrokerProtocolHandler.init_from_connect = classmethod(init_from_connect)  # type: ignore[method-assign]
+    _clean_patch_installed = True
+
+
 class DeviceBroker(Broker):
     """amqtt's broker, with a take-over that leaves the NEW connection standing.
 
@@ -272,14 +306,32 @@ class DeviceBroker(Broker):
     marked superseded, closed (amqtt already does that for a resumed session),
     and its teardown stops only its own handler — the session state, the will
     message and `CLIENT_DISCONNECTED` all belong to the connection that is
-    still open. A CONNECT that FAILS authentication marks nothing, so amqtt's
-    own handling, and the device's MQTT state with it, are exactly as before.
+    still open. A CONNECT that FAILS authentication marks nothing superseded:
+    the open connection is closed with an ordinary teardown, which takes the
+    device off MQTT, as amqtt itself does for a resumed session.
 
-    Overrides three private methods of amqtt (pinned `<1`); the real-broker
-    tests in `tests/test_mqtt_takeover.py` fail if their contract moves.
+    On top of that, a DEVICE never resumes a session (issue #150): its CONNECT
+    is read as clean_session=1 whatever it sent, so every connection, take-over
+    included, gets a fresh `Session` and a CONNACK with session-present 0. The
+    T4 sends clean_session=0 on its reconnects (amqtt's own "performing
+    take-over" warning in #106's log only fires for a resumed session), and
+    after such a take-over it stopped receiving anything we published while
+    its own frames kept arriving — not reproducible broker-side, where the
+    resumed session delivers fine. Session-present=1 is the one thing such a
+    take-over shows the device that a working connection does not; the theory
+    is that the firmware then skips its own SUBSCRIBEs and drops what arrives
+    on topics it never registered. Unconfirmed on hardware. Nothing of value
+    is lost either way: every device delivery is QoS 0 and `_server_subscribe`
+    re-creates the subscriptions on each CONNECT. Our bridge and any other
+    non-device client keep amqtt's handling of the flag.
+
+    Overrides four private methods of amqtt (pinned `<1`) and wraps
+    `BrokerProtocolHandler.init_from_connect`; the real-broker tests in
+    `tests/test_mqtt_takeover.py` fail if their contract moves.
     """
 
     def __init__(self, *args: Any, **kwargs: Any) -> None:
+        _install_device_clean_session()
         super().__init__(*args, **kwargs)
         #: client id -> (handler of the open connection a CONNECT in flight
         #: would replace, whether WE must close it). Lives from the CONNECT's
@@ -287,6 +339,14 @@ class DeviceBroker(Broker):
         self._replacing: dict[str, tuple[Any, bool]] = {}
         #: Handlers whose connection was replaced; their teardown is theirs alone.
         self._superseded: weakref.WeakSet = weakref.WeakSet()
+
+    async def _initialize_client_session(self, *args: Any, **kwargs: Any) -> Any:
+        """Read the CONNECT with a device's clean_session forced on (#150)."""
+        token = _force_device_clean.set(True)
+        try:
+            return await super()._initialize_client_session(*args, **kwargs)
+        finally:
+            _force_device_clean.reset(token)
 
     async def _delete_session(self, client_id: str) -> None:
         """A clean CONNECT drops the stored session: note its open connection."""
@@ -306,6 +366,13 @@ class DeviceBroker(Broker):
             self._replacing[client_id] = (held_handler, False)
         authenticated = await super()._authenticate(session, listener)
         replaced = self._replacing.pop(client_id, None)
+        if replaced is not None and not authenticated and replaced[1]:
+            # A refused clean CONNECT has already deleted the open connection's
+            # session and subscriptions, leaving it deaf. Close it as amqtt
+            # does for a resumed one, with an ordinary teardown, so
+            # `CLIENT_DISCONNECTED` takes the device off MQTT rather than
+            # leaving its commands routed to nobody.
+            await replaced[0].handle_connection_closed()
         if replaced is not None and authenticated:
             old_handler, must_close = replaced
             self._superseded.add(old_handler)

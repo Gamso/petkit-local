@@ -19,7 +19,7 @@ import pytest
 from petkit_local.devices.payloads import PATCHED_PRODUCT_KEY
 from petkit_local.devices.registry import DeviceRegistry
 from petkit_local.mqtt.auth import compute_aliyun_sign, internal_credentials
-from petkit_local.mqtt.broker import start_broker
+from petkit_local.mqtt.broker import delivery_view, start_broker
 
 FIXED_TS = "2524608000000"   # what the ESP32 SDK sends, every time
 
@@ -54,6 +54,11 @@ def _connect(client_id: str, username: str, password: str, *, clean: bool,
     body = (_utf8("MQTT") + bytes([4, flags]) + struct.pack("!H", keep_alive)
             + _utf8(client_id) + _utf8(username) + _utf8(password))
     return b"\x10" + _remaining_length(len(body)) + body
+
+
+def _subscribe(packet_id: int, topic_filter: str) -> bytes:
+    body = struct.pack("!H", packet_id) + _utf8(topic_filter) + bytes([0])
+    return bytes([0x82]) + _remaining_length(len(body)) + body
 
 
 def _publish(topic: str, payload: bytes) -> bytes:
@@ -121,7 +126,7 @@ async def esp32(tmp_path):
     pk, dn = PATCHED_PRODUCT_KEY, device.mqtt_device_name
     creds = {
         "client_id": f"{pk}.{dn}|timestamp={FIXED_TS},_v=sdk-c-3.2.0,securemode=2,"
-                     "signmethod=hmacsha256|",
+                     "signmethod=hmacsha256,lan=C,_ss=1,gw=0,ext=0|",   # a T4's, verbatim
         "username": f"{dn}&{pk}",
         "password": compute_aliyun_sign(device.mqtt_device_secret, f"{pk}.{dn}",
                                         dn, pk, FIXED_TS),
@@ -212,3 +217,101 @@ async def test_a_refused_take_over_leaves_nothing_claiming_the_device(esp32):
     await asyncio.sleep(SETTLE)
     assert not await old.alive()
     assert not device.mqtt_connected
+
+
+async def _receives(conn: _Conn, topic: str) -> bool:
+    """Whether a PUBLISH on `topic` reaches `conn`, skipping anything else."""
+    try:
+        while True:
+            kind, body = await conn.packet(timeout=2.0)
+            if kind & 0xF0 == 0x30 and topic.encode() in body:
+                return True
+    except (OSError, asyncio.IncompleteReadError, asyncio.TimeoutError):
+        return False
+
+
+@pytest.mark.parametrize("clean", [False, True])
+async def test_three_take_overs_in_a_row_each_receive_what_we_publish(esp32, clean):
+    """Issue #150, as the owner's T4 did it: a connection vanishes without a
+    DISCONNECT (its socket is simply abandoned, so the broker still holds it
+    open), the device comes back under the same client id, asks for its config
+    with a `data_get`, and waits for our answer on `user/get`. Three times."""
+    broker, device, port, connect = esp32
+    pk, dn = device.mqtt_product_key, device.mqtt_device_name
+    user_get = f"/{pk}/{dn}/user/get"
+    service = f"/sys/{pk}/{dn}/thing/service/property/set"
+    user, secret = internal_credentials()
+    bridge = await _open(port, "petkit-local-bridge-test", user, secret, clean=True)
+    await bridge.send(_subscribe(1, "#"))
+    kind, _ = await bridge.packet()
+    assert kind == 0x90
+    try:
+        first = await connect(clean=clean)
+        assert first.accepted
+        for _attempt in range(3):
+            conn = await connect(clean=clean)     # the previous one is still open
+            assert conn.accepted
+            await asyncio.sleep(0.2)
+
+            # Its own frames reach us...
+            data_get = f"/{pk}/{dn}/user/update"
+            await conn.send(_publish(data_get, b'{"method":"data_get"}'))
+            assert await _receives(bridge, data_get)
+
+            # ...and ours reach it, the way `MQTTBridge` publishes them.
+            await bridge.send(_publish(user_get, b'{"dataType":"dev_device_info"}'))
+            assert await _receives(conn, user_get), "the reply never reached the new connection"
+            await bridge.send(_publish(service, b'{"method":"thing.service.property.set"}'))
+            assert await _receives(conn, service)
+
+            assert device.mqtt_connected
+            view = delivery_view(broker, pk, dn)
+            # One session for the device, connected: what the broadcast loop sends to.
+            assert [s["state"] for s in view["sessions"]] == ["connected"]
+            assert user_get in view["filters"]
+
+        await asyncio.sleep(SETTLE)               # past a session-monitor tick
+        await bridge.send(_publish(user_get, b"{}"))
+        assert await _receives(conn, user_get)
+        assert device.mqtt_connected
+    finally:
+        bridge.close()
+
+
+async def test_a_device_take_over_gets_a_fresh_session_and_session_present_0(esp32):
+    """Issue #150: the T4 reconnects with clean_session=0 (amqtt's "performing
+    take-over" warning in #106's log fires only for a resumed session), and a
+    resumed session answers session-present=1. A device is never given one."""
+    broker, device, _port, connect = esp32
+    first = await connect(clean=False)
+    assert first.accepted and first.connack[2] & 0x01 == 0
+    (session, _), = broker.sessions.values()
+    seen = [session]
+    for _ in range(3):
+        conn = await connect(clean=False)          # the previous one is still open
+        assert conn.accepted
+        assert conn.connack[2] & 0x01 == 0, "a take-over answered session-present=1"
+        (session, _), = broker.sessions.values()
+        assert all(session is not old for old in seen), "a session was resumed"
+        assert session.clean_session
+        seen.append(session)
+    await asyncio.sleep(SETTLE)
+    assert await conn.alive()
+    assert device.mqtt_connected
+
+
+async def test_a_non_device_client_still_resumes_its_session(esp32):
+    """Scoped to devices: the bridge's own client keeps amqtt's handling."""
+    broker, _device, port, _connect = esp32
+    user, secret = internal_credentials()
+    first = await _open(port, "petkit-local-bridge-test", user, secret, clean=False)
+    assert first.accepted and first.connack[2] & 0x01 == 0
+    (session, _), = broker.sessions.values()
+    try:
+        second = await _open(port, "petkit-local-bridge-test", user, secret, clean=False)
+        assert second.accepted and second.connack[2] & 0x01 == 1
+        (resumed, _), = broker.sessions.values()
+        assert resumed is session
+        second.close()
+    finally:
+        first.close()
