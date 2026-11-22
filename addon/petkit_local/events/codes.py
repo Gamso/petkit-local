@@ -1904,6 +1904,38 @@ class BleOpcode:
 
 
 BLE_OPCODES: dict[int, BleOpcode] = {
+    # -- the direct-link session's opening. PetKit's app sends these over its
+    # OWN GATT link before it asks a CTW3 for anything else; none is sent from
+    # here, and a parent's relay passes neither (#140: 84 and 86 went
+    # unanswered through a T4, 2026-11-21, where 210/211/215/216 came back).
+    # The phone app runs them (#141), and the app API hands it what 86 needs
+    # (`GET /app/v1/accessories/{id}/ble-sync`).
+    84: BleOpcode(
+        name="sync_time", label="Set clock", direction=BLE_BOTH_WAYS,
+        grade=INFERRED,
+        source="PetKit app 13.8.1: BaseDataConvertor.securityCheckAndSyncData "
+               "@0x0035-0x00a5; reply PetkitBleClient.onReceiveCustomData "
+               "@0x027e-0x029c",
+        note="Six bytes: `00`, the seconds since 2000-01-01 UTC as a "
+             "big-endian u32 ((now_ms - 946684800000) / 1000 -- shifted to "
+             "local time only for an AQ device, and `CTW3BleClient.isAqDevice` "
+             "is false), then the zone as whole hours + 12. A reply whose byte "
+             "0 is not 1 is a failure. The epoch is why a record's `workTime` "
+             "counts from 2000 (`devices/ble/ctw3.py::CTW3_CLOCK_EPOCH`). Silent "
+             "through a T4's relay (#140); sent by the phone app only."),
+    86: BleOpcode(
+        name="security_check", label="Security check", direction=BLE_BOTH_WAYS,
+        grade=INFERRED,
+        source="PetKit app 13.8.1: BaseDataConvertor.securityCheckAndSyncData "
+               "@0x0092-0x009e (also BaseDataConvertor.securityCheck); reply "
+               "PetkitBleClient.onReceiveCustomData @0x025b-0x0279",
+        note="The accessory's pairing `secret`, hex-decoded "
+             "(ByteUtil.hexStrToByteArray) and left-padded with zeros to "
+             "`BLE_SECRET_LEN` bytes (makeUpBtyesForward(bytes, 8)) -- the form "
+             "`devices/ble/ctw3.py::ctw3_secret_hex` hands the phone app. A reply "
+             "whose byte 0 is not 1 is a failure. The secret is the one "
+             "`dev_ble_device` hands the parent, held in `ble_devices.json`. "
+             "Silent through a T4's relay (#140); sent by the phone app only."),
     210: BleOpcode(
         name="get_state", label="Get state", direction=BLE_BOTH_WAYS,
         grade=INFERRED, send=BLE_SEND_READ,
@@ -2072,6 +2104,11 @@ BLE_HISTORY_SYNC_GRADE = INFERRED
 
 #: The opcodes whose data is drink records: 68 and the 82 the app stores alike.
 BLE_HISTORY_DATA = frozenset({68, 82})
+
+#: Bytes of the pairing secret a 86 carries, the stored hex left-padded with
+#: zeros to this width. INFERRED, from the same app code as the 86 row.
+BLE_SECRET_LEN = 8
+BLE_SECRET_GRADE = INFERRED
 
 
 def ble_opcode_label(cmd: object) -> str:

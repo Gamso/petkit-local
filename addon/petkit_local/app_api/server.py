@@ -25,7 +25,10 @@ Extension points for the later phases:
   (`app_api/video.py`);
 * two-way talk — `GET /app/v1/devices/{id}/talk` (WebSocket, raw PCM in),
   to the camera's speaker through the sink of the `talk` patcher, the same
-  path as the panel's (`media/talk.py`, `handlers/talk.py`).
+  path as the panel's (`media/talk.py`, `handlers/talk.py`);
+* a fountain's history synced by the phone itself (#141) —
+  `GET /app/v1/accessories/{id}/ble-sync` and `POST .../drinks`, the second
+  reading its body under its own cap (`handlers/accessories.py`).
 """
 from __future__ import annotations
 
@@ -40,8 +43,8 @@ from petkit_local.app_api.appkeys import (
     THROTTLE, UPDATE_FEED, VIDEO_SESSIONS,
 )
 from petkit_local.app_api.handlers import (
-    auth, controls, devices, feeding, media, meta, notifications, pets, push, settings, talk,
-    timeline, updates, video,
+    accessories, auth, controls, devices, feeding, media, meta, notifications, pets, push,
+    settings, talk, timeline, updates, video,
 )
 from petkit_local.app_api.middleware import app_api_middleware
 from petkit_local.app_api.notify.channel import NotifyChannel
@@ -91,6 +94,8 @@ ROUTES: tuple[tuple[str, str, Handler], ...] = (
     ("GET", "/devices/{id}/live", video.video_ws),
     ("GET", "/devices/{id}/live/hls/{file}", video.video_hls),
     ("GET", "/devices/{id}/talk", talk.talk_ws),
+    ("GET", "/accessories/{id}/ble-sync", accessories.ble_sync),
+    ("POST", "/accessories/{id}/drinks", accessories.upload_drinks),
     ("GET", "/timeline", timeline.timeline),
     ("GET", "/timeline/{event_id}", timeline.timeline_event),
     ("GET", "/media/thumb/{path:.*}", media.media_thumbnail),

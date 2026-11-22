@@ -37,14 +37,14 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from petkit_local.devices.ble import (
-    CMD_DEVICE_STATUS, CMD_STREAM_END, CTW3_RECORD_LEN, HistoryFrames, ble_command_frame,
-    ble_read_frame, parse_ctw3_history, parser_for,
+    CMD_DEVICE_STATUS, CMD_STREAM_END, CTW3_RECORD_LEN, HistoryFrames, announce_drinks,
+    ble_command_frame, ble_read_frame, history_cursor, parse_ctw3_history, parser_for,
+    store_drink_records,
 )
 from petkit_local.devices.ble.framing import _iter_ble_frames
-from petkit_local.events import ingest
 from petkit_local.events.codes import (
     BLE_HISTORY_SYNC_CMD, BLE_HISTORY_SYNC_TYPES, BLE_LINK_NOTICES, BLE_LINK_UP_READS,
-    KIND_DRINKING, ble_opcode_label,
+    ble_opcode_label,
 )
 from petkit_local.utils.coerce import to_float, to_int
 from petkit_local.utils.dicts import dig
@@ -750,8 +750,7 @@ class BLERelay:
             return False
         if not await self.publish_ble_read(device, ble, BLE_HISTORY_SYNC_CMD):
             return False
-        cursor = to_float(history.get("cursor"), 0.0) or 0.0
-        self._history[ble.petkit_id] = _HistorySync(since=cursor)
+        self._history[ble.petkit_id] = _HistorySync(since=history_cursor(ble))
         ble.history = {**history, "asked_at": now}
         if self._ble_registry is not None:
             self._ble_registry.mark_dirty()
@@ -764,21 +763,19 @@ class BLERelay:
 
         Records arrive whether or not we asked -- in proxy mode the real cloud
         may run the exchange itself -- and are stored either way: a drink is a
-        drink. Each becomes one drinking row on the ACCESSORY's id
-        (`ingest.from_ble_drink_record`), deduplicated by the fountain's own
-        timestamp, and a record at or before the cursor this session started
-        from is skipped without a write. The cursor then moves to the newest
-        record stored, never past now (a clock set a day ahead must not hide
-        tomorrow's real drinks).
+        drink. They go through `devices/ble/history.py::store_drink_records`,
+        the path a phone's upload takes too, so a record seen both ways is one
+        row: one drinking row on the ACCESSORY's id, deduplicated by the
+        fountain's own timestamp. A record at or before the cursor this session
+        started from is skipped without a write, and the cursor then moves to
+        the newest record stored, never past now.
 
         Never raises: a store that fails loses this batch, logged, and the
         relay carries on.
         """
         sync = self._history.get(ble.petkit_id)
         if sync is None:
-            history = ble.history if isinstance(ble.history, dict) else {}
-            sync = self._history[ble.petkit_id] = _HistorySync(
-                since=to_float(history.get("cursor"), 0.0) or 0.0)
+            sync = self._history[ble.petkit_id] = _HistorySync(since=history_cursor(ble))
         name = f"{ble.ble_type.upper()} (id={ble.petkit_id})"
 
         if frames.pending is not None:
@@ -796,50 +793,22 @@ class BLERelay:
             log.info("%s sent history stream control %s, which nothing here answers",
                      name, ", ".join(ble_opcode_label(c) for c in frames.control))
 
-        fresh = [r for r in frames.records if r.start > sync.since]
-        sync.skipped += len(frames.records) - len(fresh)
-        room = max(HISTORY_MAX_RECORDS_PER_SESSION - sync.stored - sync.duplicates, 0)
-        if len(fresh) > room:
+        if not frames.records:
+            return
+        result = await store_drink_records(
+            self._event_store, ble, frames.records, since=sync.since,
+            limit=max(HISTORY_MAX_RECORDS_PER_SESSION - sync.stored - sync.duplicates, 0))
+        sync.skipped += result.skipped
+        if result.dropped:
             log.warning("%s: %d drink records past this session's cap of %d dropped",
-                        name, len(fresh) - room, HISTORY_MAX_RECORDS_PER_SESSION)
-            fresh = fresh[:room]
-        if not fresh or self._event_store is None:
+                        name, result.dropped, HISTORY_MAX_RECORDS_PER_SESSION)
+        if result.failed:
             return
-
-        new = 0
-        newest = 0.0
-        try:
-            async with self._event_store.transaction() as store:
-                for record in fresh:
-                    row = ingest.from_ble_drink_record(
-                        ble.petkit_id, ble.ble_type, record.raw_time, record.start,
-                        record.seconds)
-                    _, inserted = await store.record_event(row)
-                    new += int(inserted)
-                    newest = max(newest, record.start)
-        except Exception:  # noqa: BLE001 - a lost batch must not take the relay down
-            log.exception("%s: storing %d drink records failed", name, len(fresh))
-            return
-        sync.stored += new
-        sync.duplicates += len(fresh) - new
-        cursor = min(newest, time.time())
-        history = ble.history if isinstance(ble.history, dict) else {}
-        if cursor > (to_float(history.get("cursor"), 0.0) or 0.0):
-            ble.history = {**history, "cursor": cursor}
-            if self._ble_registry is not None:
-                self._ble_registry.mark_dirty()
-        log.info("%s: %d drink records stored (%d already held)", name, new,
-                 len(fresh) - new)
-        if new and self._hub is not None:
-            # One line per batch, not per record: a first sync can carry
-            # hundreds. It is also what tells the app's live feed to re-read
-            # this accessory. `is_new` False keeps the phone notifier off it --
-            # a drink hours old is history, not news.
-            self._hub.publish("event", ble.petkit_id,
-                              f"{len(fresh)} drink records from history ({new} new)",
-                              detail={"event_kind": KIND_DRINKING, "device_id": ble.petkit_id,
-                                      "device_type": ble.ble_type, "is_new": False,
-                                      "parent_id": device.petkit_id})
+        sync.stored += result.stored
+        sync.duplicates += result.duplicates
+        if result.cursor_moved and self._ble_registry is not None:
+            self._ble_registry.mark_dirty()
+        announce_drinks(self._hub, ble, result, parent_id=device.petkit_id)
 
     def _finish_history(self, ble: BLEDevice) -> None:
         """Close this session's history exchange, saying how it ended.
