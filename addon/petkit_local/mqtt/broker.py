@@ -252,6 +252,22 @@ _force_device_clean: ContextVar[bool] = ContextVar("petkit_force_device_clean",
 _clean_patch_installed = False
 
 
+#: The device SDK whose resumed session went deaf (#150): the T4's
+#: `_v=sdk-c-3.2.0`. A D4SH on `sdk-c-4.1.0` given the same fresh session
+#: declared itself offline (`iotStatus=0`) ten minutes into every connection
+#: and reconnected every fifteen, so the forced clean session stays on the
+#: SDK it was shown to fix.
+NEVER_RESUMED_SDK_PREFIX = "sdk-c-3."
+
+
+def never_resumes(client_id: str) -> bool:
+    """True if this CONNECT is a device whose session must never be resumed."""
+    parsed = parse_client_id(client_id)
+    if not parsed:
+        return False
+    return parsed["params"].get("_v", "").startswith(NEVER_RESUMED_SDK_PREFIX)
+
+
 def _install_device_clean_session() -> None:
     """Make a device's CONNECT read as clean_session=1, under a DeviceBroker.
 
@@ -268,7 +284,7 @@ def _install_device_clean_session() -> None:
     async def init_from_connect(cls, *args: Any, **kwargs: Any) -> Any:
         handler, session = await original(cls, *args, **kwargs)
         if (_force_device_clean.get() and not session.clean_session
-                and parse_client_id(session.client_id or "")):
+                and never_resumes(session.client_id or "")):
             session.clean_session = True
         return handler, session
 
@@ -310,9 +326,12 @@ class DeviceBroker(Broker):
     the open connection is closed with an ordinary teardown, which takes the
     device off MQTT, as amqtt itself does for a resumed session.
 
-    On top of that, a DEVICE never resumes a session (issue #150): its CONNECT
-    is read as clean_session=1 whatever it sent, so every connection, take-over
-    included, gets a fresh `Session` and a CONNACK with session-present 0. The
+    On top of that, a device on the T4's SDK (`sdk-c-3.x`, `never_resumes`)
+    never resumes a session (issue #150): its CONNECT is read as
+    clean_session=1 whatever it sent, so every connection, take-over included,
+    gets a fresh `Session` and a CONNACK with session-present 0. Not every
+    device: a D4SH on `sdk-c-4.1.0` treated the same way reconnected every
+    fifteen minutes, so newer SDKs keep amqtt's handling of the flag. The
     T4 sends clean_session=0 on its reconnects (amqtt's own "performing
     take-over" warning in #106's log only fires for a resumed session), and
     after such a take-over it stopped receiving anything we published while

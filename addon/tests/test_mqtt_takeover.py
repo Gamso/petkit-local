@@ -133,8 +133,9 @@ async def esp32(tmp_path):
     }
     conns: list[_Conn] = []
 
-    async def connect(*, clean: bool, password: str | None = None) -> _Conn:
-        conn = await _open(port, creds["client_id"], creds["username"],
+    async def connect(*, clean: bool, password: str | None = None,
+                      client_id: str | None = None) -> _Conn:
+        conn = await _open(port, client_id or creds["client_id"], creds["username"],
                            password or creds["password"], clean=clean)
         conns.append(conn)
         return conn
@@ -297,6 +298,26 @@ async def test_a_device_take_over_gets_a_fresh_session_and_session_present_0(esp
         seen.append(session)
     await asyncio.sleep(SETTLE)
     assert await conn.alive()
+    assert device.mqtt_connected
+
+
+async def test_a_newer_sdk_device_still_resumes_its_session(esp32):
+    """Scoped to the T4's SDK: a D4SH on sdk-c-4.1.0 given a fresh session on
+    every CONNECT reported iotStatus=0 ten minutes in and reconnected every
+    fifteen, so it keeps amqtt's resumed session and session-present=1."""
+    broker, device, _port, connect = esp32
+    pk, dn = PATCHED_PRODUCT_KEY, device.mqtt_device_name
+    client_id = (f"{pk}.{dn}|timestamp={FIXED_TS},_ss=1,_v=sdk-c-4.1.0,securemode=2,"
+                 "signmethod=hmacsha256,ext=3,_conn=tls|")   # a D4SH's shape
+    first = await connect(clean=False, client_id=client_id)
+    assert first.accepted and first.connack[2] & 0x01 == 0
+    (session, _), = broker.sessions.values()
+    second = await connect(clean=False, client_id=client_id)
+    assert second.accepted and second.connack[2] & 0x01 == 1
+    (resumed, _), = broker.sessions.values()
+    assert resumed is session
+    await asyncio.sleep(SETTLE)
+    assert await second.alive()
     assert device.mqtt_connected
 
 
